@@ -81,6 +81,8 @@ type PersonaSnapshotLoadResult =
 export interface CodexRealtimeClientOptions {
   readonly stateExpressionCallbacks?: StateExpressionSchedulerCallbacks;
   readonly stateExpressionController?: RealtimeStateExpressionControllerOptions;
+  /** Starts optional host work immediately on speech input; voice never waits for it. */
+  readonly onUserSpeechStarted?: () => void | Promise<void>;
   readonly getPreferredThreadId?: () => string | null;
   readonly voice?: string;
   readonly getVoice?: () => string | Promise<string>;
@@ -141,6 +143,7 @@ const CODEX_REALTIME_LOCAL_WORK_HANDOFF = [
   "If you cannot delegate, say that execution did not start. Never simulate progress. Keep this internal handoff topology private unless the user asks.",
 ].join(" ");
 const REMOTE_SPEECH_SAMPLE_INTERVAL_MS = 33;
+const MAX_OBSERVED_USER_SPEECH_IDS = 64;
 const START_RETRY_BASE_DELAYS_MS = [500, 1_500] as const;
 const APP_VERSION = "0.6.2";
 
@@ -196,6 +199,8 @@ export class CodexRealtimeClient implements LipSyncSource {
   private currentAttemptStartedAt = 0;
   private currentStage: RealtimeConnectionStage = "preflight";
   private readonly stateExpressionController: RealtimeStateExpressionController | null;
+  private readonly onUserSpeechStarted: (() => void | Promise<void>) | null;
+  private readonly observedUserSpeechIds = new Set<string>();
   private readonly getPreferredThreadId: () => string | null;
   private readonly getVoiceCandidates: () => Promise<ReadonlyArray<string>>;
   private readonly onVoiceFallback: ((fallback: CodexRealtimeVoiceFallback) => void) | null;
@@ -215,6 +220,7 @@ export class CodexRealtimeClient implements LipSyncSource {
   ) {
     this.sessionId = sessionId;
     this.onStateChange = onStateChange;
+    this.onUserSpeechStarted = options.onUserSpeechStarted ?? null;
     this.getPreferredThreadId = options.getPreferredThreadId ?? (() => null);
     const legacyGetVoice =
       options.getVoice ?? (() => options.voice ?? DEFAULT_CODEX_REALTIME_VOICE);
@@ -290,6 +296,7 @@ export class CodexRealtimeClient implements LipSyncSource {
     for (let retryIndex = 0; ; retryIndex++) {
       if (this.startRunEpoch !== run) throw new StartAttemptCancelledError();
       const attempt = ++this.startAttemptEpoch;
+      this.observedUserSpeechIds.clear();
       this.stopping = false;
       this.currentAttemptId = createRealtimeAttemptId();
       this.currentAttemptStartedAt = Date.now();
@@ -968,11 +975,37 @@ export class CodexRealtimeClient implements LipSyncSource {
   private routeRealtimeItemBoundary(value: unknown): void {
     if (!isRecord(value)) return;
     if (value.type === "input_audio_buffer.speech_started") {
+      this.notifyUserSpeechStarted(value.item_id);
       this.stateExpressionController?.onUserSpeechStarted(value.item_id);
       return;
     }
     if (value.role !== "assistant") return;
     this.stateExpressionController?.onAssistantResponseBoundary(value.id);
+  }
+
+  private notifyUserSpeechStarted(itemId: unknown): void {
+    if (
+      this.state.status !== "active" ||
+      !this.onUserSpeechStarted ||
+      typeof itemId !== "string" ||
+      itemId.trim().length === 0 ||
+      itemId.length > 256 ||
+      this.observedUserSpeechIds.has(itemId)
+    ) {
+      return;
+    }
+    this.observedUserSpeechIds.add(itemId);
+    if (this.observedUserSpeechIds.size > MAX_OBSERVED_USER_SPEECH_IDS) {
+      const oldestId = this.observedUserSpeechIds.values().next().value;
+      if (oldestId !== undefined) this.observedUserSpeechIds.delete(oldestId);
+    }
+    try {
+      // Invoke synchronously so capture can overlap speech. Host failures must never
+      // interrupt the voice event stream or become unhandled promise rejections.
+      void Promise.resolve(this.onUserSpeechStarted()).catch(() => {});
+    } catch {
+      // Sharing remains independently owned by the host.
+    }
   }
 
   private rejectAllPending(error: Error): void {

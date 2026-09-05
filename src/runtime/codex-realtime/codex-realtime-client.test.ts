@@ -268,6 +268,12 @@ class FakePeerConnection extends EventTarget {
   }
 }
 
+function emitRealtimeItem(item: unknown, threadId = "thread-1", channel = bridge.channel): void {
+  channel?.onmessage(
+    JSON.stringify({ method: "thread/realtime/itemAdded", params: { threadId, item } }),
+  );
+}
+
 describe("CodexRealtimeClient", () => {
   let microphoneTrack: FakeAudioTrack;
 
@@ -841,6 +847,113 @@ describe("CodexRealtimeClient", () => {
     expect(onUserSpeechStarted).toHaveBeenCalledWith("user-1");
     expect(onAssistantResponseBoundary).toHaveBeenCalledWith("assistant-1");
     expect(onOutputAudioItem).toHaveBeenCalledWith("assistant-1");
+    client.stop();
+  });
+
+  it("starts optional speech work synchronously without waiting for it to route voice events", async () => {
+    let finishHostWork: (() => void) | undefined;
+    const pendingHostWork = new Promise<void>((resolve) => {
+      finishHostWork = resolve;
+    });
+    const onUserSpeechStarted = vi.fn(() => pendingHostWork);
+    const client = new CodexRealtimeClient("main-session", undefined, {
+      onUserSpeechStarted,
+      stateExpressionCallbacks: { onCue: vi.fn(), onRelease: vi.fn() },
+    });
+    await client.start();
+    const controller = (
+      client as unknown as {
+        stateExpressionController: { onAssistantResponseBoundary(itemId: unknown): void };
+      }
+    ).stateExpressionController;
+    const onAssistantResponseBoundary = vi.spyOn(controller, "onAssistantResponseBoundary");
+
+    emitRealtimeItem({ type: "input_audio_buffer.speech_started", item_id: "user-1" });
+    expect(onUserSpeechStarted).toHaveBeenCalledOnce();
+    emitRealtimeItem({ type: "input_audio_buffer.speech_started", item_id: "user-1" });
+    emitRealtimeItem({ id: "assistant-1", role: "assistant" });
+
+    expect(onUserSpeechStarted).toHaveBeenCalledOnce();
+    expect(onAssistantResponseBoundary).toHaveBeenCalledWith("assistant-1");
+    expect(client.getStatus()).toBe("active");
+    finishHostWork?.();
+    client.stop();
+  });
+
+  it("only reports valid speech from the active thread and resets duplicate tracking on restart", async () => {
+    const onUserSpeechStarted = vi.fn();
+    const client = new CodexRealtimeClient("main-session", undefined, { onUserSpeechStarted });
+    bridge.suppressRealtimeSdp = true;
+    const starting = client.start();
+    await vi.waitFor(() =>
+      expect(bridge.sent.some((message) => message.method === "thread/realtime/start")).toBe(true),
+    );
+    emitRealtimeItem({ type: "input_audio_buffer.speech_started", item_id: "user-1" });
+    expect(onUserSpeechStarted).not.toHaveBeenCalled();
+    bridge.channel?.onmessage(
+      JSON.stringify({
+        method: "thread/realtime/sdp",
+        params: { threadId: "thread-1", sdp: "remote-answer" },
+      }),
+    );
+    await starting;
+
+    const item = { type: "input_audio_buffer.speech_started", item_id: "user-1" };
+    emitRealtimeItem(item, "other-thread");
+    for (const itemId of [undefined, null, 1, "", " ", "x".repeat(257)]) {
+      emitRealtimeItem({ ...item, item_id: itemId });
+    }
+    emitRealtimeItem({ ...item, type: "input_audio_buffer.speech_stopped" });
+    expect(onUserSpeechStarted).not.toHaveBeenCalled();
+    emitRealtimeItem(item);
+    emitRealtimeItem(item);
+    expect(onUserSpeechStarted).toHaveBeenCalledOnce();
+
+    const oldChannel = bridge.channel;
+    client.stop();
+    emitRealtimeItem({ ...item, item_id: "user-after-stop" }, "thread-1", oldChannel);
+    bridge.suppressRealtimeSdp = false;
+    await client.start();
+    emitRealtimeItem({ ...item, item_id: "stale-attempt" }, "thread-1", oldChannel);
+    expect(onUserSpeechStarted).toHaveBeenCalledOnce();
+    emitRealtimeItem(item);
+    expect(onUserSpeechStarted).toHaveBeenCalledTimes(2);
+    client.stop();
+  });
+
+  it("bounds speech duplicate tracking while retaining recent item IDs", async () => {
+    const onUserSpeechStarted = vi.fn();
+    const client = new CodexRealtimeClient("main-session", undefined, { onUserSpeechStarted });
+    await client.start();
+    for (let index = 0; index < 80; index++) {
+      emitRealtimeItem({ type: "input_audio_buffer.speech_started", item_id: `user-${index}` });
+    }
+    expect(onUserSpeechStarted).toHaveBeenCalledTimes(80);
+    emitRealtimeItem({ type: "input_audio_buffer.speech_started", item_id: "user-79" });
+    expect(onUserSpeechStarted).toHaveBeenCalledTimes(80);
+    emitRealtimeItem({ type: "input_audio_buffer.speech_started", item_id: "user-0" });
+    expect(onUserSpeechStarted).toHaveBeenCalledTimes(81);
+    client.stop();
+  });
+
+  it("isolates synchronous and asynchronous optional speech callback failures", async () => {
+    const onUserSpeechStarted = vi
+      .fn<() => void | Promise<void>>()
+      .mockImplementationOnce(() => {
+        throw new Error("host callback failed");
+      })
+      .mockRejectedValueOnce(new Error("host work rejected"));
+    const client = new CodexRealtimeClient("main-session", undefined, { onUserSpeechStarted });
+    await client.start();
+
+    for (const itemId of ["user-1", "user-2", "user-3"]) {
+      expect(() =>
+        emitRealtimeItem({ type: "input_audio_buffer.speech_started", item_id: itemId }),
+      ).not.toThrow();
+    }
+    await Promise.resolve();
+    expect(onUserSpeechStarted).toHaveBeenCalledTimes(3);
+    expect(client.getStatus()).toBe("active");
     client.stop();
   });
 
