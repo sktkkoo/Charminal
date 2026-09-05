@@ -16,17 +16,14 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-const loaded = (status = "idle", id = "main") => ({ thread: { id, status: { type: status } } });
 afterEach(() => vi.useRealTimers());
 
 describe("screen observation transport", () => {
   it("injects the exact native frame reference and top-left image coordinate instructions", async () => {
-    const request = vi.fn(async (method: string, _params: object) =>
-      method === "thread/read" ? loaded() : {},
-    );
+    const request = vi.fn(async (_method: string, _params: object) => ({}));
     const transport = new ScreenObservationTransport({ request, getThreadId: () => "main" });
     await transport.observe(frame);
-    const injection = request.mock.calls[1][1] as {
+    const injection = request.mock.calls[0][1] as {
       items: Array<{ content: Array<{ text?: string }> }>;
     };
     const text = injection.items[0].content[0].text;
@@ -55,19 +52,11 @@ describe("screen observation transport", () => {
     );
     expect(request).not.toHaveBeenCalled();
   });
-  it.each([
-    "idle",
-    "active",
-  ])("injects context in a %s thread without starting or steering work", async (status) => {
-    const request = vi.fn(async (method: string) =>
-      method === "thread/read" ? loaded(status) : {},
-    );
+  it("shares with a validated main thread in one RPC without starting or steering work", async () => {
+    const request = vi.fn(async (_method: string) => ({}));
     const transport = new ScreenObservationTransport({ request, getThreadId: () => "main" });
     expect((await transport.observe(frame)).status).toBe("shared");
-    expect(request.mock.calls.map(([method]) => method)).toEqual([
-      "thread/read",
-      "thread/inject_items",
-    ]);
+    expect(request.mock.calls.map(([method]) => method)).toEqual(["thread/inject_items"]);
     expect(request).toHaveBeenLastCalledWith(
       "thread/inject_items",
       expect.objectContaining({
@@ -84,9 +73,9 @@ describe("screen observation transport", () => {
     );
   });
 
-  it("does not deliver after a cancelled preflight, and serializes a replacement", async () => {
-    const read = deferred<unknown>();
-    const request = vi.fn(() => read.promise);
+  it("suppresses a cancelled injection's late reply and serializes a replacement", async () => {
+    const injection = deferred<unknown>();
+    const request = vi.fn(() => injection.promise);
     const transport = new ScreenObservationTransport({ request, getThreadId: () => "main" });
     const controller = new AbortController();
     const result = transport.observe(frame, controller.signal);
@@ -94,18 +83,47 @@ describe("screen observation transport", () => {
     controller.abort();
     await rejected;
     expect((await transport.observe(frame)).status).toBe("busy");
-    read.resolve(loaded());
+    injection.resolve({});
     await Promise.resolve();
     await Promise.resolve();
     expect(request).toHaveBeenCalledTimes(1);
     expect(transport.busy).toBe(false);
   });
 
+  it("does not send for an unloaded owner or an already cancelled sharing lease", async () => {
+    const request = vi.fn();
+    let threadId: string | null = null;
+    const transport = new ScreenObservationTransport({ request, getThreadId: () => threadId });
+    expect((await transport.observe(frame)).status).toBe("busy");
+    threadId = "main";
+    const controller = new AbortController();
+    controller.abort();
+    await expect(transport.observe(frame, controller.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("finishes after one transport round trip even when a redundant preflight would be slow", async () => {
+    vi.useFakeTimers();
+    const request = vi.fn(
+      (_method: string) => new Promise((resolve) => setTimeout(() => resolve({}), 80)),
+    );
+    const transport = new ScreenObservationTransport({ request, getThreadId: () => "main" });
+    const completed = vi.fn();
+    void transport.observe(frame).then(completed);
+    await vi.advanceTimersByTimeAsync(79);
+    expect(completed).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(completed).toHaveBeenCalledWith({ status: "shared", capturedAt: frame.capturedAt });
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects stale thread results and redacts image-bearing backend errors", async () => {
     let id = "main";
     const request = vi.fn(async () => {
       id = "new-main";
-      return loaded();
+      return {};
     });
     const transport = new ScreenObservationTransport({ request, getThreadId: () => id });
     await expect(transport.observe(frame)).rejects.toMatchObject({ name: "AbortError" });
@@ -116,14 +134,14 @@ describe("screen observation transport", () => {
         throw new Error(frame.imageDataUrl);
       },
     });
-    await expect(fail.observe(frame)).rejects.toThrow("Could not check");
+    await expect(fail.observe(frame)).rejects.toThrow("Could not share");
   });
 
   it("times out without creating a second outstanding RPC", async () => {
     vi.useFakeTimers();
-    const read = deferred<unknown>();
+    const injection = deferred<unknown>();
     const transport = new ScreenObservationTransport({
-      request: () => read.promise,
+      request: () => injection.promise,
       getThreadId: () => "main",
       timeoutMs: 100,
     });
@@ -131,7 +149,7 @@ describe("screen observation transport", () => {
     await vi.advanceTimersByTimeAsync(100);
     await pending;
     expect((await transport.observe(frame)).status).toBe("busy");
-    read.resolve(loaded());
+    injection.resolve({});
     await Promise.resolve();
   });
 });

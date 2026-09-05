@@ -17,6 +17,7 @@ export interface ScreenObservationResult {
 
 export interface ScreenObservationTransportOptions {
   readonly request: (method: string, params: object) => Promise<unknown>;
+  /** The connection owner supplies only its validated, selected, loaded main thread. */
   readonly getThreadId: () => string | null;
   readonly timeoutMs?: number;
 }
@@ -37,18 +38,6 @@ interface ObservationRun {
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function isLoadedThread(value: unknown, threadId: string): boolean {
-  const thread = record(record(value)?.thread);
-  const status = record(thread?.status)?.type;
-  return thread?.id === threadId && (status === "idle" || status === "active");
-}
 
 function validFrame(frame: ScreenObservationFrame): boolean {
   return (
@@ -89,6 +78,10 @@ function contextText(frame: ScreenObservationFrame): string {
  * starting inference, steering a task, or interrupting a turn. Loaded active
  * threads also accept context, so a working main agent can receive screen updates
  * without waiting for its task to finish.
+ * The tracker validates ownership/loading on selection and tracks unload events.
+ * A second `thread/read` before every injection adds a round trip without making
+ * the following send atomic. The server rejects an injection if unloading races
+ * the send; it never starts or resumes a thread on our behalf.
  *
  * There is no capture queue. Cancellation/timeout settles the caller immediately,
  * but the transport remains busy until its outstanding RPC settles, preventing
@@ -168,20 +161,7 @@ export class ScreenObservationTransport {
   }
 
   private async perform(run: ObservationRun): Promise<void> {
-    let stage: "read" | "share" = "read";
     try {
-      this.assertCurrent(run);
-      const response = await this.options.request("thread/read", {
-        threadId: run.threadId,
-        includeTurns: false,
-      });
-      this.assertCurrent(run);
-      if (!isLoadedThread(response, run.threadId)) {
-        run.finish({ status: "busy", capturedAt: run.frame.capturedAt });
-        return;
-      }
-
-      stage = "share";
       this.assertCurrent(run);
       await this.options.request("thread/inject_items", {
         threadId: run.threadId,
@@ -205,11 +185,7 @@ export class ScreenObservationTransport {
         undefined,
         error instanceof ScreenObservationCancelledError
           ? error
-          : new Error(
-              stage === "read"
-                ? "Could not check the main agent's activity"
-                : "Could not share the screen with the main agent",
-            ),
+          : new Error("Could not share the screen with the main agent"),
       );
     } finally {
       if (this.activeRun === run) this.activeRun = null;

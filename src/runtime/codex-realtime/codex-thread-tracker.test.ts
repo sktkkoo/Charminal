@@ -71,10 +71,13 @@ vi.mock("../../bindings/tauri-commands", () => ({
             parentThreadId:
               typeof threadId === "string" ? (bridge.parents[threadId] ?? null) : null,
             ephemeral: typeof threadId === "string" && bridge.ephemeralThreads.has(threadId),
+            status: { type: "idle" },
           },
         });
       if (bridge.pendingReads) bridge.readResponders.push(sendRead);
       else sendRead();
+    } else if (request.method === "thread/inject_items") {
+      respond({});
     } else if (request.method === "thread/turns/list") {
       if (bridge.turnListFailuresRemaining > 0) {
         bridge.turnListFailuresRemaining -= 1;
@@ -110,6 +113,34 @@ describe("CodexThreadTracker", () => {
     await tracker.start();
 
     expect(tracker.getCurrentThreadId()).toBe("thread-1");
+    tracker.stop();
+  });
+
+  it("shares directly with its validated owner and immediately stops on unload", async () => {
+    const tracker = new CodexThreadTracker("main-session");
+    await tracker.start();
+    bridge.sent = [];
+    // A preflight here would block on the slow read; the existing selected,
+    // loaded owner can accept passive context without that extra round trip.
+    bridge.pendingReads = true;
+    const frame = {
+      frameId: "shared-frame",
+      width: 1920,
+      height: 1080,
+      imageDataUrl: "data:image/jpeg;base64,YQ==",
+      capturedAt: "2026-09-06T00:00:00.000Z",
+      source: "Display 1",
+    };
+    expect((await tracker.shareScreenObservation(frame)).status).toBe("shared");
+    expect(bridge.sent.map((request) => request.method)).toEqual(["thread/inject_items"]);
+    bridge.channel?.onmessage(
+      JSON.stringify({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", status: { type: "notLoaded" } },
+      }),
+    );
+    expect((await tracker.shareScreenObservation(frame)).status).toBe("busy");
+    expect(bridge.sent).toHaveLength(1);
     tracker.stop();
   });
 

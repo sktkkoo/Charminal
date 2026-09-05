@@ -84,7 +84,13 @@ export class CodexThreadTracker {
   private readonly trackedQuickChatTurns = new Map<string, TrackedQuickChatTurn>();
   private readonly screenObservation = new ScreenObservationTransport({
     request: (method, params) => this.request(method, params as Record<string, unknown>),
-    getThreadId: () => (this.running && this.connectionId ? this.currentThreadId : null),
+    getThreadId: () =>
+      this.running &&
+      this.connectionId &&
+      this.currentThreadId &&
+      this.knownLoadedThreadIds.has(this.currentThreadId)
+        ? this.currentThreadId
+        : null,
   });
 
   constructor(
@@ -323,6 +329,10 @@ export class CodexThreadTracker {
           thread.parentThreadId === null &&
           thread.ephemeral !== true
         ) {
+          const status = isRecord(thread.status) ? thread.status.type : null;
+          if (status === "idle" || status === "active") {
+            this.knownLoadedThreadIds.add(threadId);
+          }
           this.setCurrentThreadId(threadId);
         }
       })
