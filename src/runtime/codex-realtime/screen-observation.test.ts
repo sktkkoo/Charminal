@@ -35,6 +35,17 @@ describe("screen observation transport", () => {
     expect(text).toContain("screen_pointer_clear({})");
     expect(text).toContain("Only say it is displayed after the tool confirms success");
     expect(text).toContain("Do not initiate work, use tools");
+    expect(text).toContain("latest actual attached shared-screen image before choosing a target");
+    expect(text).toContain(
+      "explicit where/which/point request, show the grounded target before a lengthy explanation",
+    );
+    expect(text).toContain("with the exact inspected frame reference");
+    expect(text).toContain("Inspect the attached image directly");
+    expect(text).toContain("app_screenshot captures only the Yorishiro window");
+    expect(text).toContain(
+      "the image is stale, or the target moved, inspect a fresh shared image before pointing again",
+    );
+    expect(text).toContain("No response is needed for the capture itself");
   });
 
   it.each([

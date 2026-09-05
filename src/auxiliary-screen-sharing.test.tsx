@@ -79,7 +79,7 @@ describe("independent screen-sharing controls", () => {
 
   it("keeps keyboard focus during passive updates and commits a dragged interval once", async () => {
     render(<AuxiliaryScreenSharing />);
-    const interval = await screen.findByRole("slider", { name: "Viewing interval" });
+    const interval = await screen.findByRole("slider", { name: "Periodic interval" });
     interval.focus();
     state = {
       version: 2,

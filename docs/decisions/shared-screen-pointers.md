@@ -23,14 +23,16 @@ npm run tauri dev
    is the **whole selected display**, even when Yorishiro is in Call/Portrait.
 2. In the sharing settings header, click **Open screen sharing in a separate
    window** / **画面共有を別ウィンドウで開く**. This independent window can start,
-   cancel, stop, select the next display, set the interval, and clear marks while
+   cancel, stop, select the next display, set the periodic interval, and clear marks while
    the main window remains small. Opening it does not start capture. Closing it
    leaves the existing sharing session running.
 3. After an image is shared, ask through the existing conversation, for example:
-   “Blender の画面で、次に調整したい部分を矢印で示して。” The main agent must
-   inspect the supplied image and call `screen_pointer_show`. GPT Live delegates
-   image inspection to that agent; it does not receive or claim to see the image
-   itself. Corrections such as “その右隣” can replace the current mark.
+   “Blender の画面で、次に調整したい部分を矢印で示して。” Starting to speak in
+   GPT Live requests a fresh capture while sharing is active; an existing capture
+   or delivery is reused. Live is instructed to use one delegation for the question,
+   image inspection, and `screen_pointer_show`, with a grounded mark before a lengthy
+   explanation. Live does not receive or claim to see the image itself. Corrections
+   such as “その右隣” can replace the current mark.
 4. Continue clicking, dragging, and typing in the target app while a mark is
    visible. It must not take focus or intercept input. Use **Clear screen
    markers** / **画面の目印を消す** in either set of controls, ask the agent to clear
@@ -101,7 +103,7 @@ cancels that wait immediately. Its deadline is 16 seconds (the capture timeout o
 
 ## Latency investigation
 
-The initial path contained three avoidable waits before a new image could be used,
+The initial path contained avoidable waits before a new image could be used,
 and a model retry when a pointer overlapped capture:
 
 | Stage | Previous behavior | Current behavior |
@@ -109,6 +111,7 @@ and a model retry when a pointer overlapped capture:
 | Passive image insertion | `thread/read` then `thread/inject_items` for every image | One injection RPC; selected-owner validation and unload tracking stay in the tracker |
 | Voice availability notice | Capture stayed busy until the metadata RPC acknowledged, up to its 15-second timeout | Image sharing completes at injection acknowledgement; notices are independently coalesced |
 | Voice starts after sharing | Stable images were deduplicated, so a new voice connection could miss every screen notice | The current sharing lease's existing timestamp is replayed on voice connection, without recapture or image reinjection |
+| User starts speaking during sharing | The next scheduled capture could be nearly one periodic interval away | Speech requests a capture immediately, joining any existing capture/delivery |
 | Slow periodic capture/delivery | Missed ticks waited for the following whole interval | An overdue capture starts when the previous operation settles |
 | Pointer during capture | Error requiring another model/tool round trip | The original call waits on a state-change notification, without UI-thread blocking or polling |
 
@@ -131,9 +134,21 @@ skipped without requesting permission or saving screen pixels.
 
 The existing Codex V3 protocol still requires Live to delegate actual image grounding
 to the main agent. The installed 0.153.4 schema exposes no verified direct realtime
-image/tool path. No model or provider was changed. Speech-start callback and
-singleflight refresh primitives are prepared, but speech-triggered capture is not
-connected in App; shared images still follow the selected periodic interval.
+image/tool path. No model or provider was changed. App connects speech-start events
+from the accepted Live client to the existing sharing hook's `captureNow()`. This
+only acts within an already active sharing lease, bypasses the periodic interval,
+and joins an in-flight capture/delivery instead of starting concurrent work. Audio
+does not wait for it. Repeated speech events are deduplicated; callbacks from an old
+voice client, stopped sharing, and revoked source/thread owners cannot deliver a frame.
+Unchanged images still use the existing deduplication rule.
+
+For an explicit where/which/point request, the prompts guide Live to include the
+question, image inspection, and pointer action in one delegation. The main agent
+should place the grounded mark before a lengthy explanation and answer briefly.
+It must inspect the actual shared attachment, rather than use `app_screenshot`,
+which only captures Yorishiro's window. Missing or stale images and moved targets
+require a fresh shared image before pointing. These changes remove avoidable waits;
+they do not establish a guaranteed live response time or speech/mark synchronization.
 
 The panel uses a borderless, nonactivating `NSPanel`, cannot become key/main,
 ignores mouse events, and is configured to join Spaces and fullscreen auxiliary

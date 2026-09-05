@@ -4130,6 +4130,7 @@ function App() {
     () => createBodyStateExpressionAdapter(() => bodyRef.current),
     [],
   );
+  const speechScreenCaptureRef = useRef<(() => Promise<void>) | null>(null);
   const {
     state: codexRealtimeState,
     stop: stopCodexRealtime,
@@ -4146,6 +4147,12 @@ function App() {
     applyLipSyncSource: applyRealtimeLipSyncSource,
     setFallbackPlaybackEnabled: (enabled) => voicePlaybackLeaseSync.setEnabled(enabled),
     stateExpressionCallbacks: realtimeStateExpressionCallbacks,
+    onUserSpeechStarted: () => {
+      const capture = speechScreenCaptureRef.current;
+      if (!capture) return;
+      devLog.write({ subsystem: "ScreenSharing", phase: "user-speech-start" });
+      return capture();
+    },
     getVoiceCandidates: async () => {
       // Voice は session 開始時に一度だけ読まれる（audio 開始後は変更不可）。
       // 先頭が採用候補（persona override → global codexRealtimeVoice → built-in default）、
@@ -4287,6 +4294,7 @@ function App() {
       devLog.write({ subsystem: "ScreenSharing", phase: "capture-context", data: timing });
     },
   });
+  speechScreenCaptureRef.current = screenSharing.active ? screenSharing.captureNow : null;
   const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
     ...screenSharing,
     available: screenSharingAvailable,

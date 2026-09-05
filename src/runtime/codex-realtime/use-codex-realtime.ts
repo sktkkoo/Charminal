@@ -34,6 +34,7 @@ export type CodexRealtimeClientFactory = (
   onPersonaApplication?: (application: CodexRealtimePersonaApplication) => void,
   personaPromptMode?: "supplemental" | "replace",
   includeStartupContext?: boolean,
+  onUserSpeechStarted?: () => void | Promise<void>,
 ) => CodexRealtimeClientLike;
 
 export interface CodexThreadTrackerLike {
@@ -63,6 +64,8 @@ interface UseCodexRealtimeOptions {
   readonly applyLipSyncSource: (source: LipSyncSource) => void;
   readonly setFallbackPlaybackEnabled?: (enabled: boolean) => void | Promise<void>;
   readonly stateExpressionCallbacks?: StateExpressionSchedulerCallbacks;
+  /** Optional work for the accepted voice client; the audio event handler never waits for it. */
+  readonly onUserSpeechStarted?: () => void | Promise<void>;
   /** Called for every new session so config edits apply without restarting the app. */
   readonly getVoice?: () => string | Promise<string>;
   /**
@@ -117,6 +120,7 @@ const defaultCreateClient: CodexRealtimeClientFactory = (
   onPersonaApplication,
   personaPromptMode,
   includeStartupContext,
+  onUserSpeechStarted,
 ) =>
   new CodexRealtimeClient(sessionId, onStateChange, {
     stateExpressionCallbacks,
@@ -128,6 +132,7 @@ const defaultCreateClient: CodexRealtimeClientFactory = (
     onPersonaApplication,
     personaPromptMode,
     includeStartupContext,
+    onUserSpeechStarted,
   });
 
 const defaultCreateThreadTracker = (
@@ -151,6 +156,7 @@ export function useCodexRealtime({
   applyLipSyncSource,
   setFallbackPlaybackEnabled = () => {},
   stateExpressionCallbacks,
+  onUserSpeechStarted,
   getVoice = () => DEFAULT_CODEX_REALTIME_VOICE,
   getVoiceCandidates,
   onVoiceFallback,
@@ -180,6 +186,7 @@ export function useCodexRealtime({
   const getPersonaSnapshotRef = useRef(getPersonaSnapshot);
   const onPersonaApplicationRef = useRef(onPersonaApplication);
   const onQuickChatResponseRef = useRef(onQuickChatResponse);
+  const onUserSpeechStartedRef = useRef(onUserSpeechStarted);
   const sessionIdRef = useRef(sessionId);
   const voiceIntentRef = useRef(false);
   const fallbackPlaybackTransitionRef = useRef(0);
@@ -197,6 +204,7 @@ export function useCodexRealtime({
   getPersonaSnapshotRef.current = getPersonaSnapshot;
   onPersonaApplicationRef.current = onPersonaApplication;
   onQuickChatResponseRef.current = onQuickChatResponse;
+  onUserSpeechStartedRef.current = onUserSpeechStarted;
 
   const clearSharedScreenContext = useCallback(() => {
     const context = sharedScreenContextRef.current;
@@ -356,6 +364,10 @@ export function useCodexRealtime({
         (application) => onPersonaApplicationRef.current?.(application),
         personaPromptMode,
         includeStartupContext,
+        () => {
+          if (clientRef.current !== client || client.getStatus() !== "active") return;
+          return onUserSpeechStartedRef.current?.();
+        },
       );
       clientRef.current = client;
       setState({ status: "connecting" });

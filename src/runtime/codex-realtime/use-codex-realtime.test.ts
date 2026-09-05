@@ -104,6 +104,7 @@ function setup(
       | Promise<CodexRealtimePersonaSnapshot>;
     readonly onPersonaApplication?: (application: CodexRealtimePersonaApplication) => void;
     readonly includeStartupContext?: boolean;
+    onUserSpeechStarted?: () => void | Promise<void>;
     readonly onQuickChatResponse?: (response: {
       requestId: string;
       threadId: string;
@@ -114,6 +115,7 @@ function setup(
 ) {
   const clients: FakeClient[] = [];
   const startupContexts: Array<boolean | undefined> = [];
+  const speechStarts: Array<(() => void | Promise<void>) | undefined> = [];
   let trackedThreadId: string | null = "thread-1";
   let notifyThreadChange: (threadId: string | null) => void = () => {};
   let notifyQuickChatResponse: (response: {
@@ -139,8 +141,10 @@ function setup(
     onPersonaApplicationForClient,
     _personaPromptMode,
     includeStartupContextForClient,
+    onUserSpeechStartedForClient,
   ) => {
     startupContexts.push(includeStartupContextForClient);
+    speechStarts.push(onUserSpeechStartedForClient);
     const startResult = starts[clients.length] ?? Promise.resolve();
     const client = new FakeClient(
       sessionId,
@@ -189,6 +193,7 @@ function setup(
         onPersonaApplication: options.onPersonaApplication,
         includeStartupContext: options.includeStartupContext,
         onQuickChatResponse: options.onQuickChatResponse,
+        onUserSpeechStarted: options.onUserSpeechStarted,
         createClient,
         createThreadTracker,
       }),
@@ -198,6 +203,7 @@ function setup(
     ...hook,
     clients,
     startupContexts,
+    speechStarts,
     injectScreenObservation: shareScreenObservation,
     fallback,
     applyLipSyncSource,
@@ -228,6 +234,62 @@ describe("useCodexRealtime", () => {
     capturedAt: "2026-09-05T13:00:00.000Z",
     source: "Display 1",
   };
+
+  it("routes speech only from the active voice owner and reads the latest host callback", async () => {
+    const first = vi.fn();
+    const latest = vi.fn();
+    const options = { onUserSpeechStarted: first };
+    const { result, clients, speechStarts, rerender, unmount } = setup(
+      [Promise.resolve(), Promise.resolve()],
+      undefined,
+      undefined,
+      options,
+    );
+    await act(async () => result.current.toggle());
+    speechStarts[0]?.();
+    expect(first).not.toHaveBeenCalled();
+    act(() => clients[0].emit({ status: "active", billing: "subscription" }));
+    speechStarts[0]?.();
+    expect(first).toHaveBeenCalledTimes(1);
+
+    options.onUserSpeechStarted = latest;
+    rerender({ sessionId: "main", available: true });
+    speechStarts[0]?.();
+    expect(latest).toHaveBeenCalledTimes(1);
+    expect(clients).toHaveLength(1);
+
+    act(() => result.current.stop());
+    // Even a stale client claiming to be active cannot trigger capture again.
+    act(() => clients[0].emit({ status: "active", billing: "subscription" }));
+    speechStarts[0]?.();
+    expect(latest).toHaveBeenCalledTimes(1);
+    await act(async () => result.current.toggle());
+    act(() => clients[1].emit({ status: "active", billing: "subscription" }));
+    speechStarts[0]?.();
+    speechStarts[1]?.();
+    expect(latest).toHaveBeenCalledTimes(2);
+    unmount();
+    speechStarts[1]?.();
+    expect(latest).toHaveBeenCalledTimes(2);
+  });
+
+  it("revokes a speech callback when the selected thread changes", async () => {
+    const onSpeech = vi.fn();
+    const { result, clients, speechStarts, changeThread, unmount } = setup(
+      [Promise.resolve()],
+      undefined,
+      undefined,
+      { onUserSpeechStarted: onSpeech },
+    );
+    await act(async () => result.current.toggle());
+    act(() => clients[0].emit({ status: "active", billing: "subscription" }));
+    speechStarts[0]?.();
+    expect(onSpeech).toHaveBeenCalledTimes(1);
+    act(() => changeThread(null));
+    speechStarts[0]?.();
+    expect(onSpeech).toHaveBeenCalledTimes(1);
+    unmount();
+  });
 
   it("announces an existing shared frame once when Live starts without startup context", async () => {
     const { result, clients, startupContexts, injectScreenObservation, unmount } = setup(
