@@ -205,6 +205,71 @@ function setup(
 }
 
 describe("useCodexRealtime", () => {
+  it("completes image delivery while a voice metadata ACK never resolves", async () => {
+    const { result, clients, unmount } = setup([Promise.resolve()]);
+    await act(async () => result.current.toggle());
+    act(() => clients[0].emit({ status: "active", billing: "subscription" }));
+    const notification = deferred();
+    clients[0].notifyScreenContext.mockReturnValue(notification.promise);
+    const frame: ScreenObservationFrame = {
+      frameId: "frame-1",
+      width: 1280,
+      height: 720,
+      imageDataUrl: "data:image/jpeg;base64,YQ==",
+      capturedAt: "2026-09-05T13:00:00.000Z",
+      source: "Display 1",
+    };
+    let delivered = false;
+    const sharing = result.current
+      .shareScreenObservation(frame, new AbortController().signal)
+      .then((value) => {
+        delivered = true;
+        return value;
+      });
+    try {
+      await act(async () => {
+        await Promise.resolve();
+      });
+      // No timer or provider reply was advanced to complete image delivery.
+      expect(delivered).toBe(true);
+      await expect(sharing).resolves.toEqual({ status: "shared", capturedAt: frame.capturedAt });
+      expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(frame.capturedAt);
+    } finally {
+      unmount();
+      notification.resolve();
+      await sharing;
+    }
+  });
+
+  it("drops queued metadata when voice stops even if the old ACK arrives later", async () => {
+    const { result, clients, unmount } = setup([Promise.resolve()]);
+    await act(async () => result.current.toggle());
+    act(() => clients[0].emit({ status: "active", billing: "subscription" }));
+    const notification = deferred();
+    clients[0].notifyScreenContext.mockReturnValue(notification.promise);
+    const signal = new AbortController().signal;
+    const frame: ScreenObservationFrame = {
+      frameId: "frame-1",
+      width: 1280,
+      height: 720,
+      imageDataUrl: "data:image/jpeg;base64,YQ==",
+      capturedAt: "2026-09-05T13:00:00.000Z",
+      source: "Display 1",
+    };
+    await result.current.shareScreenObservation(frame, signal);
+    await result.current.shareScreenObservation(
+      { ...frame, capturedAt: "2026-09-05T13:00:05.000Z" },
+      signal,
+    );
+    act(() => result.current.stop());
+    await act(async () => {
+      notification.resolve();
+      await notification.promise;
+    });
+    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(frame.capturedAt);
+    unmount();
+  });
+
   it("keeps successfully shared images when the voice notification fails", async () => {
     const { result, clients } = setup([Promise.resolve()]);
     await act(async () => result.current.toggle());

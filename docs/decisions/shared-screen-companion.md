@@ -48,6 +48,9 @@ a different provider/thread. See [Codex App Server](https://learn.chatgpt.com/do
 
 If GPT Live is active, a developer-role `thread/realtime/appendText` update tells it
 that image context is available to the main agent and to delegate when needed.
+The capture/delivery finishes without waiting for that metadata acknowledgement.
+Notifications keep at most one RPC in flight and one latest waiting timestamp;
+queued updates are discarded when their sharing lease or voice owner is revoked.
 This update does not contain an image, does not claim GPT Live has seen one, and
 does not issue `response.create`. Actual phrasing and whether it comments remain
 model behavior to assess during the experiment.

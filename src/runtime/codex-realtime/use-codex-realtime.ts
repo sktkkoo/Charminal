@@ -11,6 +11,7 @@ import {
   DEFAULT_CODEX_REALTIME_VOICE,
 } from "./codex-realtime-client";
 import { type CodexQuickChatResponse, CodexThreadTracker } from "./codex-thread-tracker";
+import { ScreenContextNotifications } from "./screen-context-notifications";
 import type { ScreenObservationFrame, ScreenObservationResult } from "./screen-observation";
 
 export interface CodexRealtimeClientLike extends LipSyncSource {
@@ -155,6 +156,7 @@ export function useCodexRealtime({
 }: UseCodexRealtimeOptions): UseCodexRealtimeResult {
   const clientRef = useRef<CodexRealtimeClientLike | null>(null);
   const threadTrackerRef = useRef<CodexThreadTrackerLike | null>(null);
+  const screenNotificationsRef = useRef(new ScreenContextNotifications());
   const fallbackRef = useRef(fallbackLipSyncSource);
   const applyLipSyncSourceRef = useRef(applyLipSyncSource);
   const setFallbackPlaybackEnabledRef = useRef(setFallbackPlaybackEnabled);
@@ -235,6 +237,7 @@ export function useCodexRealtime({
       const client = clientRef.current;
       // stop() 内の同期 idle 通知も stale 扱いにするため、先に所有権を外す。
       clientRef.current = null;
+      screenNotificationsRef.current.reset();
       client?.stop();
       setState({ status: "idle" });
       restoreFallbackPlayback();
@@ -260,6 +263,7 @@ export function useCodexRealtime({
           if (nextState.status === "error") {
             if (!preserveIntentOnFailure) voiceIntentRef.current = false;
             clientRef.current = null;
+            screenNotificationsRef.current.reset();
             client.stop();
             setState(nextState);
             restoreFallbackPlayback();
@@ -271,6 +275,7 @@ export function useCodexRealtime({
             // remote closed 後の次クリックを、新規 start として扱えるよう解放する。
             if (!preserveIntentOnFailure) voiceIntentRef.current = false;
             clientRef.current = null;
+            screenNotificationsRef.current.reset();
             setState(nextState);
             restoreFallbackPlayback();
             restoreFallback();
@@ -314,6 +319,7 @@ export function useCodexRealtime({
         if (clientRef.current !== client) return;
         if (!preserveIntentOnFailure) voiceIntentRef.current = false;
         clientRef.current = null;
+        screenNotificationsRef.current.reset();
         client.stop();
         const message = error instanceof Error ? error.message : String(error);
         console.error("[codex-realtime] start failed", error);
@@ -346,6 +352,7 @@ export function useCodexRealtime({
   }, []);
 
   useEffect(() => {
+    screenNotificationsRef.current.reset();
     threadTrackerRef.current?.stop();
     threadTrackerRef.current = null;
     setScreenThreadId(null);
@@ -371,6 +378,7 @@ export function useCodexRealtime({
     });
     return () => {
       if (threadTrackerRef.current === tracker) threadTrackerRef.current = null;
+      screenNotificationsRef.current.reset();
       tracker.stop();
     };
   }, [available, createThreadTracker, sessionId, start, stopClient]);
@@ -396,6 +404,7 @@ export function useCodexRealtime({
       const client = clientRef.current;
       voiceIntentRef.current = false;
       clientRef.current = null;
+      screenNotificationsRef.current.reset();
       client?.stop();
       restoreFallbackPlayback();
     };
@@ -431,12 +440,21 @@ export function useCodexRealtime({
         throw new Error("Screen sharing stopped.");
       }
       if (result.status === "shared") {
-        // The image is already in main-agent context. A voice reconnect or failed
-        // metadata notification must not stop the independent sharing lease.
-        try {
-          await clientRef.current?.notifyScreenContext?.(frame.capturedAt);
-        } catch {
-          // Voice can learn about subsequent images after it reconnects.
+        // The image is already in main-agent context. Voice metadata ACKs must
+        // not extend capture's busy period or make a later sampling tick miss.
+        const client = clientRef.current;
+        if (client?.notifyScreenContext && client.getStatus() === "active") {
+          screenNotificationsRef.current.enqueue({
+            client,
+            capturedAt: frame.capturedAt,
+            signal,
+            isCurrent: () =>
+              clientRef.current === client &&
+              client.getStatus() === "active" &&
+              threadTrackerRef.current === tracker &&
+              tracker.getCurrentThreadId() === threadId,
+            notify: (capturedAt) => client.notifyScreenContext?.(capturedAt) ?? Promise.resolve(),
+          });
         }
       }
       return result;
