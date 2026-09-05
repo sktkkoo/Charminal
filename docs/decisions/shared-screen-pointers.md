@@ -108,6 +108,7 @@ and a model retry when a pointer overlapped capture:
 | --- | --- | --- |
 | Passive image insertion | `thread/read` then `thread/inject_items` for every image | One injection RPC; selected-owner validation and unload tracking stay in the tracker |
 | Voice availability notice | Capture stayed busy until the metadata RPC acknowledged, up to its 15-second timeout | Image sharing completes at injection acknowledgement; notices are independently coalesced |
+| Voice starts after sharing | Stable images were deduplicated, so a new voice connection could miss every screen notice | The current sharing lease's existing timestamp is replayed on voice connection, without recapture or image reinjection |
 | Slow periodic capture/delivery | Missed ticks waited for the following whole interval | An overdue capture starts when the previous operation settles |
 | Pointer during capture | Error requiring another model/tool round trip | The original call waits on a state-change notification, without UI-thread blocking or polling |
 
@@ -115,6 +116,11 @@ Deterministic tests cover one 80 ms injection round trip, a 40-second slow deliv
 resuming capture at completion instead of the former 60-second tick, and image
 sharing completing while voice notification remains unresolved. These are controlled
 transport/scheduling tests, not measurements of authenticated voice-to-pointer latency.
+
+The late-voice case matters for the normal App configuration, which excludes Codex
+startup context when supplemental persona items are accepted. Those initial items
+do not contain screen-sharing metadata. Replaying the existing availability notice
+removes the wait for a changed image in that case and after a voice-only reconnect.
 
 An isolated macOS AppKit probe measured eight samples of the same native renderer:
 the cold show API took 120.316 ms and seven warm calls took 2.276–4.151 ms. A main-loop

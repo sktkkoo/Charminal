@@ -14,6 +14,7 @@ import type { ScreenObservationFrame } from "./screen-observation";
 import {
   type CodexRealtimeClientFactory,
   type CodexRealtimeClientLike,
+  type CodexThreadTrackerLike,
   useCodexRealtime,
 } from "./use-codex-realtime";
 
@@ -102,6 +103,7 @@ function setup(
       | CodexRealtimePersonaSnapshot
       | Promise<CodexRealtimePersonaSnapshot>;
     readonly onPersonaApplication?: (application: CodexRealtimePersonaApplication) => void;
+    readonly includeStartupContext?: boolean;
     readonly onQuickChatResponse?: (response: {
       requestId: string;
       threadId: string;
@@ -111,6 +113,7 @@ function setup(
   } = {},
 ) {
   const clients: FakeClient[] = [];
+  const startupContexts: Array<boolean | undefined> = [];
   let trackedThreadId: string | null = "thread-1";
   let notifyThreadChange: (threadId: string | null) => void = () => {};
   let notifyQuickChatResponse: (response: {
@@ -134,7 +137,10 @@ function setup(
     onVoiceFallbackForClient,
     getPersonaSnapshotForClient,
     onPersonaApplicationForClient,
+    _personaPromptMode,
+    includeStartupContextForClient,
   ) => {
+    startupContexts.push(includeStartupContextForClient);
     const startResult = starts[clients.length] ?? Promise.resolve();
     const client = new FakeClient(
       sessionId,
@@ -149,6 +155,22 @@ function setup(
     );
     clients.push(client);
     return client;
+  };
+  // Keep the production default's stable factory identity across voice state renders.
+  const createThreadTracker = (
+    _sessionId: string,
+    onCurrentThreadChange: (threadId: string | null) => void,
+    onQuickChatResponse: typeof notifyQuickChatResponse,
+  ): CodexThreadTrackerLike => {
+    notifyThreadChange = onCurrentThreadChange;
+    notifyQuickChatResponse = onQuickChatResponse;
+    return {
+      getCurrentThreadId: () => trackedThreadId,
+      trackQuickChatPrompt,
+      shareScreenObservation,
+      start: async () => {},
+      stop: () => {},
+    };
   };
   const fallback: LipSyncSource = { sampleMouth: () => ({ ...ZERO_MOUTH }) };
   const applyLipSyncSource = vi.fn<(source: LipSyncSource) => void>();
@@ -165,25 +187,18 @@ function setup(
         onVoiceFallback: options.onVoiceFallback,
         getPersonaSnapshot: options.getPersonaSnapshot,
         onPersonaApplication: options.onPersonaApplication,
+        includeStartupContext: options.includeStartupContext,
         onQuickChatResponse: options.onQuickChatResponse,
         createClient,
-        createThreadTracker: (_sessionId, onCurrentThreadChange, onQuickChatResponse) => {
-          notifyThreadChange = onCurrentThreadChange;
-          notifyQuickChatResponse = onQuickChatResponse;
-          return {
-            getCurrentThreadId: () => trackedThreadId,
-            trackQuickChatPrompt,
-            shareScreenObservation,
-            start: async () => {},
-            stop: () => {},
-          };
-        },
+        createThreadTracker,
       }),
     { initialProps: { sessionId: "main", available: true } },
   );
   return {
     ...hook,
     clients,
+    startupContexts,
+    injectScreenObservation: shareScreenObservation,
     fallback,
     applyLipSyncSource,
     setFallbackPlaybackEnabled,
@@ -205,6 +220,99 @@ function setup(
 }
 
 describe("useCodexRealtime", () => {
+  const sharedFrame: ScreenObservationFrame = {
+    frameId: "shared-frame",
+    width: 1280,
+    height: 720,
+    imageDataUrl: "data:image/jpeg;base64,YQ==",
+    capturedAt: "2026-09-05T13:00:00.000Z",
+    source: "Display 1",
+  };
+
+  it("announces an existing shared frame once when Live starts without startup context", async () => {
+    const { result, clients, startupContexts, injectScreenObservation, unmount } = setup(
+      [Promise.resolve()],
+      undefined,
+      undefined,
+      { includeStartupContext: false },
+    );
+    await result.current.shareScreenObservation(sharedFrame, new AbortController().signal);
+    expect(clients).toHaveLength(0);
+    await act(async () => result.current.toggle());
+    expect(startupContexts).toEqual([false]);
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    await act(async () =>
+      clients[0].emit({ status: "active", billing: "subscription", microphoneMuted: true }),
+    );
+    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt);
+    // The original timestamp is replayed; the image is neither recaptured nor reinjected.
+    expect(injectScreenObservation).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it("replays metadata after voice-only reconnect while the same sharing lease remains active", async () => {
+    const { result, clients, injectScreenObservation, unmount } = setup([
+      Promise.resolve(),
+      Promise.resolve(),
+    ]);
+    const sharing = new AbortController();
+    await act(async () => result.current.toggle());
+    act(() => clients[0].emit({ status: "active", billing: "subscription" }));
+    await result.current.shareScreenObservation(sharedFrame, sharing.signal);
+    act(() => result.current.stop());
+    await act(async () => result.current.toggle());
+    await act(async () => clients[1].emit({ status: "active", billing: "subscription" }));
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt);
+    expect(clients[1].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt);
+    expect(injectScreenObservation).toHaveBeenCalledTimes(1);
+    expect(sharing.signal.aborted).toBe(false);
+    unmount();
+  });
+
+  it.each([
+    "lease-abort",
+    "thread-change",
+    "tracker-replacement",
+  ] as const)("does not replay retained metadata after %s", async (change) => {
+    const { result, clients, changeThread, rerender, injectScreenObservation, unmount } = setup([
+      Promise.resolve(),
+    ]);
+    const sharing = new AbortController();
+    await result.current.shareScreenObservation(sharedFrame, sharing.signal);
+    if (change === "lease-abort") sharing.abort();
+    else if (change === "thread-change") act(() => changeThread("thread-2"));
+    else rerender({ sessionId: "replacement-session", available: true });
+    await act(async () => result.current.toggle());
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    expect(clients[0].notifyScreenContext).not.toHaveBeenCalled();
+    expect(injectScreenObservation).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it("sends one notice when activation and image injection complete together", async () => {
+    const { result, clients, injectScreenObservation, unmount } = setup([Promise.resolve()]);
+    const injection = deferred();
+    injectScreenObservation.mockImplementationOnce(async (frame) => {
+      await injection.promise;
+      return { status: "shared", capturedAt: frame.capturedAt };
+    });
+    await act(async () => result.current.toggle());
+    const sharing = result.current.shareScreenObservation(
+      sharedFrame,
+      new AbortController().signal,
+    );
+    await act(async () => {
+      clients[0].emit({ status: "active", billing: "subscription" });
+      injection.resolve();
+      await sharing;
+    });
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt);
+    expect(injectScreenObservation).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
   it("completes image delivery while a voice metadata ACK never resolves", async () => {
     const { result, clients, unmount } = setup([Promise.resolve()]);
     await act(async () => result.current.toggle());

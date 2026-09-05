@@ -44,6 +44,11 @@ export class ScreenContextNotifications {
     this.clearQueued();
   }
 
+  /** Revoke waiting metadata without allowing overlapping RPCs on the same voice client. */
+  cancelPending(): void {
+    this.clearQueued();
+  }
+
   private isCurrent(notification: ScreenContextNotification): boolean {
     return !notification.signal.aborted && notification.isCurrent();
   }

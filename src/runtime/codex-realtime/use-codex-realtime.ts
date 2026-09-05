@@ -48,6 +48,14 @@ export interface CodexThreadTrackerLike {
   cancelScreenObservation?(): void;
 }
 
+interface SharedScreenContext {
+  readonly capturedAt: string;
+  readonly tracker: CodexThreadTrackerLike;
+  readonly threadId: string;
+  readonly signal: AbortSignal;
+  readonly onAbort: () => void;
+}
+
 interface UseCodexRealtimeOptions {
   readonly sessionId: string;
   readonly available: boolean;
@@ -157,6 +165,11 @@ export function useCodexRealtime({
   const clientRef = useRef<CodexRealtimeClientLike | null>(null);
   const threadTrackerRef = useRef<CodexThreadTrackerLike | null>(null);
   const screenNotificationsRef = useRef(new ScreenContextNotifications());
+  const sharedScreenContextRef = useRef<SharedScreenContext | null>(null);
+  const announcedScreenContextRef = useRef<{
+    readonly client: CodexRealtimeClientLike;
+    readonly context: SharedScreenContext;
+  } | null>(null);
   const fallbackRef = useRef(fallbackLipSyncSource);
   const applyLipSyncSourceRef = useRef(applyLipSyncSource);
   const setFallbackPlaybackEnabledRef = useRef(setFallbackPlaybackEnabled);
@@ -184,6 +197,43 @@ export function useCodexRealtime({
   getPersonaSnapshotRef.current = getPersonaSnapshot;
   onPersonaApplicationRef.current = onPersonaApplication;
   onQuickChatResponseRef.current = onQuickChatResponse;
+
+  const clearSharedScreenContext = useCallback(() => {
+    const context = sharedScreenContextRef.current;
+    sharedScreenContextRef.current = null;
+    announcedScreenContextRef.current = null;
+    context?.signal.removeEventListener("abort", context.onAbort);
+    screenNotificationsRef.current.cancelPending();
+  }, []);
+
+  const notifySharedScreenContext = useCallback((client: CodexRealtimeClientLike) => {
+    const context = sharedScreenContextRef.current;
+    if (
+      !context ||
+      context.signal.aborted ||
+      !client.notifyScreenContext ||
+      clientRef.current !== client ||
+      client.getStatus() !== "active" ||
+      threadTrackerRef.current !== context.tracker ||
+      context.tracker.getCurrentThreadId() !== context.threadId
+    )
+      return;
+    const announced = announcedScreenContextRef.current;
+    if (announced?.client === client && announced.context === context) return;
+    announcedScreenContextRef.current = { client, context };
+    screenNotificationsRef.current.enqueue({
+      client,
+      capturedAt: context.capturedAt,
+      signal: context.signal,
+      isCurrent: () =>
+        sharedScreenContextRef.current === context &&
+        clientRef.current === client &&
+        client.getStatus() === "active" &&
+        threadTrackerRef.current === context.tracker &&
+        context.tracker.getCurrentThreadId() === context.threadId,
+      notify: (capturedAt) => client.notifyScreenContext?.(capturedAt) ?? Promise.resolve(),
+    });
+  }, []);
 
   const restoreFallback = useCallback(() => {
     applyLipSyncSourceRef.current(fallbackRef.current);
@@ -286,6 +336,7 @@ export function useCodexRealtime({
           if (nextState.status === "active") {
             preserveIntentOnFailure = false;
             applyLipSyncSourceRef.current(client);
+            notifySharedScreenContext(client);
           }
         },
         stateExpressionCallbacks,
@@ -336,6 +387,7 @@ export function useCodexRealtime({
       stateExpressionCallbacks,
       personaPromptMode,
       includeStartupContext,
+      notifySharedScreenContext,
     ],
   );
 
@@ -352,6 +404,7 @@ export function useCodexRealtime({
   }, []);
 
   useEffect(() => {
+    clearSharedScreenContext();
     screenNotificationsRef.current.reset();
     threadTrackerRef.current?.stop();
     threadTrackerRef.current = null;
@@ -362,6 +415,7 @@ export function useCodexRealtime({
       sessionId,
       (threadId) => {
         if (threadTrackerRef.current !== tracker) return;
+        clearSharedScreenContext();
         setScreenThreadId(threadId);
         if (clientRef.current) stopClient(true);
         if (threadId && voiceIntentRef.current) void start(true);
@@ -378,10 +432,11 @@ export function useCodexRealtime({
     });
     return () => {
       if (threadTrackerRef.current === tracker) threadTrackerRef.current = null;
+      clearSharedScreenContext();
       screenNotificationsRef.current.reset();
       tracker.stop();
     };
-  }, [available, createThreadTracker, sessionId, start, stopClient]);
+  }, [available, clearSharedScreenContext, createThreadTracker, sessionId, start, stopClient]);
 
   useEffect(() => {
     const sessionChanged = sessionIdRef.current !== sessionId;
@@ -404,11 +459,12 @@ export function useCodexRealtime({
       const client = clientRef.current;
       voiceIntentRef.current = false;
       clientRef.current = null;
+      clearSharedScreenContext();
       screenNotificationsRef.current.reset();
       client?.stop();
       restoreFallbackPlayback();
     };
-  }, [restoreFallbackPlayback]);
+  }, [clearSharedScreenContext, restoreFallbackPlayback]);
 
   const getLipSyncSource = useCallback(
     () => (clientRef.current?.getStatus() === "active" ? clientRef.current : fallbackRef.current),
@@ -440,26 +496,29 @@ export function useCodexRealtime({
         throw new Error("Screen sharing stopped.");
       }
       if (result.status === "shared") {
-        // The image is already in main-agent context. Voice metadata ACKs must
-        // not extend capture's busy period or make a later sampling tick miss.
+        // Retain only the timestamp and its sharing owner. Live may start after
+        // this injection; unchanged pixels need no second capture or injection.
+        const previous = sharedScreenContextRef.current;
+        previous?.signal.removeEventListener("abort", previous.onAbort);
+        const context: SharedScreenContext = {
+          capturedAt: frame.capturedAt,
+          tracker,
+          threadId,
+          signal,
+          onAbort: () => {
+            if (sharedScreenContextRef.current === context) clearSharedScreenContext();
+          },
+        };
+        sharedScreenContextRef.current = context;
+        announcedScreenContextRef.current = null;
+        signal.addEventListener("abort", context.onAbort, { once: true });
+        // Voice metadata ACKs must not extend capture's busy period.
         const client = clientRef.current;
-        if (client?.notifyScreenContext && client.getStatus() === "active") {
-          screenNotificationsRef.current.enqueue({
-            client,
-            capturedAt: frame.capturedAt,
-            signal,
-            isCurrent: () =>
-              clientRef.current === client &&
-              client.getStatus() === "active" &&
-              threadTrackerRef.current === tracker &&
-              tracker.getCurrentThreadId() === threadId,
-            notify: (capturedAt) => client.notifyScreenContext?.(capturedAt) ?? Promise.resolve(),
-          });
-        }
+        if (client) notifySharedScreenContext(client);
       }
       return result;
     },
-    [],
+    [clearSharedScreenContext, notifySharedScreenContext],
   );
 
   return {
