@@ -59,7 +59,10 @@ Call `screen_pointer_show` with that object. An arrow uses `kind: "arrow"` and
 only `x`/`y`; omit width and height. `screen_pointer_clear({})` removes the current
 mark without stopping sharing. A tool success acknowledges native display, not
 the correctness of the agent's interpretation. During an in-flight capture the
-show tool asks the agent to retry shortly.
+same tool call waits for native capture completion, then revalidates its frame,
+display and sharing lease before drawing. Clear, Stop or a newer pointer request
+cancels that wait immediately. Its deadline is 16 seconds (the capture timeout of
+15 seconds plus a UI handoff margin); a timeout never acknowledges a shown marker.
 
 ## Coordinate and lifetime contract
 
@@ -95,6 +98,36 @@ show tool asks the agent to retry shortly.
 - The pointer panel is hidden during capture and its native window ID is also
   excluded from the ScreenCaptureKit filter. The still-current, unexpired mark
   is restored after capture. This prevents self-feedback in subsequent images.
+
+## Latency investigation
+
+The initial path contained three avoidable waits before a new image could be used,
+and a model retry when a pointer overlapped capture:
+
+| Stage | Previous behavior | Current behavior |
+| --- | --- | --- |
+| Passive image insertion | `thread/read` then `thread/inject_items` for every image | One injection RPC; selected-owner validation and unload tracking stay in the tracker |
+| Voice availability notice | Capture stayed busy until the metadata RPC acknowledged, up to its 15-second timeout | Image sharing completes at injection acknowledgement; notices are independently coalesced |
+| Slow periodic capture/delivery | Missed ticks waited for the following whole interval | An overdue capture starts when the previous operation settles |
+| Pointer during capture | Error requiring another model/tool round trip | The original call waits on a state-change notification, without UI-thread blocking or polling |
+
+Deterministic tests cover one 80 ms injection round trip, a 40-second slow delivery
+resuming capture at completion instead of the former 60-second tick, and image
+sharing completing while voice notification remains unresolved. These are controlled
+transport/scheduling tests, not measurements of authenticated voice-to-pointer latency.
+
+An isolated macOS AppKit probe measured eight samples of the same native renderer:
+the cold show API took 120.316 ms and seven warm calls took 2.276–4.151 ms. A main-loop
+proxy hop took 0.094–0.527 ms. These are API/CPU timings in an otherwise idle probe,
+not physical display-presentation timestamps or measurements inside a loaded Yorishiro.
+Screen Recording preflight was false for that probe process, so capture timing was
+skipped without requesting permission or saving screen pixels.
+
+The existing Codex V3 protocol still requires Live to delegate actual image grounding
+to the main agent. The installed 0.153.4 schema exposes no verified direct realtime
+image/tool path. No model or provider was changed. Speech-start callback and
+singleflight refresh primitives are prepared, but speech-triggered capture is not
+connected in App; shared images still follow the selected periodic interval.
 
 The panel uses a borderless, nonactivating `NSPanel`, cannot become key/main,
 ignores mouse events, and is configured to join Spaces and fullscreen auxiliary

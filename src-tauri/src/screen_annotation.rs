@@ -7,12 +7,14 @@
 
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use tokio::sync::watch;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -21,6 +23,12 @@ const FRAME_MAX_AGE: Duration = Duration::from_secs(120);
 const FRAME_LIMIT: usize = 4;
 const DEFAULT_DURATION_MS: u64 = 8_000;
 const MAX_DURATION_MS: u64 = 15_000;
+// screen_capture::macos::capture bounds its OS callback at 15 seconds. Allow
+// that existing capture to finish plus its UI-thread handoff, without forcing
+// the model to make a second call merely because capture took a few seconds.
+const POINTER_CAPTURE_WAIT: Duration = Duration::from_secs(16);
+const POINTER_WAIT_EXPIRED: &str =
+    "The screen capture did not finish in time. Inspect a fresh shared image before pointing.";
 #[cfg(not(target_os = "macos"))]
 const UNSUPPORTED: &str = "Screen pointers require macOS 14 or later.";
 
@@ -170,6 +178,7 @@ struct AnnotationState {
     lease: Option<SharingLease>,
     visible: Option<VisibleAnnotation>,
     generation: u64,
+    changes: watch::Sender<u64>,
 }
 
 impl Default for AnnotationState {
@@ -179,6 +188,7 @@ impl Default for AnnotationState {
             lease: None,
             visible: None,
             generation: 0,
+            changes: watch::channel(0).0,
         }
     }
 }
@@ -218,6 +228,37 @@ impl AnnotationState {
     fn clear(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.visible = None;
+        self.changed();
+    }
+
+    fn changed(&self) {
+        self.changes
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    fn expire_visible(&mut self, generation: u64) {
+        if self
+            .visible
+            .as_ref()
+            .is_some_and(|mark| mark.generation == generation)
+        {
+            self.visible = None;
+            // Natural expiry of an older mark must not cancel a newer request
+            // waiting for capture. User clear/stop always advance generation.
+            if self.generation == generation {
+                self.generation = self.generation.wrapping_add(1);
+            }
+            self.changed();
+        }
+    }
+
+    fn finish_capture(&mut self, share_id: &str) -> bool {
+        let Some(lease) = self.lease.as_mut().filter(|lease| lease.id == share_id) else {
+            return false;
+        };
+        lease.capturing = false;
+        self.changed();
+        true
     }
 
     fn end(&mut self, id: &str) -> bool {
@@ -295,10 +336,51 @@ impl AnnotationState {
                 "This shared-screen image is too old. Wait for a fresh shared image.".into(),
             );
         }
-        if lease.capturing {
-            return Err("A screen capture is in progress. Retry the pointer shortly.".into());
-        }
         Ok(lease.geometry)
+    }
+
+    fn reserve_show(
+        &mut self,
+        request: Arc<ScreenPointerRequest>,
+        now: Instant,
+    ) -> Result<PendingShow, String> {
+        let geometry = self.frame_geometry(&request.frame_id, now)?;
+        request.resolve(geometry)?;
+        let share_id = self
+            .lease
+            .as_ref()
+            .ok_or("Screen sharing is stopped.")?
+            .id
+            .clone();
+        self.generation = self.generation.wrapping_add(1);
+        self.changed();
+        Ok(PendingShow {
+            request,
+            share_id,
+            document_id: self.document_id.clone(),
+            geometry,
+            generation: self.generation,
+        })
+    }
+
+    fn pending_geometry(
+        &self,
+        pending: &PendingShow,
+        now: Instant,
+    ) -> Result<(DisplayGeometry, bool), String> {
+        if self.document_id != pending.document_id || self.generation != pending.generation {
+            return Err("This pointer request was cleared or superseded.".into());
+        }
+        let lease = self
+            .lease
+            .as_ref()
+            .filter(|lease| lease.id == pending.share_id)
+            .ok_or("This screen sharing lease has ended.")?;
+        let geometry = self.frame_geometry(&pending.request.frame_id, now)?;
+        if geometry != pending.geometry {
+            return Err("The shared display changed. Start sharing again before pointing.".into());
+        }
+        Ok((geometry, lease.capturing))
     }
 
     fn should_hide(
@@ -311,6 +393,40 @@ impl AnnotationState {
             mark.generation == generation
                 && (now >= mark.expires_at || geometry != Some(mark.geometry))
         })
+    }
+}
+
+#[derive(Clone)]
+struct PendingShow {
+    request: Arc<ScreenPointerRequest>,
+    share_id: String,
+    document_id: String,
+    geometry: DisplayGeometry,
+    generation: u64,
+}
+
+struct ShowLifetime {
+    cancelled: AtomicBool,
+    deadline: Instant,
+}
+
+impl ShowLifetime {
+    fn check(&self, now: Instant) -> Result<(), String> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err("The screen pointer request was cancelled.".into());
+        }
+        if now >= self.deadline {
+            return Err(POINTER_WAIT_EXPIRED.into());
+        }
+        Ok(())
+    }
+}
+
+struct CancelShowOnDrop(Arc<ShowLifetime>);
+
+impl Drop for CancelShowOnDrop {
+    fn drop(&mut self) {
+        self.0.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -481,42 +597,103 @@ pub async fn show(
     app: &AppHandle,
     request: ScreenPointerRequest,
 ) -> Result<ScreenPointerResult, String> {
-    let (result, generation) = on_main(app, move |app| {
-        let managed = app.state::<ScreenAnnotationState>();
-        let mut state = managed
-            .0
-            .lock()
-            .map_err(|_| "Screen pointer state is unavailable.")?;
-        let now = Instant::now();
-        let geometry = state.frame_geometry(&request.frame_id, now)?;
-        if display_geometry(geometry.source_id).ok() != Some(geometry) {
-            state.lease = None;
-            state.clear();
-            hide();
-            return Err("The shared display changed. Start sharing again before pointing.".into());
+    let lifetime = Arc::new(ShowLifetime {
+        cancelled: AtomicBool::new(false),
+        deadline: Instant::now() + POINTER_CAPTURE_WAIT,
+    });
+    // Dropping this future (including timeout) also disarms a callback that was
+    // already queued on the UI thread. It cannot draw a late, abandoned request.
+    let _cancel = CancelShowOnDrop(lifetime.clone());
+    let deadline = tokio::time::Instant::from_std(lifetime.deadline);
+    let work = async {
+        let initial_lifetime = lifetime.clone();
+        let (pending, mut changes, shown) = on_main(app, move |app| {
+            initial_lifetime.check(Instant::now())?;
+            let managed = app.state::<ScreenAnnotationState>();
+            let mut state = managed
+                .0
+                .lock()
+                .map_err(|_| "Screen pointer state is unavailable.")?;
+            let pending = state.reserve_show(Arc::new(request), Instant::now())?;
+            // Subscribe while holding the same lock as the capture check, so a
+            // completion before the async waiter starts cannot be missed.
+            let changes = state.changes.subscribe();
+            let shown = try_show(app, &mut state, &pending, &initial_lifetime)?;
+            Ok((pending, changes, shown))
+        })
+        .await?;
+        if let Some(result) = shown {
+            return Ok(result);
         }
-        let (target, duration_ms) = request.resolve(geometry)?;
-        let generation = state.generation.wrapping_add(1);
-        let mark = VisibleAnnotation {
-            generation,
-            geometry,
-            target,
-            label: request.label,
-            expires_at: now + Duration::from_millis(duration_ms),
-        };
-        draw(&mark)?;
-        state.generation = generation;
-        state.visible = Some(mark);
-        Ok((
-            ScreenPointerResult {
-                status: "shown",
-                frame_id: request.frame_id,
-                duration_ms,
-            },
-            generation,
-        ))
-    })
-    .await?;
+        loop {
+            // Wait in Tokio, never in AppKit and never with the state locked.
+            changes
+                .changed()
+                .await
+                .map_err(|_| "Screen pointer state was closed.".to_string())?;
+            let next = pending.clone();
+            let next_lifetime = lifetime.clone();
+            let shown = on_main(app, move |app| {
+                let managed = app.state::<ScreenAnnotationState>();
+                let mut state = managed
+                    .0
+                    .lock()
+                    .map_err(|_| "Screen pointer state is unavailable.")?;
+                try_show(app, &mut state, &next, &next_lifetime)
+            })
+            .await?;
+            if let Some(result) = shown {
+                return Ok(result);
+            }
+        }
+    };
+    tokio::time::timeout_at(deadline, work)
+        .await
+        .map_err(|_| POINTER_WAIT_EXPIRED.to_string())?
+}
+
+fn try_show(
+    app: &AppHandle,
+    state: &mut AnnotationState,
+    pending: &PendingShow,
+    lifetime: &ShowLifetime,
+) -> Result<Option<ScreenPointerResult>, String> {
+    let now = Instant::now();
+    lifetime.check(now)?;
+    let (geometry, capturing) = state.pending_geometry(pending, now)?;
+    if display_geometry(geometry.source_id).ok() != Some(geometry) {
+        state.lease = None;
+        state.clear();
+        hide();
+        return Err("The shared display changed. Start sharing again before pointing.".into());
+    }
+    if capturing {
+        return Ok(None);
+    }
+    let (target, duration_ms) = pending.request.resolve(geometry)?;
+    lifetime.check(Instant::now())?;
+    let mark = VisibleAnnotation {
+        generation: pending.generation,
+        geometry,
+        target,
+        label: pending.request.label.clone(),
+        // The requested visible lifetime starts when the mark can be drawn,
+        // rather than being consumed while a capture is still in flight.
+        expires_at: Instant::now() + Duration::from_millis(duration_ms),
+    };
+    draw(&mark)?;
+    state.visible = Some(mark);
+    // Start cleanup from the UI action, even if the MCP caller disconnects
+    // immediately after drawing and never receives its result.
+    start_watchdog(app, pending.generation);
+    Ok(Some(ScreenPointerResult {
+        status: "shown",
+        frame_id: pending.request.frame_id.clone(),
+        duration_ms,
+    }))
+}
+
+fn start_watchdog(app: &AppHandle, generation: u64) {
     let handle = app.clone();
     // Each replacement invalidates the old watchdog, so its expiry cannot hide
     // a newer mark. Also clear within 250 ms of disconnect/reconfiguration.
@@ -539,8 +716,10 @@ pub async fn show(
                 if state.should_hide(generation, Instant::now(), geometry) {
                     if geometry != state.lease.as_ref().map(|lease| lease.geometry) {
                         state.lease = None;
+                        state.clear();
+                    } else {
+                        state.expire_visible(generation);
                     }
-                    state.clear();
                     hide();
                     return Ok(false);
                 }
@@ -552,12 +731,11 @@ pub async fn show(
             }
         }
     });
-    Ok(result)
 }
 
 /// Hide annotations throughout capture, so a new/replaced window cannot sneak
-/// into a ScreenCaptureKit filter that was already constructed. A show request
-/// during this brief interval gets a retryable error instead of an inaccurate ack.
+/// into a ScreenCaptureKit filter that was already constructed. Show requests
+/// await a bounded completion notification and only acknowledge an actual draw.
 pub struct CaptureGuard {
     app: AppHandle,
     share_id: String,
@@ -573,18 +751,22 @@ impl Drop for CaptureGuard {
             let Ok(mut state) = managed.0.lock() else {
                 return;
             };
-            let Some(lease) = state.lease.as_mut().filter(|lease| lease.id == share_id) else {
+            if !state.finish_capture(&share_id) {
                 return;
-            };
-            lease.capturing = false;
+            }
             if let Some(mark) = state.visible.as_ref() {
-                if Instant::now() < mark.expires_at
-                    && display_geometry(mark.geometry.source_id).ok() == Some(mark.geometry)
-                    && draw(mark).is_ok()
-                {
+                let generation = mark.generation;
+                let geometry_matches =
+                    display_geometry(mark.geometry.source_id).ok() == Some(mark.geometry);
+                if Instant::now() < mark.expires_at && geometry_matches && draw(mark).is_ok() {
                     return;
                 }
-                state.clear();
+                if geometry_matches {
+                    state.expire_visible(generation);
+                } else {
+                    state.lease = None;
+                    state.clear();
+                }
                 hide();
             }
         });
@@ -617,6 +799,7 @@ pub async fn begin_capture(
             return Err("A screen capture is already in progress.".into());
         }
         lease.capturing = true;
+        state.changed();
         hide();
         Ok(geometry)
     })
@@ -840,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn captures_are_bounded_and_cannot_point_during_capture() {
+    fn captures_are_bounded_and_pointer_requests_wait_during_capture() {
         let now = Instant::now();
         let mut state = AnnotationState::default();
         state.begin("lease".into(), geometry());
@@ -864,10 +1047,122 @@ mod tests {
             .id
             .clone();
         state.lease.as_mut().unwrap().capturing = true;
+        let mut request = request(ScreenPointerKind::Arrow, 0.5, 0.5);
+        request.frame_id = latest;
+        let pending = state.reserve_show(Arc::new(request), now).unwrap();
+        assert_eq!(
+            state.pending_geometry(&pending, now).unwrap(),
+            (geometry(), true)
+        );
+        assert!(state.visible.is_none());
+        assert!(state.finish_capture("lease"));
+        assert_eq!(
+            state.pending_geometry(&pending, now).unwrap(),
+            (geometry(), false)
+        );
+    }
+
+    fn waiting_pointer(now: Instant) -> (AnnotationState, PendingShow) {
+        let mut state = AnnotationState::default();
+        state.begin("lease".into(), geometry());
+        let frame = state
+            .register("lease", geometry(), 1, 2560, 1440, now)
+            .unwrap();
+        state.lease.as_mut().unwrap().capturing = true;
+        let mut request = request(ScreenPointerKind::Arrow, 0.5, 0.5);
+        request.frame_id = frame;
+        let pending = state.reserve_show(Arc::new(request), now).unwrap();
+        (state, pending)
+    }
+
+    #[tokio::test]
+    async fn capture_completion_before_await_is_not_lost_and_old_lease_cannot_release_wait() {
+        let now = Instant::now();
+        let (mut state, pending) = waiting_pointer(now);
+        let mut changes = state.changes.subscribe();
+        assert!(!state.finish_capture("old-lease"));
+        assert!(!changes.has_changed().unwrap());
+        assert!(state.finish_capture("lease"));
+        tokio::time::timeout(Duration::from_millis(100), changes.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!state.pending_geometry(&pending, now).unwrap().1);
+    }
+
+    #[test]
+    fn clear_stop_reload_and_replacement_cancel_waiting_requests() {
+        let now = Instant::now();
+        for operation in 0..5 {
+            let (mut state, pending) = waiting_pointer(now);
+            let changes = state.changes.subscribe();
+            match operation {
+                0 => state.clear(),
+                1 => {
+                    state.end("lease");
+                }
+                2 => state.reload(),
+                3 => state.begin("replacement-lease".into(), geometry()),
+                _ => {
+                    let replacement = state.reserve_show(pending.request.clone(), now).unwrap();
+                    assert!(state.pending_geometry(&replacement, now).is_ok());
+                }
+            }
+            assert!(changes.has_changed().unwrap());
+            assert!(state.pending_geometry(&pending, now).is_err());
+        }
+    }
+
+    #[test]
+    fn pending_request_revalidates_frame_age_eviction_and_display_geometry() {
+        let now = Instant::now();
+        let (mut state, pending) = waiting_pointer(now);
         assert!(state
-            .frame_geometry(&latest, now)
-            .unwrap_err()
-            .contains("progress"));
+            .pending_geometry(&pending, now + FRAME_MAX_AGE + Duration::from_millis(1))
+            .is_err());
+        state.lease.as_mut().unwrap().geometry.x += 1.0;
+        assert!(state.pending_geometry(&pending, now).is_err());
+        state.lease.as_mut().unwrap().geometry = geometry();
+        for fingerprint in 2..=5 {
+            state
+                .register("lease", geometry(), fingerprint, 2560, 1440, now)
+                .unwrap();
+        }
+        assert!(state.pending_geometry(&pending, now).is_err());
+    }
+
+    #[test]
+    fn older_mark_expiry_does_not_cancel_a_newer_waiting_request() {
+        let now = Instant::now();
+        let (mut state, pending) = waiting_pointer(now);
+        let old_generation = pending.generation.wrapping_sub(1);
+        state.visible = Some(VisibleAnnotation {
+            generation: old_generation,
+            geometry: geometry(),
+            target: AnnotationTarget::Arrow { x: 1.0, y: 2.0 },
+            label: None,
+            expires_at: now,
+        });
+        state.expire_visible(old_generation);
+        assert!(state.visible.is_none());
+        assert!(state.pending_geometry(&pending, now).is_ok());
+        state.clear();
+        assert!(state.pending_geometry(&pending, now).is_err());
+    }
+
+    #[test]
+    fn timeout_and_caller_cancellation_disarm_queued_ui_actions() {
+        let now = Instant::now();
+        let lifetime = Arc::new(ShowLifetime {
+            cancelled: AtomicBool::new(false),
+            deadline: now + POINTER_CAPTURE_WAIT,
+        });
+        assert!(lifetime.check(now).is_ok());
+        assert!(lifetime.check(now + Duration::from_secs(3)).is_ok());
+        assert!(lifetime.check(now + POINTER_CAPTURE_WAIT).is_err());
+        let queued_callback_lifetime = lifetime.clone();
+        drop(CancelShowOnDrop(lifetime));
+        assert!(queued_callback_lifetime.check(now).is_err());
     }
 
     #[test]
