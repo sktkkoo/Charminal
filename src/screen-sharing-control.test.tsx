@@ -16,6 +16,7 @@ function props(): ScreenSharingControlProps {
     onSourceChange: vi.fn(),
     onStart: vi.fn(),
     onStop: vi.fn(),
+    onClearAnnotations: vi.fn(),
     onRefreshSources: vi.fn(),
     language: "ja",
   };
@@ -45,5 +46,16 @@ describe("screen sharing control", () => {
     fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
     expect(p.onStop).toHaveBeenCalledTimes(1);
     vi.unstubAllGlobals();
+  });
+
+  it("clears markers while sharing continues and can open separate controls", () => {
+    const p = { ...props(), active: true, busy: true, onOpenAuxiliary: vi.fn() };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "画面共有中" }));
+    fireEvent.click(screen.getByRole("button", { name: "画面の目印を消す" }));
+    expect(p.onClearAnnotations).toHaveBeenCalledTimes(1);
+    expect(p.onStop).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "画面共有を別ウィンドウで開く" }));
+    expect(p.onOpenAuxiliary).toHaveBeenCalledTimes(1);
   });
 });

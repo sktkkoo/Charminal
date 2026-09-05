@@ -5,6 +5,7 @@
 //! permission. Frames are bounded JPEGs kept in memory and are never logged or saved.
 
 use serde::Serialize;
+use tauri::Manager;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +20,7 @@ pub struct ScreenCaptureSource {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenCaptureFrame {
+    pub frame_id: String,
     pub source_id: u32,
     pub source_name: String,
     pub captured_at: u64,
@@ -75,22 +77,27 @@ pub async fn screen_capture_request_permission(
 pub async fn screen_capture_frame(
     window: tauri::WebviewWindow,
     source_id: u32,
+    share_id: String,
 ) -> Result<ScreenCaptureFrame, String> {
     require_host(&window)?;
+    let guard =
+        crate::screen_annotation::begin_capture(window.app_handle(), share_id, source_id).await?;
     #[cfg(target_os = "macos")]
-    return macos::capture(source_id).await;
+    let mut frame = macos::capture(source_id).await?;
     #[cfg(not(target_os = "macos"))]
-    {
-        let _ = source_id;
-        Err(UNSUPPORTED.into())
-    }
+    let mut frame = unsupported_capture().await?;
+    frame.frame_id = crate::screen_annotation::register_frame(&guard, &frame).await?;
+    Ok(frame)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(not(target_os = "macos"))]
+async fn unsupported_capture() -> Result<ScreenCaptureFrame, String> {
+    Err(UNSUPPORTED.into())
+}
+
 const MAX_IMAGE_EDGE: usize = 2560;
 
-#[cfg(any(target_os = "macos", test))]
-fn bounded_dimensions(width: usize, height: usize) -> Result<(usize, usize), String> {
+pub(crate) fn bounded_dimensions(width: usize, height: usize) -> Result<(usize, usize), String> {
     if width == 0 || height == 0 {
         return Err("The selected display has no visible area.".into());
     }
@@ -318,11 +325,29 @@ mod macos {
                 "The selected display is no longer available. Choose a display again.".into(),
             );
         }
-        let empty_windows = NSArray::<AnyObject>::new();
+        // The host also hides the panel for the entire capture interval. Exclude
+        // its stable native window ID as defense against capture self-feedback.
+        let mut excluded = Vec::new();
+        if let Some(overlay_id) = crate::screen_annotation::window_id() {
+            let windows: *mut AnyObject = msg_send![content, windows];
+            if !windows.is_null() {
+                let count: usize = msg_send![windows, count];
+                for index in 0..count {
+                    let window: *mut AnyObject = msg_send![windows, objectAtIndex: index];
+                    let id: u32 = msg_send![window, windowID];
+                    if id == overlay_id {
+                        if let Some(window) = Retained::retain(window) {
+                            excluded.push(window);
+                        }
+                    }
+                }
+            }
+        }
+        let excluded_windows = NSArray::from_retained_slice(&excluded);
         let filter: Option<Retained<AnyObject>> = msg_send![
             msg_send![sc_class(c"SCContentFilter")?, alloc],
             initWithDisplay: selected,
-            excludingWindows: &*empty_windows,
+            excludingWindows: &*excluded_windows,
         ];
         let filter =
             filter.ok_or_else(|| "Could not configure the selected display.".to_string())?;
@@ -412,6 +437,7 @@ mod macos {
                     .encode(std::slice::from_raw_parts(bytes, length))
             );
             Ok(ScreenCaptureFrame {
+                frame_id: String::new(),
                 source_id: source.id,
                 source_name: source.name.clone(),
                 captured_at,

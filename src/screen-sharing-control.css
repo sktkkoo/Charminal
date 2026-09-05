@@ -251,6 +251,13 @@
   color: var(--yorishiro-fg, #e8ebe7);
 }
 
+.screen-sharing-clear {
+  margin-bottom: 8px;
+  background: transparent;
+  color: var(--yorishiro-fg, #e8ebe7);
+  font-weight: 400;
+}
+
 .screen-sharing-action:hover:not(:disabled) {
   filter: brightness(1.12);
 }

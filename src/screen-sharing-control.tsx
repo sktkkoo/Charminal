@@ -1,4 +1,4 @@
-import { LoaderCircle, MonitorUp, RefreshCw, X } from "lucide-react";
+import { ExternalLink, LoaderCircle, MonitorUp, RefreshCw, X } from "lucide-react";
 import { type CSSProperties, useEffect, useId, useRef, useState } from "react";
 import "./screen-sharing-control.css";
 
@@ -15,7 +15,9 @@ export interface ScreenSharingControlProps {
   readonly onSourceChange: (id: number) => void;
   readonly onStart: () => void;
   readonly onStop: () => void;
+  readonly onClearAnnotations: () => void;
   readonly onRefreshSources: () => void;
+  readonly onOpenAuxiliary?: () => void;
   readonly language?: string;
 }
 
@@ -24,8 +26,9 @@ const strings = {
     title: "Screen sharing",
     activeTitle: "Screen sharing on",
     close: "Close screen sharing settings",
+    openAuxiliary: "Open screen sharing in a separate window",
     description:
-      "Share the selected display with your main agent. Ask about the screen to have it inspect the image.",
+      "Share the selected display with your main agent. Ask about the screen to have it inspect the image and point to the parts you discuss.",
     display: "Display",
     chooseDisplay: "Choose a display",
     noDisplays: "No displays available",
@@ -43,13 +46,15 @@ const strings = {
     cancel: "Cancel",
     start: "Start sharing",
     stop: "Stop sharing",
+    clearAnnotations: "Clear screen markers",
   },
   ja: {
     title: "画面共有",
     activeTitle: "画面共有中",
     close: "画面共有の設定を閉じる",
+    openAuxiliary: "画面共有を別ウィンドウで開く",
     description:
-      "選択した画面をメインエージェントに共有します。画面について話しかけると、画像を参照します。",
+      "選択した画面をメインエージェントに共有します。画面について話しかけると、画像を確認し、話題の場所を一時的な目印で示せます。",
     display: "共有する画面",
     chooseDisplay: "画面を選択",
     noDisplays: "共有できる画面がありません",
@@ -67,6 +72,7 @@ const strings = {
     cancel: "キャンセル",
     start: "共有を開始",
     stop: "共有を停止",
+    clearAnnotations: "画面の目印を消す",
   },
 } as const;
 
@@ -84,7 +90,9 @@ export function ScreenSharingControl({
   onSourceChange,
   onStart,
   onStop,
+  onClearAnnotations,
   onRefreshSources,
+  onOpenAuxiliary,
   language = "en",
 }: ScreenSharingControlProps) {
   const [open, setOpen] = useState(false);
@@ -198,6 +206,17 @@ export function ScreenSharingControl({
             <span className="screen-sharing-badge" data-active={active}>
               {active ? labels.on : labels.off}
             </span>
+            {onOpenAuxiliary ? (
+              <button
+                type="button"
+                className="screen-sharing-icon-button"
+                aria-label={labels.openAuxiliary}
+                title={labels.openAuxiliary}
+                onClick={onOpenAuxiliary}
+              >
+                <ExternalLink size={14} aria-hidden="true" />
+              </button>
+            ) : null}
             <button
               ref={closeRef}
               type="button"
@@ -294,6 +313,15 @@ export function ScreenSharingControl({
               )}
             </div>
           )}
+          {active ? (
+            <button
+              type="button"
+              className="screen-sharing-action screen-sharing-clear"
+              onClick={onClearAnnotations}
+            >
+              {labels.clearAnnotations}
+            </button>
+          ) : null}
           <button
             type="button"
             className="screen-sharing-action"

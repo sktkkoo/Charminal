@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScreenObservationTransport } from "./screen-observation";
 
 const frame = {
+  frameId: "frame-1",
+  width: 2560,
+  height: 1440,
   imageDataUrl: "data:image/jpeg;base64,YQ==",
   capturedAt: "2026-09-05T13:00:00.000Z",
   source: "Display 1",
@@ -17,6 +20,41 @@ const loaded = (status = "idle", id = "main") => ({ thread: { id, status: { type
 afterEach(() => vi.useRealTimers());
 
 describe("screen observation transport", () => {
+  it("injects the exact native frame reference and top-left image coordinate instructions", async () => {
+    const request = vi.fn(async (method: string, _params: object) =>
+      method === "thread/read" ? loaded() : {},
+    );
+    const transport = new ScreenObservationTransport({ request, getThreadId: () => "main" });
+    await transport.observe(frame);
+    const injection = request.mock.calls[1][1] as {
+      items: Array<{ content: Array<{ text?: string }> }>;
+    };
+    const text = injection.items[0].content[0].text;
+    expect(text).toContain('Frame reference: "frame-1"');
+    expect(text).toContain("2560 x 1440 pixels");
+    expect(text).toContain("screen_pointer_show");
+    expect(text).toContain("normalized 0..1 from the screenshot TOP LEFT");
+    expect(text).toContain("width/height must be positive and fit within the image");
+    expect(text).toContain("screen_pointer_clear({})");
+    expect(text).toContain("Only say it is displayed after the tool confirms success");
+    expect(text).toContain("Do not initiate work, use tools");
+  });
+
+  it.each([
+    { frameId: "" },
+    { frameId: "x".repeat(129) },
+    { width: 0 },
+    { width: Number.NaN },
+    { height: -1 },
+    { height: 1.5 },
+  ])("rejects unusable native image metadata %j before contacting the agent", async (metadata) => {
+    const request = vi.fn();
+    const transport = new ScreenObservationTransport({ request, getThreadId: () => "main" });
+    await expect(transport.observe({ ...frame, ...metadata })).rejects.toThrow(
+      "Invalid screen capture",
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
   it.each([
     "idle",
     "active",

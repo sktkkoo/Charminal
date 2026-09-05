@@ -5,6 +5,7 @@ mod journal;
 mod mcp;
 mod pty;
 mod realtime_bridge;
+mod screen_annotation;
 mod screen_capture;
 mod sessions;
 mod tts;
@@ -3857,7 +3858,24 @@ pub fn run() {
         .manage(WatcherState::new())
         .manage(tts::TtsState::new())
         .manage(mcp::McpServerStatus::default())
+        .manage(screen_annotation::ScreenAnnotationState::default())
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main"
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+            {
+                screen_annotation::document_reloaded(webview.app_handle());
+            }
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                screen_annotation::shutdown(window.app_handle());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            screen_annotation::screen_annotation_document,
+            screen_annotation::screen_annotation_begin,
+            screen_annotation::screen_annotation_end,
+            screen_annotation::screen_annotation_clear,
             screen_capture::screen_capture_list_sources,
             screen_capture::screen_capture_request_permission,
             screen_capture::screen_capture_frame,
@@ -3978,6 +3996,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
+                screen_annotation::shutdown(app);
                 // 全 PTY session と codex app-server sidecar を明示的に teardown する。
                 // managed state の Drop は process exit では走らない（issue #109）。
                 let registry: State<'_, Arc<SessionRegistry>> = app.state();

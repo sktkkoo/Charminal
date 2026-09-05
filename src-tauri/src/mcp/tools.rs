@@ -249,6 +249,10 @@ pub struct PomodoroStatusRequest {}
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AppScreenshotRequest {}
 
+/// Remove the current shared-display reference mark; does not stop sharing.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScreenPointerClearRequest {}
+
 /// `scene_activate` の引数。
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SceneActivateRequest {
@@ -1200,6 +1204,38 @@ impl Yorishiro {
         crate::mcp::screenshot::capture_webview_screenshot(&self.app_handle).await
     }
 
+    /// A host-owned, click-through native mark on the explicitly shared display.
+    #[tool(
+        description = "Point at a place you are explaining on the user's shared display, above external apps. First inspect the shared-screen image and use its exact frameId. kind=arrow points its tip at (x,y); kind=rect outlines (x,y,width,height). All coordinates are normalized 0..1 from the IMAGE TOP LEFT, not app/CSS/global coordinates. Optional single-line label (80 characters); durationMs defaults to 8000, range 500..15000. Replaces the previous mark, never clicks or edits. Requires active sharing and a recent matching frame; expired/stopped/changed displays are rejected. During capture, retry shortly. Say the mark is displayed only after this tool succeeds. The mark identifies your reference, not measured model attention. Images may be stale; ask for updated context when the app content moved."
+    )]
+    async fn screen_pointer_show(
+        &self,
+        Parameters(request): Parameters<crate::screen_annotation::ScreenPointerRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = crate::screen_annotation::show(&self.app_handle, request)
+            .await
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&result)
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
+        description = "Clear the resident's shared-display arrow or outline immediately. Keeps screen sharing active. Also available to the user in the sharing controls; marks otherwise expire automatically."
+    )]
+    async fn screen_pointer_clear(
+        &self,
+        _params: Parameters<ScreenPointerClearRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::screen_annotation::clear(&self.app_handle)
+            .await
+            .map_err(|error| McpError::internal_error(error, None))?;
+        Ok(CallToolResult::success(vec![Content::text(
+            "{\"status\":\"cleared\"}",
+        )]))
+    }
+
     /// attention_light_cue: 部屋の attention light を一度だけ 2-pulse させる（気づいてほしい時の合図 / 動作確認用）。
     #[tool(
         description = "Pulse the room's attention light once (two soft pulses). Use when the resident wants the user to notice something, or to verify the light works. Respects the user's Light alert setting; rate-limited."
@@ -1229,6 +1265,7 @@ const SERVER_INSTRUCTIONS: &str = concat!(
                 "- 照明・カメラ等のパラメータ確認 → controls_get（scene pack 依存のパスを確認）\n",
                 "- 照明・カメラ等を変更 → controls_transition（controls_set / controls_set_many は使わず、必ず controls_transition を使う）\n",
                 "- スクリーンショットを撮る → app_screenshot（ターミナル UI 込みのウィンドウ全体。macOS のみ。初回は「画面収録」の許可が必要）\n",
+                "- 共有画面で説明対象を指し示す → screen_pointer_show（共有画像を実際に確認し、その frameId と画像左上原点の 0..1 座標で矢印・囲みを出す。外部アプリ上にも表示。消す → screen_pointer_clear。内部の注意を可視化したものではなく、説明対象の印。画像が古い・対象が動いた場合は最新の共有画像を確認する）\n",
                 "- 表情だけ変える → body_expression_set\n",
                 "- ポーズ・ジェスチャーだけ → body_animation_play\n",
                 "- pack の一覧・有効化・無効化 → list_packs / enable_pack / disable_pack\n",
@@ -1373,6 +1410,8 @@ mod tests {
             SERVER_INSTRUCTIONS.contains("app_screenshot"),
             "server instructions must mention app_screenshot"
         );
+        assert!(SERVER_INSTRUCTIONS.contains("screen_pointer_show"));
+        assert!(SERVER_INSTRUCTIONS.contains("screen_pointer_clear"));
     }
 
     #[test]

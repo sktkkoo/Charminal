@@ -211,6 +211,9 @@ describe("useCodexRealtime", () => {
     act(() => clients[0].emit({ status: "active", billing: "subscription" }));
     clients[0].notifyScreenContext.mockRejectedValueOnce(new Error("Voice disconnected"));
     const frame = {
+      frameId: "frame-1",
+      width: 1280,
+      height: 720,
       imageDataUrl: "data:image/jpeg;base64,YQ==",
       capturedAt: "2026-09-05T13:00:00.000Z",
       source: "Display 1",

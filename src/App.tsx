@@ -5878,6 +5878,7 @@ function App() {
               onSourceChange={screenSharing.setSourceId}
               onStart={() => void screenSharing.start()}
               onStop={screenSharing.stop}
+              onClearAnnotations={() => void screenSharing.clearAnnotations()}
               onRefreshSources={() => void screenSharing.refreshSources()}
             />
           ) : null

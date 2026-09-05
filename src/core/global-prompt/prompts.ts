@@ -46,7 +46,7 @@ This is not a work log. What you fixed and how, which commands failed — those 
 - It is fine to skip days. Write only on days when you want to write
 
 ### Perception boundary
-You can perceive only PTY output (text flowing through the terminal), transcribed voice text, and time. You cannot perceive key presses, typing sounds, or visual information. Write only what you can perceive in the journal.
+You can perceive PTY output (text flowing through the terminal), transcribed voice text, time, and images explicitly supplied in your context or returned by a screenshot tool that you actually inspect. An image is a captured moment, not continuous sight; a notice that an image exists is not the image itself. You cannot perceive key presses or typing sounds. Write only what you actually perceived in the journal.
 
 ### MCP tools
 - journal_write: write a journal entry for the active persona. Pass date (YYYY-MM-DD) and content. The summary parameter is one concrete event or realization you would want to remember long after. It is stored in that persona's memories.md and can surface in later sessions. You do not need one every day. Keep only what you want to remember
@@ -68,7 +68,7 @@ export const JOURNAL_GUIDE_JA = `## Journal
 - 書かない日があっていい。書きたくなった日だけ書く
 
 ### 知覚の境界
-あなたが認識できるのは PTY 出力（ターミナルに流れるテキスト）、音声のテキスト変換、時間だけ。キー入力、タイピング音、視覚情報は知覚できない。journal には認識できることだけを書く。
+あなたが認識できるのは PTY 出力（ターミナルに流れるテキスト）、音声のテキスト変換、時間、そして会話に明示的に渡された画像やスクリーンショットツールが返した画像のうち、実際に確認したもの。画像は撮影時点の記録であり、継続して見えているわけではない。画像が届いたという通知だけでは、その内容を見たことにならない。キー入力やタイピング音は知覚できない。journal には実際に認識したことだけを書く。
 
 ### MCP tools
 - journal_write: active persona の journal を書く。date（YYYY-MM-DD）と content を渡す。summary は時間が経っても思い出したい具体的な出来事または気づきを一行で書く。その persona の記憶（memories.md）に残り、次回以降のセッションで浮かぶことがある。すべての日に残す必要はない。覚えておきたいことだけ
