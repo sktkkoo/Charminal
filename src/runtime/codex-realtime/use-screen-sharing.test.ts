@@ -124,6 +124,107 @@ describe("useScreenSharing", () => {
     expect(result.current.busy).toBe(false);
   });
 
+  it("allows an explicit refresh only after opt-in setup and joins an in-flight capture", async () => {
+    const { result, share } = setup();
+    await act(async () => result.current.captureNow());
+    expect(screenCaptureFrame).not.toHaveBeenCalled();
+    const permission = deferred<boolean>();
+    vi.mocked(screenCaptureRequestPermission).mockReturnValueOnce(permission.promise);
+    await act(async () => result.current.refreshSources());
+    let starting!: Promise<void>;
+    await act(async () => {
+      starting = result.current.start();
+      await result.current.captureNow();
+    });
+    expect(screenCaptureFrame).not.toHaveBeenCalled();
+    await act(async () => {
+      permission.resolve(true);
+      await starting;
+    });
+    expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    const pending = deferred<typeof frame>();
+    vi.mocked(screenCaptureFrame).mockReturnValueOnce(pending.promise);
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    await act(async () => {
+      first = result.current.captureNow();
+      second = result.current.captureNow();
+    });
+    expect(first).toBe(second);
+    expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      pending.resolve({ ...frame, frameId: "refreshed", dataUrl: "data:image/jpeg;base64,Yg==" });
+      await first;
+    });
+    expect(share).toHaveBeenCalledTimes(2);
+    act(() => result.current.stop());
+    await act(async () => result.current.captureNow());
+    expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes overdue periodic capture immediately after a slow delivery", async () => {
+    const { result, share } = setup();
+    const delivery = deferred<{ status: "shared"; capturedAt: string }>();
+    share.mockReturnValueOnce(delivery.promise);
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.start());
+    await act(async () => vi.advanceTimersByTimeAsync(40_000));
+    expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      delivery.resolve({ status: "shared", capturedAt: new Date(frame.capturedAt).toISOString() });
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    // The previous setInterval loop would discard the 30s tick and wait until
+    // 60s. A due capture can now begin at 40s without overlapping delivery.
+    expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts a replacement lease's first capture as soon as the old capture settles", async () => {
+    const pending = deferred<typeof frame>();
+    vi.mocked(screenCaptureFrame).mockReturnValueOnce(pending.promise);
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.start());
+    act(() => result.current.stop());
+    await act(async () => result.current.start());
+    expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve(frame));
+    expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
+    expect(share).toHaveBeenCalledTimes(1);
+    expect(result.current.active).toBe(true);
+  });
+
+  it("reports stage durations without sending captured content to diagnostics", async () => {
+    const capture = deferred<typeof frame>();
+    vi.mocked(screenCaptureFrame).mockReturnValueOnce(capture.promise);
+    const delivery = deferred<{ status: "shared"; capturedAt: string }>();
+    const onTiming = vi.fn();
+    const { result } = renderHook(() =>
+      useScreenSharing({
+        available: true,
+        ownerKey: "private-owner",
+        share: () => delivery.promise,
+        onTiming,
+      }),
+    );
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.start());
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    await act(async () => capture.resolve(frame));
+    await act(async () => vi.advanceTimersByTimeAsync(80));
+    await act(async () =>
+      delivery.resolve({ status: "shared", capturedAt: new Date(frame.capturedAt).toISOString() }),
+    );
+    expect(onTiming).toHaveBeenCalledExactlyOnceWith({
+      reason: "periodic",
+      captureMs: 100,
+      contextMs: 80,
+      totalMs: 180,
+      outcome: "shared",
+    });
+  });
+
   it("supports five-second sampling, deduplicates pixels, and stops on owner change", async () => {
     const { result, rerender, share } = setup();
     await act(async () => {

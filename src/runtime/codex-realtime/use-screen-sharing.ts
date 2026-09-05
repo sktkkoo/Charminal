@@ -16,6 +16,16 @@ interface Options {
   /** Changes on main-agent/thread replacement; voice reconnection keeps this lease. */
   ownerKey: string;
   share: (frame: ScreenObservationFrame, signal: AbortSignal) => Promise<ScreenObservationResult>;
+  /** Durations only; never receives pixels, labels, thread IDs, or lease tokens. */
+  onTiming?: (timing: ScreenSharingTiming) => void;
+}
+
+export interface ScreenSharingTiming {
+  readonly reason: "periodic" | "speech";
+  readonly captureMs: number;
+  readonly contextMs: number;
+  readonly totalMs: number;
+  readonly outcome: "shared" | "unchanged" | "busy" | "cancelled" | "failed";
 }
 
 interface SharingLease {
@@ -24,6 +34,7 @@ interface SharingLease {
   readonly sourceId: number;
   readonly ownerKey: string;
   readonly controller: AbortController;
+  ready: boolean;
 }
 
 // A cancelled native begin may still complete. Serialize begins across hook
@@ -47,7 +58,7 @@ function getAnnotationDocument(): Promise<string> {
 }
 
 /** Host-owned opt-in sampling; no queued frames, no capture after a stale permission grant. */
-export function useScreenSharing({ available, ownerKey, share }: Options) {
+export function useScreenSharing({ available, ownerKey, share, onTiming }: Options) {
   const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
   const [sourceId, setSourceId] = useState<number | null>(null);
   const [intervalSeconds, setIntervalSeconds] = useState(30);
@@ -56,11 +67,11 @@ export function useScreenSharing({ available, ownerKey, share }: Options) {
   const [error, setError] = useState<string>();
   const [lastObservedAt, setLastObservedAt] = useState<number>();
   const owner = useRef<SharingLease | null>(null);
-  const inFlight = useRef(false);
+  const inFlight = useRef<{ lease: SharingLease; promise: Promise<void> } | null>(null);
   const lastImage = useRef<{ dataUrl: string; frameId: string } | null>(null);
   const lastCaptureStartedAt = useRef<number | null>(null);
-  const latest = useRef({ available, ownerKey, share });
-  latest.current = { available, ownerKey, share };
+  const latest = useRef({ available, ownerKey, share, onTiming, intervalSeconds });
+  latest.current = { available, ownerKey, share, onTiming, intervalSeconds };
 
   const stop = useCallback(() => {
     const lease = owner.current;
@@ -117,6 +128,7 @@ export function useScreenSharing({ available, ownerKey, share }: Options) {
       sourceId,
       ownerKey: latest.current.ownerKey,
       controller: new AbortController(),
+      ready: false,
     };
     owner.current = lease;
     const isCurrent = () =>
@@ -149,6 +161,7 @@ export function useScreenSharing({ available, ownerKey, share }: Options) {
       annotationBeginQueue = beginning.catch(() => {});
       await beginning;
       if (!isCurrent()) return;
+      lease.ready = true;
       setActive(true);
     } catch (failure) {
       if (!isCurrent()) return;
@@ -159,70 +172,127 @@ export function useScreenSharing({ available, ownerKey, share }: Options) {
     }
   }, [sourceId, stop]);
 
-  useEffect(() => {
-    const lease = owner.current;
-    if (!active || sourceId === null || !lease) return;
-    const key = ownerKey;
-    const isCurrent = () =>
-      owner.current === lease &&
-      !lease.controller.signal.aborted &&
-      latest.current.ownerKey === key &&
-      latest.current.available;
-    const tick = async () => {
-      if (!isCurrent() || inFlight.current) return;
+  const capture = useCallback(
+    function requestCapture(reason: ScreenSharingTiming["reason"]): Promise<void> {
+      const lease = owner.current;
+      if (!lease?.ready) return Promise.resolve();
+      const isCurrent = () =>
+        owner.current === lease &&
+        !lease.controller.signal.aborted &&
+        latest.current.ownerKey === lease.ownerKey &&
+        latest.current.available;
+      if (!isCurrent()) return Promise.resolve();
+      const pending = inFlight.current;
+      if (pending) {
+        // Speech joins an existing capture. A new lease waits for the previous
+        // native operation to settle, then starts immediately instead of losing
+        // its first capture until the next periodic tick.
+        return pending.lease === lease
+          ? pending.promise
+          : pending.promise.then(() => {
+              if (isCurrent()) return requestCapture(reason);
+            });
+      }
       // Moving the slider reschedules this effect. It must not capture at every
-      // slider step (which can otherwise send dozens of images per second).
+      // slider step. Speech explicitly bypasses this periodic sampling limit so
+      // the screenshot can reach Codex while the user is still asking a question.
       const now = Date.now();
       if (
+        reason === "periodic" &&
         lastCaptureStartedAt.current !== null &&
-        now - lastCaptureStartedAt.current < intervalSeconds * 1000
+        now - lastCaptureStartedAt.current < latest.current.intervalSeconds * 1000
       )
-        return;
+        return Promise.resolve();
       lastCaptureStartedAt.current = now;
-      inFlight.current = true;
+      const run = { lease, promise: Promise.resolve() };
+      inFlight.current = run;
       setBusy(true);
-      try {
-        const frame = await screenCaptureFrame(lease.sourceId, lease.shareId);
-        if (!isCurrent()) return;
-        if (frame.sourceId !== lease.sourceId) {
-          throw new Error("The shared display changed. Start sharing the selected display again.");
+      run.promise = (async () => {
+        const started = performance.now();
+        let captured: number | null = null;
+        let outcome: ScreenSharingTiming["outcome"] = "cancelled";
+        try {
+          const frame = await screenCaptureFrame(lease.sourceId, lease.shareId);
+          captured = performance.now();
+          if (!isCurrent()) return;
+          if (frame.sourceId !== lease.sourceId) {
+            throw new Error(
+              "The shared display changed. Start sharing the selected display again.",
+            );
+          }
+          // Reuse identical pixels while their native reference remains valid. A
+          // replacement token (for example after sleep/expiry) must reach the agent.
+          if (
+            lastImage.current?.dataUrl === frame.dataUrl &&
+            lastImage.current.frameId === frame.frameId
+          ) {
+            outcome = "unchanged";
+            return;
+          }
+          const result = await latest.current.share(
+            {
+              frameId: frame.frameId,
+              width: frame.width,
+              height: frame.height,
+              imageDataUrl: frame.dataUrl,
+              source: frame.sourceName,
+              capturedAt: new Date(frame.capturedAt).toISOString(),
+            },
+            lease.controller.signal,
+          );
+          if (!isCurrent()) return;
+          outcome = result.status;
+          if (result.status === "shared") {
+            lastImage.current = { dataUrl: frame.dataUrl, frameId: frame.frameId };
+            setLastObservedAt(frame.capturedAt);
+          }
+        } catch (failure) {
+          if (!isCurrent()) return;
+          outcome = "failed";
+          stop();
+          setError(String(failure));
+        } finally {
+          if (inFlight.current === run) inFlight.current = null;
+          if (isCurrent()) setBusy(false);
+          const ended = performance.now();
+          try {
+            latest.current.onTiming?.({
+              reason,
+              captureMs: (captured ?? ended) - started,
+              contextMs: captured === null ? 0 : ended - captured,
+              totalMs: ended - started,
+              outcome,
+            });
+          } catch {
+            // Diagnostics must never interrupt sharing or voice.
+          }
         }
-        // Reuse identical pixels while their native reference remains valid. A
-        // replacement token (for example after sleep/expiry) must reach the agent.
-        if (
-          lastImage.current?.dataUrl === frame.dataUrl &&
-          lastImage.current.frameId === frame.frameId
-        )
-          return;
-        const result = await latest.current.share(
-          {
-            frameId: frame.frameId,
-            width: frame.width,
-            height: frame.height,
-            imageDataUrl: frame.dataUrl,
-            source: frame.sourceName,
-            capturedAt: new Date(frame.capturedAt).toISOString(),
-          },
-          lease.controller.signal,
-        );
-        if (!isCurrent()) return;
-        if (result.status === "shared") {
-          lastImage.current = { dataUrl: frame.dataUrl, frameId: frame.frameId };
-          setLastObservedAt(frame.capturedAt);
-        }
-      } catch (failure) {
-        if (!isCurrent()) return;
-        stop();
-        setError(String(failure));
-      } finally {
-        inFlight.current = false;
-        if (isCurrent()) setBusy(false);
-      }
+      })();
+      return run.promise;
+    },
+    [stop],
+  );
+
+  const captureNow = useCallback(() => capture("speech"), [capture]);
+
+  useEffect(() => {
+    if (!active) return;
+    let disposed = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      await capture("periodic");
+      if (disposed) return;
+      // A slow capture resumes at its next due time; no extra whole interval is
+      // added because an interval tick arrived while capture was in flight.
+      const nextDue = (lastCaptureStartedAt.current ?? Date.now()) + intervalSeconds * 1000;
+      timer = window.setTimeout(() => void tick(), Math.max(0, nextDue - Date.now()));
     };
     void tick();
-    const timer = window.setInterval(() => void tick(), intervalSeconds * 1000);
-    return () => window.clearInterval(timer);
-  }, [active, sourceId, intervalSeconds, ownerKey, stop]);
+    return () => {
+      disposed = true;
+      window.clearTimeout(timer);
+    };
+  }, [active, intervalSeconds, capture]);
 
   const clearAnnotations = useCallback(async () => {
     const lease = owner.current;
@@ -245,6 +315,7 @@ export function useScreenSharing({ available, ownerKey, share }: Options) {
     lastObservedAt,
     start,
     stop,
+    captureNow,
     clearAnnotations,
     refreshSources,
     setSourceId: (value: number) => {

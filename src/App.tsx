@@ -4283,6 +4283,9 @@ function App() {
     available: screenSharingAvailable,
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
     share: shareScreenObservation,
+    onTiming: (timing) => {
+      devLog.write({ subsystem: "ScreenSharing", phase: "capture-context", data: timing });
+    },
   });
   const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
     ...screenSharing,

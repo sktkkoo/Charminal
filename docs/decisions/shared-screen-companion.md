@@ -21,8 +21,9 @@ intervals increase usage. Stop cancels pending permission/capture delivery.
 
 The UI reports the last **shared** image, not model comprehension. Capture or
 transport failures stop sharing and are shown to the user. Identical consecutive
-JPEGs are not resent. Only one capture/delivery runs at once; busy ticks are
-skipped, with no stale-frame queue.
+JPEGs are not resent. Only one capture/delivery runs at once. If an update becomes
+due during a slow delivery, the next capture starts as soon as delivery finishes,
+with no stale-frame queue and no additional whole-interval wait.
 
 ## Capture and transport
 
@@ -32,8 +33,11 @@ bounded to 2560 pixels on the longest edge at quality 0.9, with an 8 MiB encoded
 limit and a native timeout/busy guard. Listing displays does not request permission
 or capture pixels. The existing app screenshot MCP tool remains separate.
 
-`ScreenObservationTransport` checks the current main thread and uses
+The tracker validates the selected main thread and tracks load/unload notifications.
+`ScreenObservationTransport` uses that current owner and a single
 `thread/inject_items` to append a timestamped image with observational instructions.
+It does not repeat `thread/read` for each capture. An unload racing an injection
+is rejected by the server; it cannot start or resume a thread.
 It accepts loaded idle **or active** threads: context insertion neither starts a
 turn nor steers the main agent away from its task. `turn/start` was excluded because
 it can implicitly steer an already running turn and has no atomic idle-only guard.
@@ -55,6 +59,9 @@ cannot update a new owner or cause subsequent delivery. An already submitted ima
 cannot be retracted.
 
 Yorishiro keeps captured frames in memory and excludes them from diagnostic logs.
+The local `ScreenSharing` development log records capture/context durations and
+fixed outcome names. It never receives pixels, source labels, or frame/lease/thread
+identifiers. These timings end at context insertion, not model comprehension.
 Images injected into Codex become part of its normal conversation history and may
 be persisted by Codex. Screen text and source labels are untrusted content, not
 authorization for actions. Existing task/approval rules continue to apply.
