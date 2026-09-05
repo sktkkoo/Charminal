@@ -1,4 +1,5 @@
 pub mod attach;
+mod auxiliary_windows;
 mod bundled_examples_gen;
 mod history;
 mod journal;
@@ -3859,19 +3860,26 @@ pub fn run() {
         .manage(tts::TtsState::new())
         .manage(mcp::McpServerStatus::default())
         .manage(screen_annotation::ScreenAnnotationState::default())
+        .manage(auxiliary_windows::AuxiliaryWindowsState::default())
         .on_page_load(|webview, payload| {
             if webview.label() == "main"
                 && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
             {
                 screen_annotation::document_reloaded(webview.app_handle());
+                auxiliary_windows::close_owned_windows(webview.app_handle());
             }
         })
         .on_window_event(|window, event| {
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 screen_annotation::shutdown(window.app_handle());
+                auxiliary_windows::close_owned_windows(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
+            auxiliary_windows::auxiliary_window_open,
+            auxiliary_windows::auxiliary_window_publish,
+            auxiliary_windows::auxiliary_window_snapshot,
+            auxiliary_windows::auxiliary_window_request_action,
             screen_annotation::screen_annotation_document,
             screen_annotation::screen_annotation_begin,
             screen_annotation::screen_annotation_end,

@@ -61,6 +61,9 @@ authorization for actions. Existing task/approval rules continue to apply.
 
 ## Follow-up experiments
 
+The child prototype adds [shared-display reference marks and independent controls](shared-screen-pointers.md)
+to this existing capture/voice path. It does not replace the sharing setup.
+
 - User-adjustable resolution and selecting a window or rectangular region were
   explicitly deferred until the basic experience is tested.
 - Test timely autonomous comments separately from passive context delivery.

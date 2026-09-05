@@ -329,6 +329,7 @@ import {
   type StageSurfaces,
 } from "./runtime/ui-pack-transition/stage-transition";
 import { getUiStateStore } from "./runtime/ui-state-store";
+import { useAuxiliaryScreenSharing } from "./runtime/use-auxiliary-screen-sharing";
 import {
   loadUserLayer,
   reconcileAmbientUiRegistration,
@@ -4283,6 +4284,12 @@ function App() {
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
     share: shareScreenObservation,
   });
+  const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
+    ...screenSharing,
+    available: screenSharingAvailable,
+    ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
+    language: appLanguage.resolved,
+  });
 
   const handleBodyReady = useCallback(
     (body: Body | null) => {
@@ -5871,7 +5878,7 @@ function App() {
               intervalSeconds={screenSharing.intervalSeconds}
               sources={screenSharing.sources}
               sourceId={screenSharing.sourceId}
-              error={screenSharing.error}
+              error={screenSharing.error ?? auxiliaryScreenSharing.error}
               lastObservedAt={screenSharing.lastObservedAt}
               language={appLanguage.resolved}
               onIntervalChange={screenSharing.setIntervalSeconds}
@@ -5879,6 +5886,7 @@ function App() {
               onStart={() => void screenSharing.start()}
               onStop={screenSharing.stop}
               onClearAnnotations={() => void screenSharing.clearAnnotations()}
+              onOpenAuxiliary={() => void auxiliaryScreenSharing.open()}
               onRefreshSources={() => void screenSharing.refreshSources()}
             />
           ) : null
