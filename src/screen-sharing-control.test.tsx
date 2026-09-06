@@ -37,14 +37,18 @@ describe("screen sharing control", () => {
     expect(p.onRetryPointers).toHaveBeenCalledOnce();
   });
 
-  it("shows the token warning before explicit start and supports a five-second interval", () => {
+  it("shows the token warning before explicit start and supports a twenty-second interval", () => {
     const p = props();
     render(<ScreenSharingControl {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
     expect(screen.getByText("画像の定期送信ではトークンを多く消費します。")).toBeTruthy();
     expect(p.onStart).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByRole("slider"), { target: { value: "5" } });
-    expect(p.onIntervalChange).toHaveBeenCalledWith(5);
+    const interval = screen.getByRole("slider") as HTMLInputElement;
+    expect(interval.min).toBe("20");
+    expect(interval.max).toBe("60");
+    expect(interval.value).toBe("30");
+    fireEvent.change(interval, { target: { value: "20" } });
+    expect(p.onIntervalChange).toHaveBeenCalledWith(20);
     fireEvent.click(screen.getByRole("button", { name: "共有を開始" }));
     expect(p.onStart).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(window, { key: "Escape" });

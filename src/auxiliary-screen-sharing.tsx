@@ -218,7 +218,7 @@ export default function AuxiliaryScreenSharing() {
         id="viewing-interval"
         className="screen-sharing-slider"
         type="range"
-        min={5}
+        min={20}
         max={60}
         step={1}
         value={intervalDraft}
@@ -231,7 +231,7 @@ export default function AuxiliaryScreenSharing() {
         onBlur={(event) => commitInterval(event.currentTarget.value)}
       />
       <div className="screen-sharing-range-labels" aria-hidden="true">
-        <span>{labels.seconds(5)}</span>
+        <span>{labels.seconds(20)}</span>
         <span>{labels.seconds(60)}</span>
       </div>
       <p className="screen-sharing-cost" id="sharing-cost">

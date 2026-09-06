@@ -252,9 +252,14 @@ describe("auxiliary window ownership", () => {
     expect(await action({ type: "select-source", sourceId: 99 })).toBe(false);
     expect(await action({ type: "select-source", sourceId: 2 })).toBe(true);
     expect(current.setSourceId).toHaveBeenCalledWith(2);
-    expect(await action({ type: "set-interval", intervalSeconds: 4 })).toBe(false);
-    expect(await action({ type: "set-interval", intervalSeconds: 5 })).toBe(true);
-    expect(current.setIntervalSeconds).toHaveBeenCalledWith(5);
+    for (const intervalSeconds of [5, 19, 20.5, 61]) {
+      expect(await action({ type: "set-interval", intervalSeconds })).toBe(false);
+    }
+    expect(current.setIntervalSeconds).not.toHaveBeenCalled();
+    expect(await action({ type: "set-interval", intervalSeconds: 20 })).toBe(true);
+    expect(current.setIntervalSeconds).toHaveBeenLastCalledWith(20);
+    expect(await action({ type: "set-interval", intervalSeconds: 60 })).toBe(true);
+    expect(current.setIntervalSeconds).toHaveBeenLastCalledWith(60);
     expect(await action({ type: "clear-annotations" })).toBe(true);
     expect(current.clearAnnotations).toHaveBeenCalledOnce();
     expect(current.stop).not.toHaveBeenCalled();

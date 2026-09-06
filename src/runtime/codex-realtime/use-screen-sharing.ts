@@ -57,11 +57,17 @@ export function getAnnotationDocument(): Promise<string> {
   return pending;
 }
 
+function normalizeIntervalSeconds(value: number): number {
+  return Number.isFinite(value) ? Math.max(20, Math.min(60, Math.round(value))) : 30;
+}
+
 /** Host-owned opt-in sampling; no queued frames, no capture after a stale permission grant. */
 export function useScreenSharing({ available, ownerKey, share, onTiming }: Options) {
   const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
   const [sourceId, setSourceId] = useState<number | null>(null);
-  const [intervalSeconds, setIntervalSeconds] = useState(30);
+  const [intervalValue, setIntervalSeconds] = useState(30);
+  // HMR can retain a value selected before the periodic lower bound changed.
+  const intervalSeconds = normalizeIntervalSeconds(intervalValue);
   const [active, setActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -325,7 +331,7 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
       if (!owner.current) setSourceId(value);
     },
     setIntervalSeconds: (value: number) => {
-      if (Number.isFinite(value)) setIntervalSeconds(Math.max(5, Math.min(60, Math.round(value))));
+      if (Number.isFinite(value)) setIntervalSeconds(normalizeIntervalSeconds(value));
     },
   };
 }

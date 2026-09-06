@@ -65,8 +65,8 @@ impl ScreenSharingSnapshot {
         {
             return Err("Invalid auxiliary state revision".into());
         }
-        if !(5..=60).contains(&self.interval_seconds) {
-            return Err("Viewing interval must be between 5 and 60 seconds".into());
+        if !(20..=60).contains(&self.interval_seconds) {
+            return Err("Viewing interval must be between 20 and 60 seconds".into());
         }
         if self.sources.len() > 64 || self.sources.iter().any(|source| source.name.len() > 800) {
             return Err("Invalid display list".into());
@@ -200,9 +200,9 @@ fn validate_action(
             Err("Stop sharing before refreshing displays".into())
         }
         ScreenSharingAction::SetInterval { interval_seconds }
-            if !(5..=60).contains(interval_seconds) =>
+            if !(20..=60).contains(interval_seconds) =>
         {
-            Err("Viewing interval must be between 5 and 60 seconds".into())
+            Err("Viewing interval must be between 20 and 60 seconds".into())
         }
         _ => Ok(()),
     }
@@ -425,13 +425,24 @@ mod tests {
             &request(ScreenSharingAction::SelectSource { source_id: 99 })
         )
         .is_err());
-        assert!(validate_action(
-            &state,
-            &request(ScreenSharingAction::SetInterval {
-                interval_seconds: 4
-            })
-        )
-        .is_err());
+        for interval_seconds in [5, 19, 61] {
+            assert!(validate_action(
+                &state,
+                &request(ScreenSharingAction::SetInterval { interval_seconds })
+            )
+            .is_err());
+            state.snapshot.interval_seconds = interval_seconds;
+            assert!(state.snapshot.validate().is_err());
+        }
+        for interval_seconds in [20, 30, 60] {
+            assert!(validate_action(
+                &state,
+                &request(ScreenSharingAction::SetInterval { interval_seconds })
+            )
+            .is_ok());
+            state.snapshot.interval_seconds = interval_seconds;
+            assert!(state.snapshot.validate().is_ok());
+        }
         state.snapshot.active = true;
         assert!(validate_action(
             &state,

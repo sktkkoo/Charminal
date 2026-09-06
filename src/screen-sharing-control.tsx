@@ -301,7 +301,7 @@ export function ScreenSharingControl({
             id={intervalId}
             className="screen-sharing-slider"
             type="range"
-            min={5}
+            min={20}
             max={60}
             step={1}
             value={intervalSeconds}
@@ -310,7 +310,7 @@ export function ScreenSharingControl({
             onChange={(event) => onIntervalChange(Number(event.currentTarget.value))}
           />
           <div className="screen-sharing-range-labels" aria-hidden="true">
-            <span>{labels.seconds(5)}</span>
+            <span>{labels.seconds(20)}</span>
             <span>{labels.seconds(60)}</span>
           </div>
           <p className="screen-sharing-cost" id={costId}>

@@ -240,7 +240,7 @@ export class ScreenSharingAuxiliaryHost {
       case "set-interval":
         if (
           !Number.isInteger(action.intervalSeconds) ||
-          action.intervalSeconds < 5 ||
+          action.intervalSeconds < 20 ||
           action.intervalSeconds > 60
         )
           return false;

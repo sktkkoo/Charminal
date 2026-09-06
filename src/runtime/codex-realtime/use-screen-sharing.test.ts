@@ -14,6 +14,18 @@ import type { ScreenObservationFrame } from "./screen-observation";
 
 let useScreenSharing: typeof import("./use-screen-sharing").useScreenSharing;
 
+const retainedInterval = vi.hoisted(() => ({ value: undefined as number | undefined }));
+vi.mock("react", async (importOriginal) => {
+  const react = await importOriginal<typeof import("react")>();
+  return {
+    ...react,
+    useState: (initial: unknown) =>
+      react.useState(
+        initial === 30 && retainedInterval.value !== undefined ? retainedInterval.value : initial,
+      ),
+  };
+});
+
 vi.mock("../../bindings/tauri-commands", () => ({
   screenAnnotationBegin: vi.fn(),
   screenAnnotationClear: vi.fn(),
@@ -228,12 +240,14 @@ describe("useScreenSharing", () => {
     });
   });
 
-  it("supports five-second sampling, deduplicates pixels, and stops on owner change", async () => {
+  it("clamps periodic sampling to twenty seconds, deduplicates pixels, and stops on owner change", async () => {
     const { result, rerender, share } = setup();
+    expect(result.current.intervalSeconds).toBe(30);
     await act(async () => {
       await result.current.refreshSources();
     });
     act(() => result.current.setIntervalSeconds(5));
+    expect(result.current.intervalSeconds).toBe(20);
     await act(async () => {
       await result.current.start();
     });
@@ -254,8 +268,10 @@ describe("useScreenSharing", () => {
     );
     expect(result.current.lastObservedAt).toBe(frame.capturedAt);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(19_999);
     });
+    expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
     expect(share).toHaveBeenCalledTimes(1);
     rerender({ ownerKey: "main:other-thread:active", available: true });
@@ -267,6 +283,23 @@ describe("useScreenSharing", () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
     expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
+  });
+
+  it("normalizes a legacy five-second React state for both publication and actual sampling", async () => {
+    retainedInterval.value = 5;
+    try {
+      const { result } = setup();
+      expect(result.current.intervalSeconds).toBe(20);
+      await act(async () => result.current.refreshSources());
+      await act(async () => result.current.start());
+      expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(19_999));
+      expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
+    } finally {
+      retainedInterval.value = undefined;
+    }
   });
 
   it("shares a replacement frame reference even when its pixels are unchanged", async () => {
@@ -332,9 +365,10 @@ describe("useScreenSharing", () => {
     await act(async () => {
       await result.current.start();
     });
-    for (let value = 5; value <= 60; value++) {
+    for (let value = 19; value <= 61; value++) {
       act(() => result.current.setIntervalSeconds(value));
     }
+    expect(result.current.intervalSeconds).toBe(60);
     expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);

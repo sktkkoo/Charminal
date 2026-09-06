@@ -133,7 +133,12 @@ describe("independent screen-sharing controls", () => {
 
   it("keeps keyboard focus during passive updates and commits a dragged interval once", async () => {
     render(<AuxiliaryScreenSharing />);
-    const interval = await screen.findByRole("slider", { name: "Periodic interval" });
+    const interval = (await screen.findByRole("slider", {
+      name: "Periodic interval",
+    })) as HTMLInputElement;
+    expect(interval.min).toBe("20");
+    expect(interval.max).toBe("60");
+    expect(interval.value).toBe("30");
     interval.focus();
     state = {
       version: 2,
@@ -142,14 +147,14 @@ describe("independent screen-sharing controls", () => {
     await act(async () => receive(state));
     expect(document.activeElement).toBe(interval);
     expect(requestAuxiliaryAction).not.toHaveBeenCalled();
-    fireEvent.change(interval, { target: { value: "15" } });
-    fireEvent.change(interval, { target: { value: "5" } });
+    fireEvent.change(interval, { target: { value: "25" } });
+    fireEvent.change(interval, { target: { value: "20" } });
     expect(requestAuxiliaryAction).not.toHaveBeenCalled();
     fireEvent.pointerUp(interval);
     await waitFor(() =>
       expect(requestAuxiliaryAction).toHaveBeenCalledExactlyOnceWith(2, {
         type: "set-interval",
-        intervalSeconds: 5,
+        intervalSeconds: 20,
       }),
     );
   });
