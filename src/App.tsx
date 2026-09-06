@@ -352,6 +352,7 @@ import {
   withPrimaryPersonaSet,
   type YorishiroConfig,
 } from "./runtime/user-pack-loader/config";
+import { enqueueConfigWrite } from "./runtime/user-pack-loader/config-write-queue";
 import {
   appendInitReloadErrorMarker,
   stripInitReloadErrorMarker,
@@ -1189,20 +1190,7 @@ function App() {
     };
   }, []);
 
-  const [initialScreenPointersEnabled, setInitialScreenPointersEnabled] = useState<boolean | null>(
-    null,
-  );
-
-  // config write は read-modify-write なので UI / MCP 経路を 1 本の queue で直列化する。
-  const pendingConfigWriteRef = useRef<Promise<void>>(Promise.resolve());
-  const enqueueConfigWrite = useCallback(<T,>(write: () => Promise<T>): Promise<T> => {
-    const next = pendingConfigWriteRef.current.then(write);
-    pendingConfigWriteRef.current = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
-  }, []);
+  // UI / MCP config writes share one document-lifetime queue, including across remounts.
   const updateYorishiroConfig = useCallback(
     (update: (current: YorishiroConfig) => YorishiroConfig): Promise<YorishiroConfig> =>
       enqueueConfigWrite(async () => {
@@ -1211,7 +1199,7 @@ function App() {
         await writeYorishiroConfigText(serializeConfig(updated));
         return updated;
       }),
-    [enqueueConfigWrite],
+    [],
   );
   const updateConfig = useCallback(
     (
@@ -1246,7 +1234,7 @@ function App() {
         }
         return updated;
       }),
-    [enqueueConfigWrite],
+    [],
   );
   const setActiveSceneFromUserSelection = useCallback(
     async (id: string | null): Promise<void> => {
@@ -1804,7 +1792,6 @@ function App() {
       try {
         const configText = await readYorishiroConfigText();
         const config = parseConfig(configText);
-        setInitialScreenPointersEnabled(config.screenPointersEnabled);
         const resolvedHomeDir = await userHomeDir().catch(() => null);
         if (resolvedHomeDir !== null) setHomeDir(resolvedHomeDir.trim() || null);
         const resolvedProjectFolder = resolveProjectFolder(
@@ -1900,7 +1887,6 @@ function App() {
           });
         }
       } catch (err) {
-        setInitialScreenPointersEnabled((current) => current ?? false);
         appLog.write({
           phase: "register",
           note: "config read for primaryPersona / activeScene failed",
@@ -4032,7 +4018,6 @@ function App() {
     createAmenityContext,
     ambientAudio,
     applyTerminalPresentationForSession,
-    enqueueConfigWrite,
     updateYorishiroConfig,
     updateConfig,
     setVoiceVolume,
@@ -4294,7 +4279,6 @@ function App() {
   ]);
 
   const screenPointerSettings = useScreenPointerSettings({
-    initialEnabled: initialScreenPointersEnabled,
     persist: (screenPointersEnabled) => updateConfig({ screenPointersEnabled }),
     notify: notifyScreenPointersEnabled,
   });

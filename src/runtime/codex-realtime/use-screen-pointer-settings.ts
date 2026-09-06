@@ -3,21 +3,50 @@ import {
   type ScreenPointerSetting,
   screenAnnotationSetEnabled,
 } from "../../bindings/tauri-commands";
+import { getOrInit } from "../hot-data";
+import { KEYS } from "../module-registry/keys";
+import { parseConfig } from "../user-pack-loader/config";
+import { readYorishiroConfigText } from "../user-pack-loader/yorishiro-io";
 import { getAnnotationDocument } from "./use-screen-sharing";
 
 interface Options {
-  /** Null until the existing App configuration read completes. */
-  readonly initialEnabled: boolean | null;
   readonly persist: (enabled: boolean) => Promise<void>;
   readonly notify: (enabled: boolean, pointerEpoch?: number) => Promise<void>;
 }
 
-// Native rejects older revisions and previous WebView documents. Keep this
-// monotonic across hook remounts, using the same document epoch as sharing Start.
-let nextRevision = 0;
+// App's runtime can survive a discarded initial render or a later remount.
+// Keep preferences independent of its bootstrap and any captured React setter.
+// Remember pending user choices and accepted changes while config writes are queued.
+const getPreference = () =>
+  getOrInit(KEYS.SCREEN_POINTER_SETTINGS, () => ({
+    enabled: null as boolean | null,
+    pending: null as Promise<boolean> | null,
+    nextRevision: 0,
+    acceptedRevision: 0,
+    pendingIntent: null as { revision: number; enabled: boolean } | null,
+  }));
+
+function readInitialPreference(): Promise<boolean> {
+  const preference = getPreference();
+  if (preference.pendingIntent) return Promise.resolve(preference.pendingIntent.enabled);
+  if (preference.enabled !== null) return Promise.resolve(preference.enabled);
+  if (preference.pending) return preference.pending;
+  const pending = readYorishiroConfigText()
+    .then(
+      (text) =>
+        preference.pendingIntent?.enabled ??
+        preference.enabled ??
+        parseConfig(text).screenPointersEnabled,
+    )
+    .finally(() => {
+      if (preference.pending === pending) preference.pending = null;
+    });
+  preference.pending = pending;
+  return pending;
+}
 
 /** Independent from capture: disabling markers never waits for image delivery or config I/O. */
-export function useScreenPointerSettings({ initialEnabled, persist, notify }: Options) {
+export function useScreenPointerSettings({ persist, notify }: Options) {
   const [enabled, setEnabled] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string>();
@@ -33,19 +62,36 @@ export function useScreenPointerSettings({ initialEnabled, persist, notify }: Op
     return () => {
       mounted.current = false;
       initializing.current = null;
-      request.current = ++nextRevision;
+      request.current = ++getPreference().nextRevision;
     };
   }, []);
 
   const apply = useCallback(async (value: boolean, save: boolean) => {
-    const revision = ++nextRevision;
+    const preference = getPreference();
+    const revision = ++preference.nextRevision;
     request.current = revision;
+    if (save) preference.pendingIntent = { revision, enabled: value };
     setEnabled(value);
     setError(undefined);
     try {
       const documentId = await getAnnotationDocument();
       if (!mounted.current || request.current !== revision) return;
       const accepted = await screenAnnotationSetEnabled(documentId, revision, value);
+      if (preference.acceptedRevision < revision) {
+        preference.enabled = accepted.enabled;
+        preference.acceptedRevision = revision;
+      }
+      // A remount may resynchronize the same intent before the original reply.
+      // Either accepted reply can save it once; obsolete opposite replies cannot.
+      const intent = preference.pendingIntent;
+      if (intent && revision >= intent.revision && accepted.enabled === intent.enabled) {
+        preference.pendingIntent = null;
+        void latest.current.persist(accepted.enabled).catch(() => {
+          if (mounted.current && request.current === revision) {
+            setError("Screen marker setting changed, but could not be saved.");
+          }
+        });
+      }
       if (!mounted.current) return;
       if (!applied.current || applied.current.revision < revision) {
         applied.current = { revision, ...accepted };
@@ -59,31 +105,36 @@ export function useScreenPointerSettings({ initialEnabled, persist, notify }: Op
           setError("Could not update the agent's screen marker setting.");
         }
       });
-      if (save) {
-        void latest.current.persist(accepted.enabled).catch(() => {
-          if (mounted.current && request.current === revision) {
-            setError("Screen marker setting changed, but could not be saved.");
-          }
-        });
-      }
     } catch {
       if (mounted.current && request.current === revision) {
-        setEnabled(applied.current?.enabled ?? false);
+        if (preference.pendingIntent?.revision === revision) preference.pendingIntent = null;
+        setEnabled(applied.current?.enabled ?? preference.enabled ?? false);
         setError("Could not update the screen marker setting.");
       }
     }
   }, []);
 
   const retry = useCallback(() => {
-    if (initialEnabled === null || ready) return Promise.resolve();
+    if (ready) return Promise.resolve();
     if (initializing.current) return initializing.current;
-    const pending = apply(initialEnabled, false);
+    const revision = ++getPreference().nextRevision;
+    request.current = revision;
+    setError(undefined);
+    const pending = readInitialPreference()
+      .then((value) => {
+        if (mounted.current && request.current === revision) return apply(value, false);
+      })
+      .catch(() => {
+        if (mounted.current && request.current === revision) {
+          setError("Could not read the screen marker setting.");
+        }
+      });
     initializing.current = pending;
     void pending.finally(() => {
       if (initializing.current === pending) initializing.current = null;
     });
     return pending;
-  }, [initialEnabled, ready, apply]);
+  }, [ready, apply]);
 
   useEffect(() => {
     void retry();

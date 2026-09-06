@@ -7,10 +7,14 @@ import {
   screenAnnotationDocument,
   screenAnnotationSetEnabled,
 } from "../../bindings/tauri-commands";
+import { readYorishiroConfigText } from "../user-pack-loader/yorishiro-io";
 
 vi.mock("../../bindings/tauri-commands", () => ({
   screenAnnotationDocument: vi.fn(),
   screenAnnotationSetEnabled: vi.fn(),
+}));
+vi.mock("../user-pack-loader/yorishiro-io", () => ({
+  readYorishiroConfigText: vi.fn(),
 }));
 
 let useScreenPointerSettings: typeof import("./use-screen-pointer-settings").useScreenPointerSettings;
@@ -29,6 +33,7 @@ beforeEach(async () => {
   vi.resetModules();
   vi.resetAllMocks();
   ({ useScreenPointerSettings } = await import("./use-screen-pointer-settings"));
+  vi.mocked(readYorishiroConfigText).mockResolvedValue("{}");
   vi.mocked(screenAnnotationDocument).mockResolvedValue("document-1");
   vi.mocked(screenAnnotationSetEnabled).mockImplementation(async (_document, _revision, value) => ({
     enabled: value,
@@ -37,14 +42,13 @@ beforeEach(async () => {
 });
 afterEach(cleanup);
 
-function setup(initialEnabled: boolean | null = true) {
+function setup(savedEnabled = true) {
+  vi.mocked(readYorishiroConfigText).mockResolvedValue(
+    JSON.stringify({ screenPointersEnabled: savedEnabled }),
+  );
   const persist = vi.fn(async (_enabled: boolean) => {});
   const notify = vi.fn(async (_enabled: boolean, _pointerEpoch?: number) => {});
-  const hook = renderHook(
-    ({ initialEnabled }: { initialEnabled: boolean | null }) =>
-      useScreenPointerSettings({ initialEnabled, persist, notify }),
-    { initialProps: { initialEnabled } },
-  );
+  const hook = renderHook(() => useScreenPointerSettings({ persist, notify }));
   return { ...hook, persist, notify };
 }
 
@@ -74,10 +78,10 @@ describe("independent screen pointer settings", () => {
   it("completes initial synchronization after StrictMode effect replay", async () => {
     const notify = vi.fn(async () => {});
     const persist = vi.fn(async () => {});
-    const { result } = renderHook(
-      () => useScreenPointerSettings({ initialEnabled: false, notify, persist }),
-      { wrapper: StrictMode },
-    );
+    vi.mocked(readYorishiroConfigText).mockResolvedValue('{"screenPointersEnabled":false}');
+    const { result } = renderHook(() => useScreenPointerSettings({ notify, persist }), {
+      wrapper: StrictMode,
+    });
     await act(async () => {});
     expect(result.current.ready).toBe(true);
     expect(result.current.enabled).toBe(false);
@@ -123,21 +127,185 @@ describe("independent screen pointer settings", () => {
   });
 
   it("waits for saved OFF and native acknowledgement before becoming ready", async () => {
+    const config = deferred<string>();
+    vi.mocked(readYorishiroConfigText).mockReturnValueOnce(config.promise);
     const native = deferred<ScreenPointerSetting>();
     vi.mocked(screenAnnotationSetEnabled).mockReturnValueOnce(native.promise);
-    const { result, rerender, notify, persist } = setup(null);
+    const { result, notify, persist } = setup();
     await act(async () => result.current.setEnabled(true));
     expect(screenAnnotationDocument).not.toHaveBeenCalled();
     expect(screenAnnotationSetEnabled).not.toHaveBeenCalled();
     expect(result.current.ready).toBe(false);
-    await act(async () => rerender({ initialEnabled: false }));
-    expect(screenAnnotationSetEnabled).toHaveBeenCalledExactlyOnceWith("document-1", 1, false);
+    await act(async () => config.resolve('{"screenPointersEnabled":false}'));
+    expect(screenAnnotationSetEnabled).toHaveBeenCalledExactlyOnceWith(
+      "document-1",
+      expect.any(Number),
+      false,
+    );
     expect(result.current.ready).toBe(false);
     expect(result.current.enabled).toBe(false);
     await act(async () => native.resolve({ enabled: false, pointerEpoch: 7 }));
     expect(result.current.ready).toBe(true);
     expect(notify).toHaveBeenCalledExactlyOnceWith(false, 7);
     expect(persist).not.toHaveBeenCalled();
+  });
+
+  it("initializes a remounted App after the original config reader has unmounted", async () => {
+    const config = deferred<string>();
+    vi.mocked(readYorishiroConfigText).mockReturnValueOnce(config.promise);
+    const first = setup();
+    first.unmount();
+    const second = setup();
+    expect(second.result.current.ready).toBe(false);
+    await act(async () => config.resolve('{"screenPointersEnabled":false}'));
+    expect(readYorishiroConfigText).toHaveBeenCalledOnce();
+    expect(first.notify).not.toHaveBeenCalled();
+    expect(second.result.current.ready).toBe(true);
+    expect(second.result.current.enabled).toBe(false);
+    expect(second.notify).toHaveBeenCalledExactlyOnceWith(false, 7);
+  });
+
+  it("preserves accepted OFF across App remounts while its config write is pending", async () => {
+    const first = setup(true);
+    await act(async () => {});
+    first.persist.mockReturnValue(new Promise(() => {}));
+    await act(async () => first.result.current.setEnabled(false));
+    first.unmount();
+    // Disk still has ON. A new App must keep the user's accepted OFF intent.
+    const second = setup(true);
+    await act(async () => {});
+    expect(readYorishiroConfigText).toHaveBeenCalledOnce();
+    expect(second.result.current.ready).toBe(true);
+    expect(second.result.current.enabled).toBe(false);
+    expect(second.notify).toHaveBeenCalledExactlyOnceWith(false, 7);
+    expect(second.persist).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "before",
+    "after",
+  ])("keeps an in-flight OFF when its old native reply arrives %s the remount reply", async (order) => {
+    const first = setup(true);
+    await act(async () => {});
+    const oldOff = deferred<ScreenPointerSetting>();
+    const remounted = deferred<ScreenPointerSetting>();
+    vi.mocked(screenAnnotationSetEnabled)
+      .mockReturnValueOnce(oldOff.promise)
+      .mockReturnValueOnce(remounted.promise);
+    let off!: Promise<void>;
+    await act(async () => {
+      off = first.result.current.setEnabled(false);
+    });
+    first.unmount();
+    const second = setup(true);
+    await act(async () => {});
+    expect(vi.mocked(screenAnnotationSetEnabled).mock.calls.map((call) => call[2])).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    await act(async () => {
+      const accepted = { enabled: false, pointerEpoch: 8 };
+      if (order === "before") {
+        oldOff.resolve(accepted);
+        await off;
+        remounted.resolve(accepted);
+      } else {
+        remounted.resolve(accepted);
+        await Promise.resolve();
+        oldOff.resolve(accepted);
+        await off;
+      }
+    });
+    expect(second.result.current.ready).toBe(true);
+    expect(second.result.current.enabled).toBe(false);
+    expect([...first.persist.mock.calls, ...second.persist.mock.calls]).toEqual([[false]]);
+    expect(second.notify).toHaveBeenCalledExactlyOnceWith(false, 8);
+  });
+
+  it("can retry a failed configuration read instead of leaving controls pending", async () => {
+    vi.mocked(readYorishiroConfigText).mockRejectedValueOnce(new Error("Read failed"));
+    const { result } = setup(false);
+    await act(async () => {});
+    expect(result.current.ready).toBe(false);
+    expect(result.current.error).toContain("Could not read");
+    expect(screenAnnotationSetEnabled).not.toHaveBeenCalled();
+    await act(async () => result.current.retry());
+    expect(result.current.ready).toBe(true);
+    expect(result.current.enabled).toBe(false);
+    expect(result.current.error).toBeUndefined();
+  });
+
+  it("saves a remounted App's OFF after an older App's delayed ON write", async () => {
+    const { enqueueConfigWrite } = await import("../user-pack-loader/config-write-queue");
+    let disk = { screenPointersEnabled: false, voiceVolume: 1 };
+    const oldWrite = deferred<void>();
+    const saved: Promise<void>[] = [];
+    const first = setup(false);
+    await act(async () => {});
+    first.persist.mockImplementation((enabled) => {
+      const write = enqueueConfigWrite(async () => {
+        const snapshot = { ...disk, screenPointersEnabled: enabled };
+        await oldWrite.promise;
+        disk = snapshot;
+      });
+      saved.push(write);
+      return write;
+    });
+    await act(async () => first.result.current.setEnabled(true));
+    first.unmount();
+    const second = setup(false);
+    await act(async () => {});
+    second.persist.mockImplementation((enabled) => {
+      const write = enqueueConfigWrite(async () => {
+        disk = { ...disk, screenPointersEnabled: enabled };
+      });
+      saved.push(write);
+      return write;
+    });
+    await act(async () => second.result.current.setEnabled(false));
+    // Other configuration updates still share the same read-modify-write queue.
+    saved.push(
+      enqueueConfigWrite(async () => {
+        disk = { ...disk, voiceVolume: 0.5 };
+      }),
+    );
+    await act(async () => {
+      oldWrite.resolve();
+      await Promise.all(saved);
+    });
+    expect(second.result.current.enabled).toBe(false);
+    expect(disk).toEqual({ screenPointersEnabled: false, voiceVolume: 0.5 });
+  });
+
+  it("keeps native revisions and OFF when the settings module is hot replaced", async () => {
+    const first = setup(true);
+    await act(async () => {});
+    await act(async () => first.result.current.setEnabled(false));
+    const calls = vi.mocked(screenAnnotationSetEnabled).mock.calls;
+    const previousRevision = calls[calls.length - 1][1];
+    first.unmount();
+    // Vite retains this service's hot.data while replacing the hook module.
+    const hotData = await import("../hot-data");
+    vi.doMock("../hot-data", () => hotData);
+    try {
+      vi.resetModules();
+      ({ useScreenPointerSettings } = await import("./use-screen-pointer-settings"));
+      vi.mocked(screenAnnotationSetEnabled).mockImplementation(
+        async (_document, revision, value) => {
+          if (revision <= previousRevision) throw new Error("Stale revision");
+          return { enabled: value, pointerEpoch: 8 };
+        },
+      );
+      const second = setup(true);
+      await act(async () => {});
+      expect(second.result.current.ready).toBe(true);
+      expect(second.result.current.enabled).toBe(false);
+      expect(readYorishiroConfigText).toHaveBeenCalledOnce();
+      expect(second.notify).toHaveBeenCalledExactlyOnceWith(false, 8);
+    } finally {
+      vi.doUnmock("../hot-data");
+    }
   });
 
   it("applies OFF without waiting for model notification or a slow config write", async () => {
