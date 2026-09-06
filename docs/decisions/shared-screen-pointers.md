@@ -27,7 +27,11 @@ npm run tauri dev
    the main window remains small. Opening it does not start capture. Closing it
    leaves the existing sharing session running.
 3. After an image is shared, ask through the existing conversation, for example:
-   “Blender の画面で、次に調整したい部分を矢印で示して。” Starting to speak in
+   “Blender の画面で、次にどこを調整するとよさそう？” While sharing and markers
+   are ON, the agent should proactively mark a clearly identified target when it
+   helps explain the screen discussion; no separate request to point is needed.
+   Unrelated conversation, uncertain targets, and explanations that gain no clarity
+   from a mark should remain unmarked. Starting to speak in
    GPT Live requests a fresh capture while sharing is active; an existing capture
    or delivery is reused. Live is instructed to use one delegation for the question,
    image inspection, and `screen_pointer_show`, with a grounded mark before a lengthy
@@ -222,9 +226,14 @@ does not wait for it. Repeated speech events are deduplicated; callbacks from an
 voice client, stopped sharing, and revoked source/thread owners cannot deliver a frame.
 Unchanged images still use the existing deduplication rule.
 
-For an explicit where/which/point request, the prompts guide Live to include the
-question, image inspection, and pointer action in one delegation. The main agent
-should place the grounded mark before a lengthy explanation and answer briefly.
+While sharing and markers are ON, the prompts guide Live to include the
+conversational question, image inspection, and a useful pointer action in one
+delegation. The main agent should proactively mark a clearly identified target
+when it helps explain the current screen discussion, without requiring a separate
+request to point. It should place the grounded mark before a lengthy explanation
+and answer briefly. Unrelated conversation, uncertain targets, and marks that add
+no clarity are excluded. Neither a capture nor an ON notification starts work
+by itself. OFF and invalid-frame guidance takes precedence over marker use.
 It must inspect the actual shared attachment, rather than use `app_screenshot`,
 which only captures Yorishiro's window. Missing or stale images and moved targets
 require a fresh shared image before pointing. These changes remove avoidable waits;
@@ -291,3 +300,32 @@ tests, strict all-target/all-feature Clippy, formatting and the frontend product
 build passed. The local debug macOS `.app` also built successfully, and its readable
 OFL resource was checked against the source license. This build was not installed,
 launched as an authenticated user session, signed for distribution, or published.
+
+### Startup and controls follow-up
+
+A user trial of the development build initially found display selection, agent
+pointing, and Start sharing all disabled. The pointer preference was held in App
+state but populated only by a setter captured inside the HMR-persistent runtime
+bootstrap. Recreating App could leave the new state permanently unresolved.
+The settings hook now loads configuration itself after mounting, independently of
+that bootstrap. Preference intent, accepted state, and native request revisions
+survive component and module replacement. A pending OFF remains OFF across a
+remount, and old native replies cannot restore the opposite setting. Configuration
+read-modify-writes share a document-lifetime queue so an older App's delayed save
+cannot overwrite a newer choice or another configuration update.
+
+The user subsequently confirmed that display selection, the agent-pointing
+toggle, and Start sharing all work in the development build. This confirms those
+controls, not the complete voice-to-pointing path. Regression tests cover initial
+reads, StrictMode, component/module replacement, delayed native replies in either
+order, delayed persistence, and failed reads/writes.
+
+The main and auxiliary controls use concise matching labels and retain only the
+one-line token-usage notice. Opening separate controls closes the original sharing
+popover after success; failures retain its controls and error, and repeated clicks
+share one pending open request. This does not close the main application window
+or stop sharing. UI tests exercise successful, pending, and failed opens.
+
+For this follow-up, 288 related frontend/configuration/UI tests and the native
+MCP-instructions test passed, along with TypeScript, Biome, Rust formatting, and
+the frontend production build. The existing large-bundle warning remains.

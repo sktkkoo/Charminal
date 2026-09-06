@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ScreenObservationTransport } from "./screen-observation";
+import { ScreenObservationTransport, screenPointerSettingText } from "./screen-observation";
 
 const frame = {
   frameId: "frame-1",
@@ -37,9 +37,14 @@ describe("screen observation transport", () => {
     expect(text).toContain("Only say it is displayed after the tool confirms success");
     expect(text).toContain("Do not initiate work, use tools");
     expect(text).toContain("latest actual attached shared-screen image before choosing a target");
+    expect(text).toContain("While sharing remains active, proactively use a marker");
     expect(text).toContain(
-      "explicit where/which/point request, show the grounded target before a lengthy explanation",
+      "clearly identified place or object helps explain the current conversation",
     );
+    expect(text).toContain("no separate request to point is needed");
+    expect(text).toContain("Show the grounded target before a lengthy explanation");
+    expect(text).toContain("Omit markers for unrelated conversation, uncertain targets");
+    expect(text).toContain("or when they add no clarity");
     expect(text).toContain("with the exact inspected frame reference");
     expect(text).toContain("Inspect the attached image directly");
     expect(text).toContain("app_screenshot captures only the Yorishiro window");
@@ -47,6 +52,16 @@ describe("screen observation transport", () => {
       "the image is stale, or the target moved, inspect a fresh shared image before pointing again",
     );
     expect(text).toContain("No response is needed for the capture itself");
+  });
+
+  it("makes an ON setting useful without treating the setting change as a request", () => {
+    const text = screenPointerSettingText(true);
+    expect(text).toContain("While sharing is active, proactively use a marker");
+    expect(text).toContain("latest inspected shared image");
+    expect(text).toContain("no separate request to point is needed");
+    expect(text).toContain("Omit markers for unrelated conversation, uncertain targets");
+    expect(text).toContain("after an OFF/ON transition, inspect a newer shared image");
+    expect(text).toContain("not a request to act or speak");
   });
 
   it.each([
@@ -67,7 +82,9 @@ describe("screen observation transport", () => {
     ).items[0].content;
     expect(content[0].text).toContain(expected);
     expect(content[0].text).toContain("Do not call or retry");
-    expect(content[0].text).not.toContain("show the grounded target before");
+    expect(content[0].text).not.toContain("proactively use a marker");
+    expect(content[0].text).not.toContain("no separate request to point");
+    expect(content[0].text).not.toContain("Show the grounded target before");
     expect(content[0].text).not.toContain("If its frame reference is rejected");
     expect(content[1].type).toBe("input_image");
   });

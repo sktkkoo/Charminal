@@ -22,7 +22,7 @@ export interface ScreenPointerAvailability {
 
 export function screenPointerSettingText(enabled: boolean): string {
   return enabled
-    ? "Shared-screen pointers are ON. Sharing remains independent. Only frame references from the current pointer setting are valid; after an OFF/ON transition, inspect a newer shared image instead of retrying an earlier reference. This availability update is not a request to act or speak."
+    ? "Shared-screen pointers are ON. While sharing is active, proactively use a marker when a clearly identified target in the latest inspected shared image helps explain the current conversation about that screen; no separate request to point is needed. Omit markers for unrelated conversation, uncertain targets, or when they add no clarity. Sharing remains independent. Only frame references from the current pointer setting are valid; after an OFF/ON transition, inspect a newer shared image instead of retrying an earlier reference. This availability update is not a request to act or speak."
     : "Shared-screen pointers are OFF by the user's choice. Continue inspecting and discussing shared images when asked. Do not call or retry screen_pointer_show or other pointer tools, or use an alternative overlay. Wait until the user enables pointers again. This availability update is not a request to act or speak.";
 }
 
@@ -96,7 +96,7 @@ function contextText(frame: ScreenObservationFrame): string {
     ...(unavailable
       ? [unavailable]
       : [
-          "Shared-screen pointers are ON for this image. During an explicit visual discussion, inspect the latest actual attached shared-screen image before choosing a target. For an explicit where/which/point request, show the grounded target before a lengthy explanation, then answer briefly. Use MCP screen_pointer_show({frameId, kind:'arrow'|'rect'|'ellipse', x, y, width?, height?, label?, durationMs?}) with the exact inspected frame reference.",
+          "Shared-screen pointers are ON for this image. While sharing remains active, proactively use a marker when a clearly identified place or object helps explain the current conversation about the shared screen; no separate request to point is needed. Inspect the latest actual attached shared-screen image before choosing a target. Show the grounded target before a lengthy explanation, then answer briefly. Omit markers for unrelated conversation, uncertain targets, or when they add no clarity. Use MCP screen_pointer_show({frameId, kind:'arrow'|'rect'|'ellipse', x, y, width?, height?, label?, durationMs?}) with the exact inspected frame reference.",
           "Coordinates are normalized 0..1 from the screenshot TOP LEFT: x increases right, y increases down. For an arrow, x/y is the target point; for a rectangle or ellipse, x/y is its bounding box's top-left and width/height must be positive and fit within the image. Divide pixel coordinates and dimensions by this image's width/height; do not use app-window, desktop-global, or Retina pixel coordinates.",
           "Markers default to 8 seconds and last at most 15 seconds. Keep labels short. Use screen_pointer_clear({}) to remove them. A marker indicates the target of your explanation, not measured internal attention. Only say it is displayed after the tool confirms success. If its frame reference is rejected, the image is stale, or the target moved, inspect a fresh shared image before pointing again. A disabled-pointer result overrides earlier guidance: do not retry until the user enables pointers again.",
         ]),

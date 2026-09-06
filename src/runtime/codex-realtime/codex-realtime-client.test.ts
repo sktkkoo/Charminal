@@ -359,7 +359,7 @@ describe("CodexRealtimeClient", () => {
     expect(client.getStatus()).toBe("idle");
   });
 
-  it("keeps screen notices passive while combining explicit inspection and pointing in one delegation", async () => {
+  it("keeps screen notices passive while encouraging useful grounded marks in one delegation", async () => {
     const client = new CodexRealtimeClient("main-session");
     const capturedAt = "2026-09-06T00:00:00.000Z";
     await client.notifyScreenContext(capturedAt);
@@ -379,9 +379,17 @@ describe("CodexRealtimeClient", () => {
     expect(text).toContain("not a user utterance or request to act or speak");
     expect(text).toContain("You have not personally viewed the image");
     expect(text).toContain("latest actual attached shared-screen image");
-    expect(text).toContain("explicit where/which/point request, use one delegation");
-    expect(text).toContain("the user's question, image inspection, and screen_pointer_show");
-    expect(text).toContain("once grounded, show the target before a lengthy explanation");
+    expect(text).toContain(
+      "While sharing is active and pointers are ON, proactively include a marker",
+    );
+    expect(text).toContain("no separate request to point is needed");
+    expect(text).toContain("Use one delegation containing the user's conversational question");
+    expect(text).toContain(
+      "image inspection, and screen_pointer_show if the main agent can clearly identify a relevant target",
+    );
+    expect(text).toContain("Once grounded, show the target before a lengthy explanation");
+    expect(text).toContain("Omit markers for unrelated conversation, uncertain targets");
+    expect(text).toContain("or when they add no clarity");
     expect(text).toContain("app_screenshot to re-inspect the attachment");
     expect(text).toContain("captures only the Yorishiro window");
     expect(text).toContain("inspect a fresh shared image before pointing");
@@ -405,7 +413,9 @@ describe("CodexRealtimeClient", () => {
       await client.notifyScreenContext("2026-09-06T00:00:00.000Z", availability);
       const text = String(bridge.sent[0].params?.text);
       expect(text).toContain("Do not call or retry");
-      expect(text).not.toContain("once grounded, show the target");
+      expect(text).not.toContain("proactively include a marker");
+      expect(text).not.toContain("no separate request to point");
+      expect(text).not.toContain("Once grounded, show the target");
       expect(text).not.toContain("If the image is missing or stale");
     }
     bridge.sent = [];
