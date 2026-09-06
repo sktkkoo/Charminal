@@ -5889,6 +5889,7 @@ function App() {
         screenSharingControl={
           codexVoiceAvailable ? (
             <ScreenSharingControl
+              activeViewModeId={activePresentationViewModeIdValue}
               available={screenSharingAvailable}
               active={screenSharing.active}
               busy={screenSharing.busy}

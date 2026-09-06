@@ -314,6 +314,26 @@
   outline-offset: 2px;
 }
 
+.screen-sharing-open-error {
+  display: flex;
+  flex-direction: column;
+}
+
+.app.view-mode-chrome-hidden .title-bar:has(.screen-sharing-open-error) {
+  z-index: 960;
+}
+
+.screen-sharing-open-error > .screen-sharing-error {
+  display: block;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.screen-sharing-open-error > .screen-sharing-heading,
+.screen-sharing-open-error > .screen-sharing-action {
+  flex-shrink: 0;
+}
+
 @keyframes screen-sharing-spin {
   to {
     transform: rotate(360deg);

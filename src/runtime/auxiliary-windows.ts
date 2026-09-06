@@ -128,21 +128,34 @@ export class ScreenSharingAuxiliaryHost {
   private unlisten: (() => void) | null = null;
   private publishQueue: Promise<void> = Promise.resolve();
   private publishError: unknown = null;
-  private readonly ready: Promise<void>;
+  private listening: Promise<void> | null = null;
 
   constructor(
     private readonly onError: (error: unknown) => void,
     private readonly transport: HostTransport = nativeHostTransport,
   ) {
-    this.ready = transport
+    void this.ensureListening().catch((error: unknown) => {
+      if (!this.disposed) onError(error);
+    });
+  }
+
+  private ensureListening(): Promise<void> {
+    if (this.disposed || this.unlisten) return Promise.resolve();
+    if (this.listening) return this.listening;
+    const attempt = this.transport
       .listenAction((request) => {
-        void this.handleAction(request).catch(onError);
+        void this.handleAction(request).catch(this.onError);
       })
       .then((unlisten) => {
         if (this.disposed) unlisten();
         else this.unlisten = unlisten;
       });
-    void this.ready.catch(onError);
+    this.listening = attempt;
+    // Only an explicit open retries a failed registration; concurrent opens share the attempt.
+    void attempt.catch(() => {
+      if (this.listening === attempt) this.listening = null;
+    });
+    return attempt;
   }
 
   update(model: ScreenSharingAuxiliaryModel): void {
@@ -166,6 +179,10 @@ export class ScreenSharingAuxiliaryHost {
     this.pointerSignature = pointerSignature;
     const snapshot = { ...safeFields, revision, pointerRevision };
     this.snapshot = snapshot;
+    this.enqueuePublish(snapshot);
+  }
+
+  private enqueuePublish(snapshot: ScreenSharingSnapshot): void {
     this.publishQueue = this.publishQueue
       .then(async () => {
         if (this.disposed) return;
@@ -173,15 +190,30 @@ export class ScreenSharingAuxiliaryHost {
         this.publishError = null;
       })
       .catch((error: unknown) => {
+        if (this.disposed) return;
         this.publishError = error;
         this.onError(error);
       });
   }
 
+  private async waitForPublications(): Promise<void> {
+    let pending: Promise<void>;
+    do {
+      pending = this.publishQueue;
+      await pending;
+    } while (!this.disposed && pending !== this.publishQueue);
+  }
+
   async open(): Promise<void> {
-    await this.ready;
-    await this.publishQueue;
+    await this.ensureListening();
+    await this.waitForPublications();
     if (this.disposed || !this.snapshot) return;
+    if (this.publishError) {
+      // A failed publication must be retryable even when unchanged state was deduplicated.
+      this.enqueuePublish(this.snapshot);
+      await this.waitForPublications();
+    }
+    if (this.disposed) return;
     if (this.publishError) throw this.publishError;
     await this.transport.open();
   }

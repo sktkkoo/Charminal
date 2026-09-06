@@ -243,6 +243,132 @@ describe("auxiliary window ownership", () => {
     host.dispose();
   });
 
+  it("retries the latest unchanged publication on an explicit open after a failure", async () => {
+    const port = transport();
+    const failure = new Error("Could not publish controls");
+    port.publish.mockRejectedValueOnce(failure).mockRejectedValueOnce(failure);
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    const current = model();
+    host.update(current);
+    await expect(host.open()).rejects.toThrow("Could not publish controls");
+    expect(port.publish).toHaveBeenCalledTimes(2);
+    expect(port.open).not.toHaveBeenCalled();
+    host.update(current);
+    await host.open();
+    expect(port.publish).toHaveBeenCalledTimes(3);
+    expect(port.publish.mock.calls[2][0]).toEqual(port.publish.mock.calls[0][0]);
+    expect(port.open).toHaveBeenCalledOnce();
+    expect(current.start).not.toHaveBeenCalled();
+    expect(current.stop).not.toHaveBeenCalled();
+    host.dispose();
+  });
+
+  it("waits for a replacement owner publication after retrying an earlier failed snapshot", async () => {
+    const port = transport();
+    const failure = new Error("Could not publish controls");
+    let rejectFirst!: (error: Error) => void;
+    let finishLatest!: () => void;
+    port.publish
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectFirst = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finishLatest = resolve;
+          }),
+      );
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    host.update(model());
+    const open = host.open();
+    await Promise.resolve();
+    const current = { ...model(), ownerKey: "replacement-owner", pointersEnabled: false };
+    host.update(current);
+    rejectFirst(failure);
+    await vi.waitFor(() => expect(port.publish).toHaveBeenCalledTimes(2));
+    expect(port.publish).toHaveBeenLastCalledWith(
+      expect.objectContaining({ pointersEnabled: false }),
+    );
+    expect(port.open).not.toHaveBeenCalled();
+    finishLatest();
+    await open;
+    expect(port.open).toHaveBeenCalledOnce();
+    expect(port.publish).toHaveBeenCalledTimes(2);
+    host.dispose();
+  });
+
+  it("retries a failed action subscription once for concurrent explicit opens", async () => {
+    const port = transport();
+    let finishListen!: (unlisten: () => void) => void;
+    port.listenAction
+      .mockRejectedValueOnce(new Error("Listener unavailable"))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishListen = resolve;
+          }),
+      );
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    host.update(model());
+    await expect(host.open()).rejects.toThrow("Listener unavailable");
+    const first = host.open();
+    const second = host.open();
+    expect(port.listenAction).toHaveBeenCalledTimes(2);
+    expect(port.open).not.toHaveBeenCalled();
+    finishListen(port.unlisten);
+    await Promise.all([first, second]);
+    expect(port.listenAction).toHaveBeenCalledTimes(2);
+    await host.open();
+    expect(port.listenAction).toHaveBeenCalledTimes(2);
+    host.dispose();
+    expect(port.unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("cleans up a retried listener that resolves after disposal and never opens the window", async () => {
+    const port = transport();
+    let finishListen!: (unlisten: () => void) => void;
+    port.listenAction
+      .mockRejectedValueOnce(new Error("Listener unavailable"))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishListen = resolve;
+          }),
+      );
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    host.update(model());
+    await expect(host.open()).rejects.toThrow("Listener unavailable");
+    const opening = host.open();
+    host.dispose();
+    finishListen(port.unlisten);
+    await opening;
+    expect(port.unlisten).toHaveBeenCalledOnce();
+    expect(port.open).not.toHaveBeenCalled();
+  });
+
+  it("does not report a late subscription failure to a disposed owner", async () => {
+    const port = transport();
+    let rejectListen!: (error: Error) => void;
+    port.listenAction.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectListen = reject;
+        }),
+    );
+    const onError = vi.fn();
+    const host = new ScreenSharingAuxiliaryHost(onError, port);
+    host.update(model());
+    const opening = host.open();
+    host.dispose();
+    rejectListen(new Error("Listener unavailable"));
+    await expect(opening).rejects.toThrow("Listener unavailable");
+    expect(onError).not.toHaveBeenCalled();
+    expect(port.open).not.toHaveBeenCalled();
+  });
+
   it("routes clear, source, and interval operations to the current hook and protects busy capture", async () => {
     const host = new ScreenSharingAuxiliaryHost(vi.fn(), transport());
     const current = model();

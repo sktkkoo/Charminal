@@ -21,11 +21,15 @@ npm run tauri dev
 1. Use the existing Codex main agent and screen-sharing button. Select a display
    and start sharing (macOS 14+, Screen Recording permission). The shared object
    is the **whole selected display**, even when Yorishiro is in Call/Portrait.
-2. In the sharing settings header, click **Open screen sharing in a separate
-   window** / **画面共有を別ウィンドウで開く**. This independent window can start,
-   cancel, stop, select the next display, set the periodic interval, and clear marks while
-   the main window remains small. Opening it does not start capture. Closing it
-   leaves the existing sharing session running.
+2. The sharing button chooses the controls' destination when clicked. Call and
+   Portrait always open a separate window. Terminal, Theater, and Immersive use
+   an inline panel when its full content fits, otherwise a separate window.
+   Resizing an open panel does not move it to another window. The separate controls
+   can start, cancel, stop, select the next display, set the periodic interval, and
+   clear marks while the main window remains small. Opening controls does not start
+   capture, and closing them leaves the existing sharing session running. If the
+   separate window fails to open, use the compact retry card or the sharing button
+   again; Close dismisses the error.
 3. After an image is shared, ask through the existing conversation, for example:
    “Blender の画面で、次にどこを調整するとよさそう？” While sharing and markers
    are ON, the agent should proactively mark a clearly identified target when it
@@ -37,14 +41,14 @@ npm run tauri dev
    image inspection, and `screen_pointer_show`, with a grounded mark before a lengthy
    explanation. Live does not receive or claim to see the image itself. Corrections
    such as “その右隣” can replace the current mark.
-4. Use **Screen markers** / **画面の目印** in either set of controls to turn marks
+4. Use **Agent pointing** / **エージェントの指し示し** in either set of controls to turn marks
    off independently of sharing. OFF immediately clears marks and waiting requests;
    images continue to reach the same agent. The preference defaults to ON and is
    saved as `screenPointersEnabled` in the existing user config. Turning it back on
    permits new marks only from a subsequent capture, without restoring old marks.
 5. Continue clicking, dragging, and typing in the target app while a mark is
-   visible. It must not take focus or intercept input. Use **Clear screen
-   markers** / **画面の目印を消す** in either set of controls, ask the agent to clear
+   visible. It must not take focus or intercept input. Use **Clear pointing** /
+   **指し示しを消す** in either set of controls, ask the agent to clear
    it, or wait for expiry (8 seconds by default; at most 15 seconds).
 6. Stop sharing: the mark and all frame references are revoked. Start sharing a
    different display and confirm old frame references are rejected. Disconnecting
@@ -326,10 +330,11 @@ reads, StrictMode, component/module replacement, delayed native replies in eithe
 order, delayed persistence, and failed reads/writes.
 
 The main and auxiliary controls use concise matching labels and retain only the
-one-line token-usage notice. Opening separate controls closes the original sharing
-popover after success; failures retain its controls and error, and repeated clicks
-share one pending open request. This does not close the main application window
-or stop sharing. UI tests exercise successful, pending, and failed opens.
+one-line token-usage notice. The first pop-out implementation closed the original
+sharing popover after success and retained its controls on failure. It is now
+superseded by automatic destination selection, described below. Repeated clicks
+share one pending open request; opening controls does not close the main application
+window or stop sharing.
 
 For this follow-up, 288 related frontend/configuration/UI tests and the native
 MCP-instructions test passed, along with TypeScript, Biome, Rust formatting, and
@@ -366,3 +371,36 @@ reference also keeps its latest same-ID observation when renewal is followed by
 capacity eviction; it cannot fall back to an older timestamp or borrow a newly
 issued ID for identical pixels. An independent review found no remaining issue
 with reference identity or the existing revocation boundaries.
+
+### Automatic sharing-controls destination
+
+Call and Portrait now open the auxiliary controls directly from the sharing
+button; there is no manual pop-out button. Their pack IDs are `portrait` and
+`companion`, respectively. Other modes measure the real inline content once when
+the user clicks or presses Arrow Down. The hidden, inert measurement has no
+height constraint or focus effect. The panel appears inline only when its full
+width and height fit within the available viewport. Opening controls refreshes
+idle display choices but never starts sharing. Later resize events only reposition
+the existing panel; another click decides the next destination.
+
+A failed auxiliary open shows a compact error card with Retry and Close rather
+than the full sharing form. It sits below the title bar with the error text
+scrollable independently of its controls. In modes with hidden window chrome,
+the title bar is raised above the voice layer only while this card is visible.
+This keeps Retry accessible even with long errors in a 200 × 300 Call window.
+The sharing button itself can also retry. Explicit opens can recover failed
+snapshot publication or action-listener registration without changing ownership,
+duplicating subscriptions, or starting a capture. A successful retry clears the
+transient error.
+
+At this checkpoint, 47 related UI/bridge tests and TypeScript passed, along with
+the production frontend build. A browser fixture using the real title bar,
+controls, and voice-layer CSS verified destination selection, click-time resize
+decisions, and both retry paths in a 200 × 300 viewport. Auxiliary IPC was mocked;
+this does not verify the actual native window load. A user trial reported a black
+auxiliary window, and its loading path is still under investigation.
+
+One known integration follow-up remains: App's capture-phase Escape shortcut can
+stop voice or exit a view mode before an open sharing dialog receives Escape.
+The dialog's Close button works; the global shortcut must yield to the open dialog
+before Escape can be advertised as its dismissal action.

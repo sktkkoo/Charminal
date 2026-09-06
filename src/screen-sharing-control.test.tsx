@@ -1,11 +1,34 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { StrictMode } from "react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScreenSharingControl, type ScreenSharingControlProps } from "./screen-sharing-control";
 
-afterEach(cleanup);
+let panelHeight = 380;
+let measuredPanels: HTMLElement[] = [];
+beforeEach(() => {
+  panelHeight = 380;
+  measuredPanels = [];
+  vi.stubGlobal("innerWidth", 1024);
+  vi.stubGlobal("innerHeight", 768);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    if (this.classList.contains("screen-sharing-panel")) {
+      measuredPanels.push(this);
+      return new DOMRect(120, 40, Number.parseFloat(this.style.width), panelHeight);
+    }
+    return new DOMRect(120, 8, 24, 24);
+  });
+});
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 function props(): ScreenSharingControlProps {
   return {
+    activeViewModeId: null,
     available: true,
     active: false,
     busy: false,
@@ -22,6 +45,7 @@ function props(): ScreenSharingControlProps {
     onPointersEnabledChange: vi.fn(),
     onRetryPointers: vi.fn(),
     onRefreshSources: vi.fn(),
+    onOpenAuxiliary: vi.fn().mockResolvedValue(undefined),
     language: "ja",
   };
 }
@@ -54,39 +78,153 @@ describe("screen sharing control", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
-  it("allows cancelling pending permission and keeps the panel inside a narrow window", () => {
-    vi.stubGlobal("innerWidth", 240);
+  it("allows cancelling pending permission in a fitting inline panel", () => {
     const p = { ...props(), busy: true };
     render(<ScreenSharingControl {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
     const panel = screen.getByRole("dialog");
-    expect(panel.style.left).toBe("12px");
-    expect(panel.style.width).toBe("216px");
+    expect(panel.style.left).toBe("120px");
+    expect(panel.style.width).toBe("310px");
     fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
     expect(p.onStop).toHaveBeenCalledTimes(1);
-    vi.unstubAllGlobals();
   });
 
-  it("closes only the popover after separate controls open without stopping sharing", async () => {
+  it.each([
+    "portrait",
+    "companion",
+  ])("always opens %s controls separately, even when the viewport is large", async (activeViewModeId) => {
+    const p = { ...props(), activeViewModeId };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
+    expect(p.onOpenAuxiliary).toHaveBeenCalledOnce();
+    expect(p.onRefreshSources).toHaveBeenCalledOnce();
+    expect(measuredPanels).toHaveLength(0);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("slider")).toBeNull();
+    expect(p.onStart).not.toHaveBeenCalled();
+    expect(p.onStop).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "画面共有" }).getAttribute("aria-busy")).toBe(
+        "false",
+      ),
+    );
+  });
+
+  it.each([
+    null,
+    "theater",
+    "immersive",
+    "custom-view",
+  ])("keeps fitting %s controls inline without a manual popout button", (activeViewModeId) => {
+    const p = { ...props(), activeViewModeId };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(p.onOpenAuxiliary).not.toHaveBeenCalled();
+    expect(p.onRefreshSources).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "画面共有を別ウィンドウで開く" })).toBeNull();
+  });
+
+  it("measures an inert, unfocused panel once before deciding where to open", () => {
+    const p = props();
+    const measure = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect");
+    measure.mockImplementation(function (this: HTMLElement) {
+      if (!this.classList.contains("screen-sharing-panel")) return new DOMRect(120, 8, 24, 24);
+      measuredPanels.push(this);
+      expect(this.getAttribute("aria-hidden")).toBe("true");
+      expect(this.hasAttribute("inert")).toBe(true);
+      expect(this.style.visibility).toBe("hidden");
+      expect(this.style.pointerEvents).toBe("none");
+      expect(this.style.maxHeight).toBe("");
+      expect(this.getAttribute("role")).toBe("dialog");
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "画面共有" }));
+      expect(p.onOpenAuxiliary).not.toHaveBeenCalled();
+      expect(p.onStart).not.toHaveBeenCalled();
+      return new DOMRect(120, 40, 310, 380);
+    });
+    render(
+      <StrictMode>
+        <ScreenSharingControl {...p} />
+      </StrictMode>,
+    );
+    const trigger = screen.getByRole("button", { name: "画面共有" });
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    expect(measuredPanels).toHaveLength(1);
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "画面共有の設定を閉じる" }),
+    );
+    expect(p.onRefreshSources).toHaveBeenCalledOnce();
+    expect(p.onStart).not.toHaveBeenCalled();
+    expect(p.onOpenAuxiliary).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { width: 240, height: 768, naturalHeight: 380 },
+    { width: 1024, height: 420, naturalHeight: 380 },
+    { width: 1024, height: 600, naturalHeight: 560 },
+  ])("opens separate controls when the measured form cannot fit $width x $height", async ({
+    width,
+    height,
+    naturalHeight,
+  }) => {
+    vi.stubGlobal("innerWidth", width);
+    vi.stubGlobal("innerHeight", height);
+    panelHeight = naturalHeight;
+    const p = { ...props(), activeViewModeId: "custom-view" };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
+    expect(measuredPanels).toHaveLength(1);
+    expect(p.onOpenAuxiliary).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(p.onStart).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "画面共有" }).getAttribute("aria-busy")).toBe(
+        "false",
+      ),
+    );
+  });
+
+  it("chooses again only on the next opening, without moving controls on resize or mode changes", async () => {
+    const p = props();
+    const view = render(<ScreenSharingControl {...p} />);
+    const trigger = screen.getByRole("button", { name: "画面共有" });
+    fireEvent.click(trigger);
+    vi.stubGlobal("innerWidth", 240);
+    vi.stubGlobal("innerHeight", 300);
+    fireEvent(window, new Event("resize"));
+    view.rerender(<ScreenSharingControl {...p} activeViewModeId="portrait" />);
+    expect(p.onOpenAuxiliary).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog").style.width).toBe("216px");
+    expect(measuredPanels).toHaveLength(1);
+    fireEvent.click(trigger);
+    fireEvent.click(trigger);
+    expect(p.onOpenAuxiliary).toHaveBeenCalledOnce();
+    await waitFor(() => expect(trigger.getAttribute("aria-busy")).toBe("false"));
+  });
+
+  it("opens active sharing controls separately without refreshing, clearing, or stopping sharing", async () => {
     const p = {
       ...props(),
+      activeViewModeId: "portrait",
       active: true,
       busy: true,
-      onOpenAuxiliary: vi.fn().mockResolvedValue(undefined),
     };
     render(<ScreenSharingControl {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "画面共有中" }));
-    fireEvent.click(screen.getByRole("button", { name: "指し示しを消す" }));
-    expect(p.onClearAnnotations).toHaveBeenCalledTimes(1);
-    expect(p.onStop).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "画面共有を別ウィンドウで開く" }));
     expect(p.onOpenAuxiliary).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(screen.getByRole("button", { name: "画面共有中" })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "画面共有中" }).getAttribute("aria-busy")).toBe(
+        "false",
+      ),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(p.onRefreshSources).not.toHaveBeenCalled();
+    expect(p.onClearAnnotations).not.toHaveBeenCalled();
     expect(p.onStop).not.toHaveBeenCalled();
   });
 
-  it("waits for a single open request even when the popout button is clicked repeatedly", async () => {
+  it("keeps one separate-window request pending across repeated clicks and keyboard openings", async () => {
     let finish!: () => void;
     const onOpenAuxiliary = vi.fn(
       () =>
@@ -94,27 +232,27 @@ describe("screen sharing control", () => {
           finish = resolve;
         }),
     );
-    render(<ScreenSharingControl {...props()} onOpenAuxiliary={onOpenAuxiliary} />);
-    fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
-    const popout = screen.getByRole("button", {
-      name: "画面共有を別ウィンドウで開く",
-    }) as HTMLButtonElement;
-    fireEvent.click(popout);
-    fireEvent.click(popout);
-    fireEvent.click(popout);
+    const p = { ...props(), activeViewModeId: "portrait", onOpenAuxiliary };
+    render(<ScreenSharingControl {...p} />);
+    const trigger = screen.getByRole("button", { name: "画面共有" });
+    fireEvent.click(trigger);
+    fireEvent.click(trigger);
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
     expect(onOpenAuxiliary).toHaveBeenCalledOnce();
-    expect(popout.disabled).toBe(true);
-    expect(screen.getByRole("dialog")).toBeTruthy();
-    expect(
-      (screen.getByRole("switch", { name: "エージェントの指し示し" }) as HTMLInputElement).disabled,
-    ).toBe(false);
+    expect(trigger.getAttribute("aria-busy")).toBe("true");
+    expect(p.onRefreshSources).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(p.onStart).not.toHaveBeenCalled();
     await act(async () => finish());
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("keeps failed popouts open with an error and allows regular controls and another attempt", async () => {
+  it("shows only a compact error, retry, and close when a separate window fails", async () => {
+    vi.stubGlobal("innerWidth", 200);
+    vi.stubGlobal("innerHeight", 300);
     const p = {
       ...props(),
+      activeViewModeId: "portrait",
       onOpenAuxiliary: vi
         .fn()
         .mockRejectedValueOnce(new Error("Unable to open controls"))
@@ -122,20 +260,71 @@ describe("screen sharing control", () => {
     };
     render(<ScreenSharingControl {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
-    fireEvent.click(screen.getByRole("button", { name: "画面共有を別ウィンドウで開く" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Unable to open controls");
     expect(screen.getByRole("dialog")).toBeTruthy();
-    const popout = screen.getByRole("button", {
-      name: "画面共有を別ウィンドウで開く",
+    expect(screen.getByRole("dialog").style.width).toBe("176px");
+    expect(screen.getByRole("dialog").style.top).toBe("40px");
+    expect(screen.getByRole("dialog").style.maxHeight).toBe("248px");
+    expect(screen.queryByRole("slider")).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("button", { name: "共有を開始" })).toBeNull();
+    const retry = screen.getByRole("button", {
+      name: "画面共有ウィンドウを再試行",
     }) as HTMLButtonElement;
-    expect(popout.disabled).toBe(false);
-    fireEvent.click(screen.getByRole("switch", { name: "エージェントの指し示し" }));
-    expect(p.onPointersEnabledChange).toHaveBeenCalledWith(false);
-    fireEvent.click(screen.getByRole("button", { name: "共有を開始" }));
-    expect(p.onStart).toHaveBeenCalledOnce();
-    fireEvent.click(popout);
+    expect(retry.disabled).toBe(false);
+    fireEvent.click(retry);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(p.onOpenAuxiliary).toHaveBeenCalledTimes(2);
+    expect(p.onStart).not.toHaveBeenCalled();
+    expect(p.onStop).not.toHaveBeenCalled();
+  });
+
+  it("keeps a dismissed failure closed when an outstanding retry fails", async () => {
+    let rejectRetry!: (error: Error) => void;
+    const p = {
+      ...props(),
+      activeViewModeId: "companion",
+      onOpenAuxiliary: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Unable to open controls"))
+        .mockImplementationOnce(
+          () =>
+            new Promise<void>((_resolve, reject) => {
+              rejectRetry = reject;
+            }),
+        ),
+    };
+    render(<ScreenSharingControl {...p} />);
+    const trigger = screen.getByRole("button", { name: "画面共有" });
+    fireEvent.click(trigger);
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "画面共有ウィンドウを再試行" }));
+    fireEvent.click(screen.getByRole("button", { name: "画面共有の設定を閉じる" }));
+    expect(document.activeElement).toBe(trigger);
+    await act(async () => rejectRetry(new Error("Still unavailable")));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(trigger.getAttribute("aria-busy")).toBe("false");
+  });
+
+  it("also retries a failed separate window from the original sharing button", async () => {
+    const p = {
+      ...props(),
+      activeViewModeId: "portrait",
+      onOpenAuxiliary: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Unable to open controls"))
+        .mockResolvedValueOnce(undefined),
+    };
+    render(<ScreenSharingControl {...p} />);
+    const trigger = screen.getByRole("button", { name: "画面共有" });
+    fireEvent.click(trigger);
+    await screen.findByRole("alert");
+    fireEvent.click(trigger);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(p.onOpenAuxiliary).toHaveBeenCalledTimes(2);
+    expect(p.onStart).not.toHaveBeenCalled();
+    expect(p.onStop).not.toHaveBeenCalled();
   });
 
   it("keeps marker OFF available during image delivery without stopping sharing", () => {

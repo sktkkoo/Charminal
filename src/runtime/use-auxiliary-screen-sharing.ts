@@ -28,6 +28,7 @@ export function useAuxiliaryScreenSharing(model: ScreenSharingAuxiliaryModel) {
       if (!bridge) throw new Error("Screen sharing controls are not ready.");
       await bridge.open();
       if (host.current !== bridge) throw new Error("Screen sharing controls changed. Try again.");
+      setError(undefined);
     } catch (failure) {
       if (host.current === bridge) setError(String(failure));
       throw failure;
