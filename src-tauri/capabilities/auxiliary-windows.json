@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "auxiliary-windows",
+  "description": "Bundled auxiliary controls can receive host state. Window creation and actions remain host-validated commands.",
+  "windows": ["auxiliary-screen-sharing-controls"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

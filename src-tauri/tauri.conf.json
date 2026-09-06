@@ -55,6 +55,7 @@
       "icons/icon.ico"
     ],
     "resources": [
+      "assets/fonts/OFL.txt",
       "resources/yorishiro-plugin/.claude-plugin/plugin.json",
       "resources/yorishiro-plugin/.codex-plugin/plugin.json",
       "resources/yorishiro-plugin/commands-en/*",

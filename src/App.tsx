@@ -166,6 +166,7 @@ import { registerBundledPomodoro } from "./runtime/bundled-pomodoro";
 import { registerBundledPomodoroUi } from "./runtime/bundled-pomodoro-ui";
 import { appendCodexRealtimePersonaDiagnostic } from "./runtime/codex-realtime/persona-diagnostics";
 import { useCodexRealtime } from "./runtime/codex-realtime/use-codex-realtime";
+import { useScreenPointerSettings } from "./runtime/codex-realtime/use-screen-pointer-settings";
 import { useScreenSharing } from "./runtime/codex-realtime/use-screen-sharing";
 import {
   consumePendingRealtimeStart,
@@ -329,6 +330,7 @@ import {
   type StageSurfaces,
 } from "./runtime/ui-pack-transition/stage-transition";
 import { getUiStateStore } from "./runtime/ui-state-store";
+import { useAuxiliaryScreenSharing } from "./runtime/use-auxiliary-screen-sharing";
 import {
   loadUserLayer,
   reconcileAmbientUiRegistration,
@@ -350,6 +352,7 @@ import {
   withPrimaryPersonaSet,
   type YorishiroConfig,
 } from "./runtime/user-pack-loader/config";
+import { enqueueConfigWrite } from "./runtime/user-pack-loader/config-write-queue";
 import {
   appendInitReloadErrorMarker,
   stripInitReloadErrorMarker,
@@ -1187,16 +1190,7 @@ function App() {
     };
   }, []);
 
-  // config write は read-modify-write なので UI / MCP 経路を 1 本の queue で直列化する。
-  const pendingConfigWriteRef = useRef<Promise<void>>(Promise.resolve());
-  const enqueueConfigWrite = useCallback(<T,>(write: () => Promise<T>): Promise<T> => {
-    const next = pendingConfigWriteRef.current.then(write);
-    pendingConfigWriteRef.current = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
-  }, []);
+  // UI / MCP config writes share one document-lifetime queue, including across remounts.
   const updateYorishiroConfig = useCallback(
     (update: (current: YorishiroConfig) => YorishiroConfig): Promise<YorishiroConfig> =>
       enqueueConfigWrite(async () => {
@@ -1205,7 +1199,7 @@ function App() {
         await writeYorishiroConfigText(serializeConfig(updated));
         return updated;
       }),
-    [enqueueConfigWrite],
+    [],
   );
   const updateConfig = useCallback(
     (
@@ -1217,6 +1211,7 @@ function App() {
         ambientAudioVolume: number;
         voiceVolume: number;
         attentionLightNotifications: boolean;
+        screenPointersEnabled: boolean;
         motionIntensity: number;
         language: AppLanguage;
         voiceFrequency: VoiceFrequency;
@@ -1239,7 +1234,7 @@ function App() {
         }
         return updated;
       }),
-    [enqueueConfigWrite],
+    [],
   );
   const setActiveSceneFromUserSelection = useCallback(
     async (id: string | null): Promise<void> => {
@@ -4023,7 +4018,6 @@ function App() {
     createAmenityContext,
     ambientAudio,
     applyTerminalPresentationForSession,
-    enqueueConfigWrite,
     updateYorishiroConfig,
     updateConfig,
     setVoiceVolume,
@@ -4129,6 +4123,7 @@ function App() {
     () => createBodyStateExpressionAdapter(() => bodyRef.current),
     [],
   );
+  const speechScreenCaptureRef = useRef<(() => Promise<void>) | null>(null);
   const {
     state: codexRealtimeState,
     stop: stopCodexRealtime,
@@ -4137,6 +4132,7 @@ function App() {
     trackQuickChatPrompt,
     screenThreadId,
     shareScreenObservation,
+    notifyScreenPointersEnabled,
     getLipSyncSource: getCodexRealtimeLipSyncSource,
   } = useCodexRealtime({
     sessionId: tabState.mainSessionId,
@@ -4145,6 +4141,12 @@ function App() {
     applyLipSyncSource: applyRealtimeLipSyncSource,
     setFallbackPlaybackEnabled: (enabled) => voicePlaybackLeaseSync.setEnabled(enabled),
     stateExpressionCallbacks: realtimeStateExpressionCallbacks,
+    onUserSpeechStarted: () => {
+      const capture = speechScreenCaptureRef.current;
+      if (!capture) return;
+      devLog.write({ subsystem: "ScreenSharing", phase: "user-speech-start" });
+      return capture();
+    },
     getVoiceCandidates: async () => {
       // Voice は session 開始時に一度だけ読まれる（audio 開始後は変更不可）。
       // 先頭が採用候補（persona override → global codexRealtimeVoice → built-in default）、
@@ -4276,12 +4278,34 @@ function App() {
     voiceReconnectPending,
   ]);
 
+  const screenPointerSettings = useScreenPointerSettings({
+    persist: (screenPointersEnabled) => updateConfig({ screenPointersEnabled }),
+    notify: notifyScreenPointersEnabled,
+  });
   const screenSharingAvailable =
-    codexVoiceAvailable && screenThreadId !== null && /Mac/i.test(navigator.platform);
+    codexVoiceAvailable &&
+    screenThreadId !== null &&
+    /Mac/i.test(navigator.platform) &&
+    screenPointerSettings.ready;
   const screenSharing = useScreenSharing({
     available: screenSharingAvailable,
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
     share: shareScreenObservation,
+    onTiming: (timing) => {
+      devLog.write({ subsystem: "ScreenSharing", phase: "capture-context", data: timing });
+    },
+  });
+  speechScreenCaptureRef.current = screenSharing.active ? screenSharing.captureNow : null;
+  const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
+    ...screenSharing,
+    pointersEnabled: screenPointerSettings.enabled,
+    pointersReady: screenPointerSettings.ready,
+    setPointersEnabled: screenPointerSettings.setEnabled,
+    retryPointers: screenPointerSettings.retry,
+    error: screenSharing.error ?? screenPointerSettings.error,
+    available: screenSharingAvailable,
+    ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
+    language: appLanguage.resolved,
   });
 
   const handleBodyReady = useCallback(
@@ -5865,19 +5889,27 @@ function App() {
         screenSharingControl={
           codexVoiceAvailable ? (
             <ScreenSharingControl
+              activeViewModeId={activePresentationViewModeIdValue}
               available={screenSharingAvailable}
               active={screenSharing.active}
               busy={screenSharing.busy}
+              pointersEnabled={screenPointerSettings.enabled}
+              pointersReady={screenPointerSettings.ready}
               intervalSeconds={screenSharing.intervalSeconds}
               sources={screenSharing.sources}
               sourceId={screenSharing.sourceId}
-              error={screenSharing.error}
+              error={
+                screenSharing.error ?? screenPointerSettings.error ?? auxiliaryScreenSharing.error
+              }
               lastObservedAt={screenSharing.lastObservedAt}
               language={appLanguage.resolved}
               onIntervalChange={screenSharing.setIntervalSeconds}
               onSourceChange={screenSharing.setSourceId}
               onStart={() => void screenSharing.start()}
               onStop={screenSharing.stop}
+              onPointersEnabledChange={(enabled) => void screenPointerSettings.setEnabled(enabled)}
+              onRetryPointers={() => void screenPointerSettings.retry()}
+              onOpenAuxiliary={auxiliaryScreenSharing.open}
               onRefreshSources={() => void screenSharing.refreshSources()}
             />
           ) : null

@@ -17,6 +17,10 @@ export const KEYS = {
   ATTENTION_RUNTIME: "attention:runtime",
   /** Attention light notification setting singleton: config-backed on/off state for runtime red flash light. */
   ATTENTION_LIGHT_SETTINGS: "attention-light:settings",
+  /** Screen marker preference and native request revisions across App remounts. */
+  SCREEN_POINTER_SETTINGS: "screen-pointer:settings",
+  /** Config read-modify-write ordering across App remounts. */
+  CONFIG_WRITE_QUEUE: "config:write-queue",
   /** AttentionLightCueStore singleton: attention light の cue（一度きりの光の合図）を dedup / toggle / cooldown 込みで一元管理する。 */
   ATTENTION_LIGHT_CUE: "attention-light:cue",
   /** AttentionCueClaimRegistry singleton: AttentionCueLight の yielding default 用 claim カウンタ。 */

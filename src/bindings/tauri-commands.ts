@@ -31,6 +31,10 @@ export interface ScreenCaptureSource {
 }
 
 export interface ScreenCaptureFrame {
+  readonly frameId: string;
+  readonly pointersEnabled: boolean;
+  readonly pointerFrameValid: boolean;
+  readonly pointerEpoch: number;
   readonly sourceId: number;
   readonly sourceName: string;
   readonly capturedAt: number;
@@ -43,8 +47,31 @@ export const screenCaptureListSources = (): Promise<ScreenCaptureSource[]> =>
   call("screen_capture_list_sources", {});
 export const screenCaptureRequestPermission = (): Promise<boolean> =>
   call("screen_capture_request_permission", {});
-export const screenCaptureFrame = (sourceId: number): Promise<ScreenCaptureFrame> =>
-  call("screen_capture_frame", { sourceId });
+export const screenCaptureFrame = (
+  sourceId: number,
+  shareId: string,
+): Promise<ScreenCaptureFrame> => call("screen_capture_frame", { sourceId, shareId });
+export const screenAnnotationDocument = (): Promise<string> =>
+  call("screen_annotation_document", {});
+export const screenAnnotationBegin = (
+  shareId: string,
+  sourceId: number,
+  documentId: string,
+): Promise<void> => call("screen_annotation_begin", { shareId, sourceId, documentId });
+export const screenAnnotationEnd = (shareId: string): Promise<void> =>
+  call("screen_annotation_end", { shareId });
+export const screenAnnotationClear = (): Promise<void> => call("screen_annotation_clear", {});
+export interface ScreenPointerSetting {
+  readonly enabled: boolean;
+  readonly pointerEpoch: number;
+}
+
+export const screenAnnotationSetEnabled = (
+  documentId: string,
+  revision: number,
+  enabled: boolean,
+): Promise<ScreenPointerSetting> =>
+  call("screen_annotation_set_enabled", { documentId, revision, enabled });
 
 // ─── Session ────────────────────────────────────────────────────
 

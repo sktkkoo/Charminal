@@ -20,6 +20,8 @@ const bridge = vi.hoisted(() => ({
   turns: {} as Record<string, Array<Record<string, unknown>>>,
   parents: {} as Record<string, string | null>,
   ephemeralThreads: new Set<string>(),
+  pendingInjections: false,
+  injectionResponders: [] as Array<() => void>,
   pendingReads: false,
   turnListFailuresRemaining: 0,
   selectedThread: null as string | null,
@@ -71,10 +73,14 @@ vi.mock("../../bindings/tauri-commands", () => ({
             parentThreadId:
               typeof threadId === "string" ? (bridge.parents[threadId] ?? null) : null,
             ephemeral: typeof threadId === "string" && bridge.ephemeralThreads.has(threadId),
+            status: { type: "idle" },
           },
         });
       if (bridge.pendingReads) bridge.readResponders.push(sendRead);
       else sendRead();
+    } else if (request.method === "thread/inject_items") {
+      if (bridge.pendingInjections) bridge.injectionResponders.push(() => respond({}));
+      else respond({});
     } else if (request.method === "thread/turns/list") {
       if (bridge.turnListFailuresRemaining > 0) {
         bridge.turnListFailuresRemaining -= 1;
@@ -96,6 +102,8 @@ describe("CodexThreadTracker", () => {
     bridge.parents = {};
     bridge.ephemeralThreads = new Set();
     bridge.pendingReads = false;
+    bridge.pendingInjections = false;
+    bridge.injectionResponders = [];
     bridge.turnListFailuresRemaining = 0;
     bridge.selectedThread = null;
     bridge.connectFailuresRemaining = 0;
@@ -110,6 +118,99 @@ describe("CodexThreadTracker", () => {
     await tracker.start();
 
     expect(tracker.getCurrentThreadId()).toBe("thread-1");
+    tracker.stop();
+  });
+
+  it("shares directly with its validated owner and immediately stops on unload", async () => {
+    const tracker = new CodexThreadTracker("main-session");
+    await tracker.start();
+    bridge.sent = [];
+    // A preflight here would block on the slow read; the existing selected,
+    // loaded owner can accept passive context without that extra round trip.
+    bridge.pendingReads = true;
+    const frame = {
+      frameId: "shared-frame",
+      width: 1920,
+      height: 1080,
+      imageDataUrl: "data:image/jpeg;base64,YQ==",
+      capturedAt: "2026-09-06T00:00:00.000Z",
+      source: "Display 1",
+    };
+    expect((await tracker.shareScreenObservation(frame)).status).toBe("shared");
+    expect(bridge.sent.map((request) => request.method)).toEqual(["thread/inject_items"]);
+    bridge.channel?.onmessage(
+      JSON.stringify({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", status: { type: "notLoaded" } },
+      }),
+    );
+    expect((await tracker.shareScreenObservation(frame)).status).toBe("busy");
+    expect(bridge.sent).toHaveLength(1);
+    tracker.stop();
+  });
+
+  it("bounds and coalesces passive policy updates, then revokes queued work on unload", async () => {
+    const tracker = new CodexThreadTracker("main-session");
+    await tracker.notifyScreenPointersEnabled(false);
+    expect(bridge.sent).toEqual([]);
+    await tracker.start();
+    bridge.sent = [];
+    bridge.pendingInjections = true;
+    await tracker.notifyScreenPointersEnabled(false);
+    await vi.waitFor(() => expect(bridge.sent).toHaveLength(1));
+    await tracker.notifyScreenPointersEnabled(true);
+    await tracker.notifyScreenPointersEnabled(false);
+    expect(bridge.sent).toHaveLength(1);
+    expect(bridge.sent[0]).toMatchObject({
+      method: "thread/inject_items",
+      params: {
+        threadId: "thread-1",
+        items: [
+          {
+            role: "developer",
+            content: [
+              { type: "input_text", text: expect.stringContaining("OFF by the user's choice") },
+            ],
+          },
+        ],
+      },
+    });
+    bridge.injectionResponders.shift()?.();
+    await vi.waitFor(() => expect(bridge.sent).toHaveLength(2));
+    expect(JSON.stringify(bridge.sent[1])).toContain("OFF by the user's choice");
+    await tracker.notifyScreenPointersEnabled(true);
+    bridge.channel?.onmessage(
+      JSON.stringify({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", status: { type: "notLoaded" } },
+      }),
+    );
+    bridge.injectionResponders.shift()?.();
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(bridge.sent).toHaveLength(2);
+    await tracker.notifyScreenPointersEnabled(true);
+    expect(bridge.sent).toHaveLength(2);
+    tracker.stop();
+  });
+
+  it("sends the new owner's policy without waiting for the previous owner's ACK", async () => {
+    const tracker = new CodexThreadTracker("main-session");
+    await tracker.start();
+    bridge.sent = [];
+    bridge.pendingInjections = true;
+    await tracker.notifyScreenPointersEnabled(false);
+    await vi.waitFor(() => expect(bridge.injectionResponders).toHaveLength(1));
+    bridge.selectedThread = "thread-2";
+    await vi.waitFor(() => expect(tracker.getCurrentThreadId()).toBe("thread-2"));
+    await tracker.notifyScreenPointersEnabled(true);
+    await vi.waitFor(() => expect(bridge.injectionResponders).toHaveLength(2));
+    const injections = bridge.sent.filter((request) => request.method === "thread/inject_items");
+    expect(injections.map((request) => request.params?.threadId)).toEqual(["thread-1", "thread-2"]);
+    bridge.injectionResponders.shift()?.();
+    for (let index = 0; index < 12; index += 1) await Promise.resolve();
+    expect(bridge.sent.filter((request) => request.method === "thread/inject_items")).toHaveLength(
+      2,
+    );
     tracker.stop();
   });
 

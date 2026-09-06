@@ -249,6 +249,10 @@ pub struct PomodoroStatusRequest {}
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AppScreenshotRequest {}
 
+/// Remove the current shared-display reference mark; does not stop sharing.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScreenPointerClearRequest {}
+
 /// `scene_activate` の引数。
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SceneActivateRequest {
@@ -1200,6 +1204,38 @@ impl Yorishiro {
         crate::mcp::screenshot::capture_webview_screenshot(&self.app_handle).await
     }
 
+    /// A host-owned, click-through native mark on the explicitly shared display.
+    #[tool(
+        description = "Proactively mark a clearly identifiable place or object when it helps explain the current conversation about the user's shared display, above external apps. While sharing and screen pointers are ON, no separate request to point is needed. Omit marks for unrelated conversation, uncertain targets, or when they add no clarity. First inspect the latest shared-screen image and use its exact frameId. kind=arrow points its tip at (x,y); kind=rect or kind=ellipse outlines the bounding box (x,y,width,height). An ellipse can circle a target; its width and height use image axes. All coordinates are normalized 0..1 from the IMAGE TOP LEFT, not app/CSS/global coordinates. Optional single-line label (80 characters); durationMs defaults to 8000, range 500..15000. Replaces the previous mark, never clicks or edits. Requires user-enabled screen pointers, active sharing, and a recent matching frame; expired/stopped/changed displays are rejected. If the user disabled pointers, discuss the shared image without marks and do not call or retry pointer tools until the user enables them. Re-enabling requires a fresh shared image; old frameIds stay invalid. During capture this call waits for completion. Say the mark is displayed only after this tool succeeds. The mark identifies your reference, not measured model attention. Images may be stale; inspect a newer shared image before pointing when the app content moved. A capture arriving is not itself a request to act."
+    )]
+    async fn screen_pointer_show(
+        &self,
+        Parameters(request): Parameters<crate::screen_annotation::ScreenPointerRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = crate::screen_annotation::show(&self.app_handle, request)
+            .await
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string(&result)
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?,
+        )]))
+    }
+
+    #[tool(
+        description = "Clear the resident's shared-display arrow or outline immediately. Keeps screen sharing active. Marks otherwise expire automatically."
+    )]
+    async fn screen_pointer_clear(
+        &self,
+        _params: Parameters<ScreenPointerClearRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::screen_annotation::clear(&self.app_handle)
+            .await
+            .map_err(|error| McpError::internal_error(error, None))?;
+        Ok(CallToolResult::success(vec![Content::text(
+            "{\"status\":\"cleared\"}",
+        )]))
+    }
+
     /// attention_light_cue: 部屋の attention light を一度だけ 2-pulse させる（気づいてほしい時の合図 / 動作確認用）。
     #[tool(
         description = "Pulse the room's attention light once (two soft pulses). Use when the resident wants the user to notice something, or to verify the light works. Respects the user's Light alert setting; rate-limited."
@@ -1229,6 +1265,7 @@ const SERVER_INSTRUCTIONS: &str = concat!(
                 "- 照明・カメラ等のパラメータ確認 → controls_get（scene pack 依存のパスを確認）\n",
                 "- 照明・カメラ等を変更 → controls_transition（controls_set / controls_set_many は使わず、必ず controls_transition を使う）\n",
                 "- スクリーンショットを撮る → app_screenshot（ターミナル UI 込みのウィンドウ全体。macOS のみ。初回は「画面収録」の許可が必要）\n",
+                "- 共有画面の会話で、対象を指すと説明が伝わりやすい → screen_pointer_show（共有中・目印ONなら「目印で示して」という別途依頼は不要。最新の共有画像を実際に確認し、対象を明確に特定できるとき積極的に使う。画面に無関係な会話、対象が曖昧な場合、目印が説明に役立たない場合は出さない。その frameId と画像左上原点の 0..1 座標で矢印・矩形・楕円を出す。外部アプリ上にも表示。消す → screen_pointer_clear。ユーザーがポインターをOFFにした場合は印なしで説明し、ONにするまで呼出・再試行しない。ONに戻した後も最新の共有画像が必要。内部の注意を可視化したものではなく、説明対象の印。画像が古い・対象が動いた場合は最新の共有画像を確認する。画像の到着だけでは行動しない）\n",
                 "- 表情だけ変える → body_expression_set\n",
                 "- ポーズ・ジェスチャーだけ → body_animation_play\n",
                 "- pack の一覧・有効化・無効化 → list_packs / enable_pack / disable_pack\n",
@@ -1373,6 +1410,15 @@ mod tests {
             SERVER_INSTRUCTIONS.contains("app_screenshot"),
             "server instructions must mention app_screenshot"
         );
+        assert!(SERVER_INSTRUCTIONS.contains("screen_pointer_show"));
+        assert!(SERVER_INSTRUCTIONS.contains("screen_pointer_clear"));
+        assert!(SERVER_INSTRUCTIONS.contains("共有中・目印ONなら"));
+        assert!(SERVER_INSTRUCTIONS.contains("別途依頼は不要"));
+        assert!(SERVER_INSTRUCTIONS.contains("対象を明確に特定できるとき積極的に使う"));
+        assert!(SERVER_INSTRUCTIONS.contains("画面に無関係な会話"));
+        assert!(SERVER_INSTRUCTIONS.contains("ONにするまで呼出・再試行しない"));
+        assert!(SERVER_INSTRUCTIONS.contains("ONに戻した後も最新の共有画像が必要"));
+        assert!(SERVER_INSTRUCTIONS.contains("画像の到着だけでは行動しない"));
     }
 
     #[test]

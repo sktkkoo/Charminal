@@ -84,6 +84,12 @@
   color: var(--yorishiro-accent, #8eb09c);
 }
 
+.screen-sharing-experimental {
+  flex-shrink: 0;
+  color: var(--yorishiro-fg-dim, #a6aba8);
+  font-size: 9px;
+}
+
 .screen-sharing-description,
 .screen-sharing-cost {
   margin: 0 0 12px;
@@ -251,6 +257,46 @@
   color: var(--yorishiro-fg, #e8ebe7);
 }
 
+.screen-sharing-pointer-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  cursor: pointer;
+}
+
+.screen-sharing-pointer-toggle input {
+  appearance: none;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 18px;
+  margin: 0;
+  padding: 3px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--yorishiro-border, #3b403d);
+  cursor: inherit;
+}
+
+.screen-sharing-pointer-toggle input::before {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--yorishiro-fg, #e8ebe7);
+  content: "";
+}
+
+.screen-sharing-pointer-toggle input:checked {
+  background: var(--yorishiro-accent, #8eb09c);
+}
+
+.screen-sharing-pointer-toggle input:checked::before {
+  transform: translateX(12px);
+  background: var(--yorishiro-bg, #141619);
+}
+
 .screen-sharing-action:hover:not(:disabled) {
   filter: brightness(1.12);
 }
@@ -265,6 +311,26 @@
 .screen-sharing-panel input:focus-visible {
   outline: 2px solid var(--yorishiro-accent, #8eb09c);
   outline-offset: 2px;
+}
+
+.screen-sharing-open-error {
+  display: flex;
+  flex-direction: column;
+}
+
+.app.view-mode-chrome-hidden .title-bar:has(.screen-sharing-open-error) {
+  z-index: 960;
+}
+
+.screen-sharing-open-error > .screen-sharing-error {
+  display: block;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.screen-sharing-open-error > .screen-sharing-heading,
+.screen-sharing-open-error > .screen-sharing-action {
+  flex-shrink: 0;
 }
 
 @keyframes screen-sharing-spin {

@@ -1,11 +1,15 @@
 import { LoaderCircle, MonitorUp, RefreshCw, X } from "lucide-react";
-import { type CSSProperties, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { ScreenPointerToggle } from "./screen-pointer-toggle";
 import "./screen-sharing-control.css";
 
 export interface ScreenSharingControlProps {
+  readonly activeViewModeId: string | null;
   readonly available: boolean;
   readonly active: boolean;
   readonly busy: boolean;
+  readonly pointersEnabled: boolean;
+  readonly pointersReady: boolean;
   readonly intervalSeconds: number;
   readonly sources: readonly { readonly id: number; readonly name: string }[];
   readonly sourceId: number | null;
@@ -15,7 +19,10 @@ export interface ScreenSharingControlProps {
   readonly onSourceChange: (id: number) => void;
   readonly onStart: () => void;
   readonly onStop: () => void;
+  readonly onRetryPointers: () => void;
+  readonly onPointersEnabledChange: (enabled: boolean) => void;
   readonly onRefreshSources: () => void;
+  readonly onOpenAuxiliary?: () => Promise<void>;
   readonly language?: string;
 }
 
@@ -24,21 +31,20 @@ const strings = {
     title: "Screen sharing",
     activeTitle: "Screen sharing on",
     close: "Close screen sharing settings",
-    description:
-      "Share the selected display with your main agent. Ask about the screen to have it inspect the image.",
+    retryAuxiliary: "Retry opening screen sharing",
+    auxiliaryUnavailable: "The screen sharing window is not ready. Try again.",
     display: "Display",
     chooseDisplay: "Choose a display",
     noDisplays: "No displays available",
     refresh: "Refresh displays",
-    interval: "Viewing interval",
+    interval: "Periodic interval",
     seconds: (value: number) => `${value} seconds`,
-    cost: "Screen sharing sends images and can use many tokens. Shorter intervals increase usage.",
+    cost: "Sending images periodically uses many tokens.",
     unavailable: "Select an agent that supports screen sharing to start.",
     on: "Sharing",
     off: "Off",
     busy: "Sharing image…",
     waiting: "Waiting for the first image…",
-    stopped: "Screen sharing is off.",
     lastViewed: "Last shared",
     cancel: "Cancel",
     start: "Start sharing",
@@ -48,21 +54,20 @@ const strings = {
     title: "画面共有",
     activeTitle: "画面共有中",
     close: "画面共有の設定を閉じる",
-    description:
-      "選択した画面をメインエージェントに共有します。画面について話しかけると、画像を参照します。",
-    display: "共有する画面",
+    retryAuxiliary: "画面共有ウィンドウを再試行",
+    auxiliaryUnavailable: "画面共有ウィンドウの準備ができていません。もう一度お試しください。",
+    display: "画面選択",
     chooseDisplay: "画面を選択",
     noDisplays: "共有できる画面がありません",
     refresh: "画面一覧を更新",
-    interval: "画面を見る間隔",
+    interval: "定期更新の間隔",
     seconds: (value: number) => `${value}秒`,
-    cost: "画面共有は画像の送信でトークンを多く消費します。間隔が短いほど使用量が増えます。",
+    cost: "画像の定期送信ではトークンを多く消費します。",
     unavailable: "画面共有に対応するエージェントを選択してください。",
     on: "共有中",
     off: "停止中",
     busy: "画像を共有中…",
     waiting: "最初の画像の共有を待っています…",
-    stopped: "画面共有は停止しています。",
     lastViewed: "最終共有",
     cancel: "キャンセル",
     start: "共有を開始",
@@ -70,11 +75,35 @@ const strings = {
   },
 } as const;
 
+const PANEL_WIDTH = 310;
+const PANEL_MARGIN = 12;
+type PanelMode = "closed" | "measuring" | "inline" | "auxiliary-error";
+
+function panelPosition(trigger: HTMLButtonElement | null, compactError = false) {
+  const width = Math.min(PANEL_WIDTH, Math.max(0, window.innerWidth - PANEL_MARGIN * 2));
+  const rect = trigger?.getBoundingClientRect();
+  const top = compactError
+    ? 40
+    : Math.min((rect?.bottom ?? 32) + 8, Math.max(PANEL_MARGIN, window.innerHeight - 100));
+  return {
+    left: Math.max(
+      PANEL_MARGIN,
+      Math.min(rect?.left ?? PANEL_MARGIN, window.innerWidth - width - PANEL_MARGIN),
+    ),
+    top,
+    width,
+    maxHeight: Math.max(0, window.innerHeight - top - PANEL_MARGIN),
+  };
+}
+
 /** Controlled screen-sharing settings. Opening the panel never starts capture. */
 export function ScreenSharingControl({
+  activeViewModeId,
   available,
   active,
   busy,
+  pointersEnabled,
+  pointersReady,
   intervalSeconds,
   sources,
   sourceId,
@@ -84,24 +113,34 @@ export function ScreenSharingControl({
   onSourceChange,
   onStart,
   onStop,
+  onPointersEnabledChange,
+  onRetryPointers,
   onRefreshSources,
+  onOpenAuxiliary,
   language = "en",
 }: ScreenSharingControlProps) {
-  const [open, setOpen] = useState(false);
-  const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
+  const [panelMode, setPanelMode] = useState<PanelMode>("closed");
+  const [openingAuxiliary, setOpeningAuxiliary] = useState(false);
+  const [auxiliaryError, setAuxiliaryError] = useState<string>();
+  const [panelStyle, setPanelStyle] = useState<ReturnType<typeof panelPosition>>();
+  const openingAuxiliaryRef = useRef<{ dismissed: boolean } | null>(null);
+  const measurementRef = useRef<ReturnType<typeof panelPosition> | null>(null);
   const rootRef = useRef<HTMLFieldSetElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
   const titleId = useId();
-  const descriptionId = useId();
   const displayId = useId();
   const intervalId = useId();
   const costId = useId();
   const isJapanese = language.startsWith("ja");
   const labels = strings[isJapanese ? "ja" : "en"];
+  const displayError = auxiliaryError ?? error;
+  const open = panelMode === "inline" || panelMode === "auxiliary-error";
+  const measuring = panelMode === "measuring";
   const hasSelectedSource = sources.some((source) => source.id === sourceId);
-  const canStart = available && hasSelectedSource && !busy;
+  const canStart = available && pointersReady && hasSelectedSource && !busy;
   const lastViewed =
     lastObservedAt !== undefined && Number.isFinite(lastObservedAt)
       ? new Date(lastObservedAt).toLocaleTimeString(isJapanese ? "ja-JP" : "en-US", {
@@ -111,36 +150,90 @@ export function ScreenSharingControl({
         })
       : null;
 
+  const closePanel = useCallback(() => {
+    measurementRef.current = null;
+    if (openingAuxiliaryRef.current) openingAuxiliaryRef.current.dismissed = true;
+    setPanelMode("closed");
+  }, []);
+
+  const openAuxiliary = useCallback(async () => {
+    if (openingAuxiliaryRef.current) return;
+    const request = { dismissed: false };
+    openingAuxiliaryRef.current = request;
+    setOpeningAuxiliary(true);
+    try {
+      if (!onOpenAuxiliary) throw new Error(labels.auxiliaryUnavailable);
+      await onOpenAuxiliary();
+      if (openingAuxiliaryRef.current === request && !request.dismissed) {
+        setPanelMode("closed");
+        setAuxiliaryError(undefined);
+      }
+    } catch (failure) {
+      if (openingAuxiliaryRef.current === request && !request.dismissed) {
+        setAuxiliaryError(failure instanceof Error ? failure.message : String(failure));
+        setPanelStyle(panelPosition(triggerRef.current, true));
+        setPanelMode("auxiliary-error");
+      }
+    } finally {
+      if (openingAuxiliaryRef.current === request) {
+        openingAuxiliaryRef.current = null;
+        setOpeningAuxiliary(false);
+      }
+    }
+  }, [labels.auxiliaryUnavailable, onOpenAuxiliary]);
+
   const openPanel = () => {
-    setOpen(true);
+    if (openingAuxiliaryRef.current || measurementRef.current) return;
+    setAuxiliaryError(undefined);
     if (!active) onRefreshSources();
+    // Pack IDs differ from their display labels: portrait is Call, companion is Portrait.
+    if (activeViewModeId === "portrait" || activeViewModeId === "companion") {
+      void openAuxiliary();
+      return;
+    }
+    const position = panelPosition(triggerRef.current);
+    measurementRef.current = position;
+    setPanelStyle(position);
+    setPanelMode("measuring");
   };
+
+  useLayoutEffect(() => {
+    const position = measurementRef.current;
+    if (!measuring || !position) return;
+    measurementRef.current = null;
+    const height = panelRef.current?.getBoundingClientRect().height ?? 0;
+    if (position.width >= PANEL_WIDTH && height > 0 && height <= position.maxHeight) {
+      setPanelMode("inline");
+    } else {
+      setPanelMode("closed");
+      void openAuxiliary();
+    }
+  }, [measuring, openAuxiliary]);
+
+  useEffect(
+    () => () => {
+      measurementRef.current = null;
+      openingAuxiliaryRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!open) return;
-    const positionPanel = () => {
-      const width = Math.min(310, Math.max(0, window.innerWidth - 24));
-      const rect = triggerRef.current?.getBoundingClientRect();
-      const top = Math.min((rect?.bottom ?? 32) + 8, Math.max(12, window.innerHeight - 100));
-      setPanelStyle({
-        left: Math.max(12, Math.min(rect?.left ?? 12, window.innerWidth - width - 12)),
-        top,
-        width,
-        maxHeight: Math.max(0, window.innerHeight - top - 12),
-      });
-    };
-    positionPanel();
+    // Resize may reposition an open panel, but only another click chooses its destination.
+    const positionPanel = () =>
+      setPanelStyle(panelPosition(triggerRef.current, panelMode === "auxiliary-error"));
     window.addEventListener("resize", positionPanel);
     closeRef.current?.focus();
     const onPointerDown = (event: PointerEvent) => {
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
-        setOpen(false);
+        closePanel();
       }
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      setOpen(false);
+      closePanel();
       triggerRef.current?.focus();
     };
     window.addEventListener("pointerdown", onPointerDown);
@@ -150,7 +243,7 @@ export function ScreenSharingControl({
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [open]);
+  }, [closePanel, open, panelMode]);
 
   return (
     <fieldset
@@ -159,7 +252,7 @@ export function ScreenSharingControl({
       ref={rootRef}
       onBlur={(event) => {
         if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) {
-          setOpen(false);
+          closePanel();
         }
       }}
     >
@@ -171,9 +264,12 @@ export function ScreenSharingControl({
         aria-label={active ? labels.activeTitle : labels.title}
         aria-haspopup="dialog"
         aria-expanded={open}
+        aria-busy={openingAuxiliary}
         aria-controls={open ? panelId : undefined}
-        title={error ?? (active ? labels.activeTitle : labels.title)}
-        onClick={() => (open ? setOpen(false) : openPanel())}
+        title={displayError ?? (active ? labels.activeTitle : labels.title)}
+        onClick={() =>
+          panelMode === "auxiliary-error" ? void openAuxiliary() : open ? closePanel() : openPanel()
+        }
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
@@ -181,39 +277,83 @@ export function ScreenSharingControl({
           }
         }}
       >
-        <MonitorUp size={15} strokeWidth={1.8} aria-hidden="true" />
+        {openingAuxiliary ? (
+          <LoaderCircle size={15} className="screen-sharing-spinner" aria-hidden="true" />
+        ) : (
+          <MonitorUp size={15} strokeWidth={1.8} aria-hidden="true" />
+        )}
         {active ? <span className="screen-sharing-dot" aria-hidden="true" /> : null}
       </button>
-      {open ? (
+      {panelMode === "auxiliary-error" ? (
         <div
           id={panelId}
-          className="screen-sharing-panel"
+          className="screen-sharing-panel screen-sharing-open-error"
           style={panelStyle}
           role="dialog"
           aria-labelledby={titleId}
-          aria-describedby={descriptionId}
         >
           <div className="screen-sharing-heading">
             <h2 id={titleId}>{labels.title}</h2>
-            <span className="screen-sharing-badge" data-active={active}>
-              {active ? labels.on : labels.off}
-            </span>
             <button
               ref={closeRef}
               type="button"
               className="screen-sharing-icon-button"
               aria-label={labels.close}
               onClick={() => {
-                setOpen(false);
+                closePanel();
                 triggerRef.current?.focus();
               }}
             >
               <X size={14} aria-hidden="true" />
             </button>
           </div>
-          <p className="screen-sharing-description" id={descriptionId}>
-            {labels.description}
+          <p className="screen-sharing-error" role="alert">
+            {auxiliaryError}
           </p>
+          <button
+            type="button"
+            className="screen-sharing-action"
+            aria-busy={openingAuxiliary}
+            disabled={openingAuxiliary}
+            onClick={() => void openAuxiliary()}
+          >
+            {labels.retryAuxiliary}
+          </button>
+        </div>
+      ) : panelMode === "inline" || measuring ? (
+        <div
+          ref={panelRef}
+          id={panelId}
+          className="screen-sharing-panel"
+          style={
+            measuring
+              ? { ...panelStyle, maxHeight: undefined, visibility: "hidden", pointerEvents: "none" }
+              : panelStyle
+          }
+          role="dialog"
+          aria-labelledby={titleId}
+          aria-hidden={measuring || undefined}
+          inert={measuring || undefined}
+        >
+          <div className="screen-sharing-heading">
+            <h2 id={titleId}>{labels.title}</h2>
+            <span className="screen-sharing-badge" data-active={active}>
+              {active ? labels.on : labels.off}
+            </span>
+            <span className="screen-sharing-experimental">Experimental</span>
+            <button
+              ref={closeRef}
+              type="button"
+              className="screen-sharing-icon-button"
+              aria-label={labels.close}
+              onClick={() => {
+                closePanel();
+                triggerRef.current?.focus();
+              }}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
+          </div>
           <label className="screen-sharing-label" htmlFor={displayId}>
             {labels.display}
           </label>
@@ -258,7 +398,7 @@ export function ScreenSharingControl({
             id={intervalId}
             className="screen-sharing-slider"
             type="range"
-            min={5}
+            min={20}
             max={60}
             step={1}
             value={intervalSeconds}
@@ -267,18 +407,25 @@ export function ScreenSharingControl({
             onChange={(event) => onIntervalChange(Number(event.currentTarget.value))}
           />
           <div className="screen-sharing-range-labels" aria-hidden="true">
-            <span>{labels.seconds(5)}</span>
+            <span>{labels.seconds(20)}</span>
             <span>{labels.seconds(60)}</span>
           </div>
           <p className="screen-sharing-cost" id={costId}>
             {labels.cost}
           </p>
+          <ScreenPointerToggle
+            enabled={pointersEnabled}
+            ready={pointersReady}
+            language={language}
+            onChange={onPointersEnabledChange}
+            onRetry={error ? onRetryPointers : undefined}
+          />
           {!available ? <p className="screen-sharing-description">{labels.unavailable}</p> : null}
           {error ? (
             <p className="screen-sharing-error" role="alert">
               {error}
             </p>
-          ) : (
+          ) : active || busy ? (
             <div className="screen-sharing-status" role="status" aria-live="polite">
               {busy ? (
                 <>
@@ -290,10 +437,10 @@ export function ScreenSharingControl({
                   {labels.lastViewed}: {lastViewed}
                 </span>
               ) : (
-                <span>{active ? labels.waiting : labels.stopped}</span>
+                <span>{labels.waiting}</span>
               )}
             </div>
-          )}
+          ) : null}
           <button
             type="button"
             className="screen-sharing-action"

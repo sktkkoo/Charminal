@@ -56,6 +56,7 @@ describe("parseConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -85,6 +86,7 @@ describe("parseConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -114,6 +116,7 @@ describe("parseConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -143,6 +146,7 @@ describe("parseConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -172,6 +176,7 @@ describe("parseConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -201,6 +206,7 @@ describe("parseConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -235,6 +241,7 @@ describe("parseConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -293,6 +300,7 @@ describe("serializeConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -322,6 +330,7 @@ describe("serializeConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -364,6 +373,7 @@ describe("serializeConfig", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -771,6 +781,7 @@ describe("withDisabledPackAdded / withDisabledPackRemoved", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -801,6 +812,7 @@ describe("withDisabledPackAdded / withDisabledPackRemoved", () => {
       ambientAudioVolume: 1,
       voiceVolume: 1,
       attentionLightNotifications: true,
+      screenPointersEnabled: true,
       motionIntensity: 1,
       profiles: [],
       defaultProfile: null,
@@ -1333,5 +1345,28 @@ describe("language", () => {
     const next = withLanguageSet(EMPTY_CONFIG, "ja");
     expect(next.language).toBe("ja");
     expect(EMPTY_CONFIG.language).toBe("auto");
+  });
+});
+
+describe("screen pointer preference", () => {
+  it("defaults ON and stores only an explicit OFF", () => {
+    for (const value of [undefined, null, true, "false", 0]) {
+      expect(
+        parseConfig(JSON.stringify({ screenPointersEnabled: value })).screenPointersEnabled,
+      ).toBe(true);
+    }
+    expect(JSON.parse(serializeConfig(EMPTY_CONFIG))).not.toHaveProperty("screenPointersEnabled");
+    expect(parseConfig('{"screenPointersEnabled":false}').screenPointersEnabled).toBe(false);
+  });
+  it("preserves OFF across unrelated preference updates", () => {
+    const loaded = parseConfig('{"screenPointersEnabled":false,"primaryPersona":"yori"}');
+    const edited = withLanguageSet(loaded, "ja");
+    const saved = serializeConfig(edited);
+    expect(JSON.parse(saved)).toMatchObject({
+      screenPointersEnabled: false,
+      primaryPersona: "yori",
+      language: "ja",
+    });
+    expect(parseConfig(saved).screenPointersEnabled).toBe(false);
   });
 });

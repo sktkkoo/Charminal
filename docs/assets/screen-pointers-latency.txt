@@ -1,0 +1,51 @@
+Native handwriting overlay, bundled Klee One SemiBold, two-pass labels.
+One cold show and 21 warm shows across arrow, ellipse and rectangle.
+API/CPU timing only; no physical presentation, loaded-app or voice-to-pointer timing.
+Standalone Tao/AppKit probe; no screen capture was performed.
+Warm show median: 0.954 ms.
+
+queue_sample=0 dispatch_us=45
+sample=0 shape=arrow geometry_us=179 show_us=41342 forced_paint_us=443 hide_us=242
+queue_sample=1 dispatch_us=50
+sample=1 shape=ellipse geometry_us=1860 show_us=1027 forced_paint_us=142 hide_us=177
+queue_sample=2 dispatch_us=56
+sample=2 shape=rect geometry_us=156 show_us=1066 forced_paint_us=98 hide_us=218
+queue_sample=3 dispatch_us=41
+sample=3 shape=arrow geometry_us=231 show_us=1187 forced_paint_us=107 hide_us=236
+queue_sample=4 dispatch_us=54
+sample=4 shape=ellipse geometry_us=69 show_us=954 forced_paint_us=91 hide_us=220
+queue_sample=5 dispatch_us=57
+sample=5 shape=rect geometry_us=79 show_us=1047 forced_paint_us=105 hide_us=198
+queue_sample=6 dispatch_us=43
+sample=6 shape=arrow geometry_us=1168 show_us=1076 forced_paint_us=129 hide_us=248
+queue_sample=7 dispatch_us=44
+sample=7 shape=ellipse geometry_us=1672 show_us=1124 forced_paint_us=116 hide_us=229
+queue_sample=8 dispatch_us=52
+sample=8 shape=rect geometry_us=2631 show_us=1048 forced_paint_us=124 hide_us=216
+queue_sample=9 dispatch_us=53
+sample=9 shape=arrow geometry_us=4238 show_us=880 forced_paint_us=109 hide_us=182
+queue_sample=10 dispatch_us=58
+sample=10 shape=ellipse geometry_us=5 show_us=1184 forced_paint_us=145 hide_us=4440
+queue_sample=11 dispatch_us=41
+sample=11 shape=rect geometry_us=5 show_us=1005 forced_paint_us=114 hide_us=3495
+queue_sample=12 dispatch_us=47
+sample=12 shape=arrow geometry_us=2 show_us=719 forced_paint_us=102 hide_us=458
+queue_sample=13 dispatch_us=48
+sample=13 shape=ellipse geometry_us=3 show_us=661 forced_paint_us=83 hide_us=3213
+queue_sample=14 dispatch_us=25
+sample=14 shape=rect geometry_us=2 show_us=694 forced_paint_us=97 hide_us=2296
+queue_sample=15 dispatch_us=48
+sample=15 shape=arrow geometry_us=2 show_us=727 forced_paint_us=98 hide_us=4501
+queue_sample=16 dispatch_us=42
+sample=16 shape=ellipse geometry_us=3 show_us=664 forced_paint_us=92 hide_us=2775
+queue_sample=17 dispatch_us=28
+sample=17 shape=rect geometry_us=2 show_us=697 forced_paint_us=87 hide_us=2280
+queue_sample=18 dispatch_us=42
+sample=18 shape=arrow geometry_us=3 show_us=780 forced_paint_us=104 hide_us=4349
+queue_sample=19 dispatch_us=28
+sample=19 shape=ellipse geometry_us=3 show_us=769 forced_paint_us=120 hide_us=2862
+queue_sample=20 dispatch_us=35
+sample=20 shape=rect geometry_us=4 show_us=997 forced_paint_us=124 hide_us=5511
+queue_sample=21 dispatch_us=34
+sample=21 shape=arrow geometry_us=3 show_us=942 forced_paint_us=136 hide_us=5330
+focus_preserved=true nonfocus_clickthrough_stable_id_and_hide_verified=true captures_performed=0
