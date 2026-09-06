@@ -331,6 +331,7 @@ import {
 } from "./runtime/ui-pack-transition/stage-transition";
 import { getUiStateStore } from "./runtime/ui-state-store";
 import { useAuxiliaryScreenSharing } from "./runtime/use-auxiliary-screen-sharing";
+import { useViewModeCamera } from "./runtime/use-view-mode-camera";
 import {
   loadUserLayer,
   reconcileAmbientUiRegistration,
@@ -365,10 +366,6 @@ import {
   writeSessionPersonasText,
   writeYorishiroConfigText,
 } from "./runtime/user-pack-loader/yorishiro-io";
-import {
-  acquireFixedViewModeCamera,
-  acquireResponsiveCallCamera,
-} from "./runtime/view-mode-framing";
 import { enqueueNativeWindowMutation } from "./runtime/view-mode-native-window";
 import {
   nextViewModeHudVisibility,
@@ -1046,6 +1043,7 @@ function App() {
   // persona 切替で姿が変わるとき、カーテンが明けた瞬間に新しいアバターが
   // 立っているようにするため（ロードが終わらない場合は curtain の failsafe が開ける）。
   const [vrmReadyOnce, setVrmReadyOnce] = useState(false);
+  const [cameraBody, setCameraBody] = useState<Body | null>(null);
   const [appLanguage, setAppLanguage] = useState<{
     configured: AppLanguage;
     resolved: ResolvedLanguage;
@@ -1128,37 +1126,16 @@ function App() {
     },
     [],
   );
-  useEffect(() => {
-    // Settings is a temporary surface over the originating View Mode. Keep that
-    // mode's camera claim alive so opening/closing Settings never re-frames the resident.
-    const cameraViewModeId = pickerActiveViewModeId;
-    const compact = cameraViewModeId === companionPack.id || cameraViewModeId === "portrait";
-    const runtime = getThreeRuntime();
-    if (!compact) {
-      runtime.setCameraBase(0, 1.35, 1.1);
-      return;
-    }
-    const mode = cameraViewModeId === companionPack.id ? "scene" : cameraViewModeId;
-    const windowedMode = mode as "scene" | "portrait";
-    const characterAnchorY =
-      windowedMode === "portrait" ? runtime.getCharacterAnchor()?.y : undefined;
-    if (windowedMode === "portrait") {
-      return acquireResponsiveCallCamera(
-        characterAnchorY,
-        runtime.acquireFixedCamera.bind(runtime),
-        {
-          getWidth: () => window.innerWidth,
-          addEventListener: (_type, listener) => window.addEventListener("resize", listener),
-          removeEventListener: (_type, listener) => window.removeEventListener("resize", listener),
-        },
-      );
-    }
-    return acquireFixedViewModeCamera(
-      windowedMode,
-      runtime.acquireFixedCamera.bind(runtime),
-      characterAnchorY,
-    );
-  }, [pickerActiveViewModeId]);
+  // Settings keeps the originating View Mode's camera claim alive.
+  useViewModeCamera(
+    pickerActiveViewModeId === companionPack.id
+      ? "scene"
+      : pickerActiveViewModeId === "portrait"
+        ? "portrait"
+        : null,
+    cameraBody,
+    getThreeRuntime(),
+  );
   useEffect(() => {
     const rounded = roundedWindowForViewMode(activePresentationViewModeIdValue);
     document.documentElement.toggleAttribute("data-rounded-view", rounded);
@@ -4311,6 +4288,7 @@ function App() {
   const handleBodyReady = useCallback(
     (body: Body | null) => {
       bodyRef.current = body;
+      setCameraBody(body);
       if (body) {
         // VRM ロード完了時、runtime 側は tracking を強制 ON + 頭位置スナップ
         // 済み（three-runtime のロード完了処理）。leva の表示と手動制御分岐を
