@@ -10,7 +10,7 @@ import type {
   CodexRealtimeState,
   CodexRealtimeVoiceFallback,
 } from "./codex-realtime-client";
-import type { ScreenObservationFrame } from "./screen-observation";
+import type { ScreenObservationFrame, ScreenPointerAvailability } from "./screen-observation";
 import {
   type CodexRealtimeClientFactory,
   type CodexRealtimeClientLike,
@@ -35,7 +35,10 @@ function deferred(): {
 }
 
 class FakeClient implements CodexRealtimeClientLike {
-  readonly notifyScreenContext = vi.fn(async (_capturedAt: string) => {});
+  readonly notifyScreenContext = vi.fn(
+    async (_capturedAt: string, _availability?: ScreenPointerAvailability) => {},
+  );
+  readonly notifyScreenPointersEnabled = vi.fn(async (_enabled: boolean) => {});
   readonly stop = vi.fn(() => this.emit({ status: "idle" }));
   readonly setMicrophoneMuted = vi.fn((muted: boolean) =>
     this.emit({
@@ -125,6 +128,7 @@ function setup(
     text: string;
   }) => void = () => {};
   const trackQuickChatPrompt = vi.fn(async (prompt: string) => `quick:${prompt}`);
+  const notifyPointerSetting = vi.fn(async (_enabled: boolean) => {});
   const shareScreenObservation = vi.fn(async (frame: ScreenObservationFrame) => ({
     status: "shared" as const,
     capturedAt: frame.capturedAt,
@@ -172,6 +176,7 @@ function setup(
       getCurrentThreadId: () => trackedThreadId,
       trackQuickChatPrompt,
       shareScreenObservation,
+      notifyScreenPointersEnabled: notifyPointerSetting,
       start: async () => {},
       stop: () => {},
     };
@@ -205,6 +210,7 @@ function setup(
     startupContexts,
     speechStarts,
     injectScreenObservation: shareScreenObservation,
+    notifyPointerSetting,
     fallback,
     applyLipSyncSource,
     setFallbackPlaybackEnabled,
@@ -234,6 +240,207 @@ describe("useCodexRealtime", () => {
     capturedAt: "2026-09-05T13:00:00.000Z",
     source: "Display 1",
   };
+
+  it("notifies OFF without waiting for image metadata and replays OFF on reconnect", async () => {
+    const { result, clients, notifyPointerSetting, injectScreenObservation, unmount } = setup([
+      Promise.resolve(),
+      Promise.resolve(),
+    ]);
+    await act(async () => result.current.toggle());
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    clients[0].notifyScreenContext.mockReturnValueOnce(new Promise(() => {}));
+    await result.current.shareScreenObservation(sharedFrame, new AbortController().signal);
+    await act(async () => result.current.notifyScreenPointersEnabled(false));
+    expect(notifyPointerSetting).toHaveBeenLastCalledWith(false);
+    expect(clients[0].notifyScreenPointersEnabled).toHaveBeenLastCalledWith(false);
+    expect(injectScreenObservation).toHaveBeenCalledTimes(1);
+    act(() => result.current.stop());
+    await act(async () => result.current.toggle());
+    await act(async () => clients[1].emit({ status: "active", billing: "subscription" }));
+    expect(clients[1].notifyScreenPointersEnabled).toHaveBeenLastCalledWith(false);
+    expect(clients[1].notifyScreenContext).toHaveBeenLastCalledWith(sharedFrame.capturedAt, {
+      pointersEnabled: false,
+      pointerFrameValid: false,
+    });
+    unmount();
+  });
+
+  it("does not resurrect an old frame after OFF then ON, and accepts a fresh frame", async () => {
+    const { result, clients, unmount } = setup([Promise.resolve(), Promise.resolve()]);
+    await result.current.shareScreenObservation(sharedFrame, new AbortController().signal);
+    await result.current.notifyScreenPointersEnabled(false);
+    await result.current.notifyScreenPointersEnabled(true);
+    await act(async () => result.current.toggle());
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    expect(clients[0].notifyScreenContext).toHaveBeenLastCalledWith(sharedFrame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: false,
+    });
+    const capturedAt = new Date(Date.now() + 1).toISOString();
+    await act(async () => {
+      await result.current.shareScreenObservation(
+        { ...sharedFrame, frameId: "fresh", capturedAt, pointerFrameValid: true },
+        new AbortController().signal,
+      );
+    });
+    expect(clients[0].notifyScreenContext).toHaveBeenLastCalledWith(capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: true,
+    });
+    unmount();
+  });
+
+  it("uses native epochs for collapsed OFF/ON and accepts an equal-timestamp fresh frame", async () => {
+    const { result, clients, notifyPointerSetting, injectScreenObservation, unmount } = setup([
+      Promise.resolve(),
+    ]);
+    await result.current.notifyScreenPointersEnabled(true, 1);
+    await result.current.shareScreenObservation(
+      { ...sharedFrame, pointerFrameValid: true, pointerEpoch: 1 },
+      new AbortController().signal,
+    );
+    // Only the final ON ACK survives rapid setting changes; its native epoch proves revocation.
+    await result.current.notifyScreenPointersEnabled(true, 3);
+    await result.current.notifyScreenPointersEnabled(true, 3);
+    expect(notifyPointerSetting.mock.calls).toEqual([[true], [true]]);
+    await act(async () => result.current.toggle());
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    expect(clients[0].notifyScreenContext).toHaveBeenLastCalledWith(sharedFrame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: false,
+    });
+    await act(async () => {
+      await result.current.shareScreenObservation(
+        { ...sharedFrame, pointerFrameValid: true, pointerEpoch: 1 },
+        new AbortController().signal,
+      );
+    });
+    expect(injectScreenObservation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ pointerFrameValid: false }),
+      expect.any(AbortSignal),
+    );
+    // Same pixels and capture millisecond are valid once the native epoch matches.
+    await act(async () => {
+      await result.current.shareScreenObservation(
+        { ...sharedFrame, frameId: "fresh", pointerFrameValid: true, pointerEpoch: 3 },
+        new AbortController().signal,
+      );
+    });
+    expect(clients[0].notifyScreenContext).toHaveBeenLastCalledWith(sharedFrame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: true,
+    });
+    unmount();
+  });
+
+  it("keeps current OFF policy when an earlier ON image finishes late", async () => {
+    const { result, clients, injectScreenObservation, notifyPointerSetting, unmount } = setup([
+      Promise.resolve(),
+    ]);
+    const ack = deferred();
+    injectScreenObservation.mockImplementationOnce(async () => {
+      await ack.promise;
+      return { status: "shared", capturedAt: sharedFrame.capturedAt };
+    });
+    const sharing = result.current.shareScreenObservation(
+      { ...sharedFrame, pointersEnabled: true },
+      new AbortController().signal,
+    );
+    await result.current.notifyScreenPointersEnabled(false);
+    expect(notifyPointerSetting.mock.calls).toEqual([[false]]);
+    ack.resolve();
+    await sharing;
+    // An older image injection can settle after the first OFF notice. The final
+    // main-agent update must restore OFF without injecting another image.
+    expect(notifyPointerSetting.mock.calls).toEqual([[false], [false]]);
+    expect(injectScreenObservation).toHaveBeenCalledTimes(1);
+    await act(async () => result.current.toggle());
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    expect(clients[0].notifyScreenContext).toHaveBeenLastCalledWith(sharedFrame.capturedAt, {
+      pointersEnabled: false,
+      pointerFrameValid: false,
+    });
+    await result.current.shareScreenObservation(
+      { ...sharedFrame, pointersEnabled: true },
+      new AbortController().signal,
+    );
+    expect(injectScreenObservation).toHaveBeenLastCalledWith(
+      expect.objectContaining({ pointersEnabled: false, pointerFrameValid: false }),
+      expect.any(AbortSignal),
+    );
+    unmount();
+  });
+
+  it("delivers the current policy to a newly selected main owner", async () => {
+    const { result, notifyPointerSetting, changeThread, unmount } = setup([]);
+    await result.current.notifyScreenPointersEnabled(false);
+    expect(notifyPointerSetting).toHaveBeenCalledTimes(1);
+    await act(async () => changeThread("thread-2"));
+    expect(notifyPointerSetting).toHaveBeenCalledTimes(2);
+    expect(notifyPointerSetting).toHaveBeenLastCalledWith(false);
+    await act(async () => changeThread(null));
+    expect(notifyPointerSetting).toHaveBeenCalledTimes(2);
+    await act(async () => changeThread("thread-2"));
+    expect(notifyPointerSetting).toHaveBeenCalledTimes(3);
+    unmount();
+  });
+
+  it("retains a setting applied before a validated main owner becomes available", async () => {
+    const { result, notifyPointerSetting, setTrackedThreadId, changeThread, unmount } = setup([]);
+    setTrackedThreadId(null);
+    await result.current.notifyScreenPointersEnabled(false);
+    expect(notifyPointerSetting).not.toHaveBeenCalled();
+    await act(async () => changeThread("thread-ready"));
+    expect(notifyPointerSetting).toHaveBeenCalledExactlyOnceWith(false);
+    unmount();
+  });
+
+  it("reasserts OFF after an earlier Live image notice finishes late", async () => {
+    const { result, clients, injectScreenObservation, unmount } = setup([Promise.resolve()]);
+    await act(async () => result.current.toggle());
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    const ack = deferred();
+    clients[0].notifyScreenContext.mockReturnValueOnce(ack.promise);
+    await result.current.shareScreenObservation(sharedFrame, new AbortController().signal);
+    await act(async () => result.current.notifyScreenPointersEnabled(false));
+    expect(clients[0].notifyScreenPointersEnabled.mock.calls).toEqual([[false]]);
+    await act(async () => {
+      ack.resolve();
+      await ack.promise;
+    });
+    expect(clients[0].notifyScreenPointersEnabled.mock.calls).toEqual([[false], [false]]);
+    expect(injectScreenObservation).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it.each([
+    { frameEpoch: 1, nativeValid: true, expectedValid: false },
+    { frameEpoch: 2, nativeValid: true, expectedValid: false },
+    { frameEpoch: 3, nativeValid: true, expectedValid: true },
+    { frameEpoch: 3, nativeValid: false, expectedValid: false },
+  ])("checks captured native epoch and validity after a toggle: %j", async ({
+    frameEpoch,
+    nativeValid,
+    expectedValid,
+  }) => {
+    const { result, injectScreenObservation, unmount } = setup([]);
+    await result.current.notifyScreenPointersEnabled(false, 2);
+    await result.current.notifyScreenPointersEnabled(true, 3);
+    await result.current.shareScreenObservation(
+      {
+        ...sharedFrame,
+        pointersEnabled: true,
+        pointerFrameValid: nativeValid,
+        pointerEpoch: frameEpoch,
+      },
+      new AbortController().signal,
+    );
+    expect(injectScreenObservation).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ pointersEnabled: true, pointerFrameValid: expectedValid }),
+      expect.any(AbortSignal),
+    );
+    unmount();
+  });
 
   it("routes speech only from the active voice owner and reads the latest host callback", async () => {
     const first = vi.fn();
@@ -306,7 +513,10 @@ describe("useCodexRealtime", () => {
     await act(async () =>
       clients[0].emit({ status: "active", billing: "subscription", microphoneMuted: true }),
     );
-    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt);
+    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: true,
+    });
     // The original timestamp is replayed; the image is neither recaptured nor reinjected.
     expect(injectScreenObservation).toHaveBeenCalledTimes(1);
     unmount();
@@ -325,8 +535,14 @@ describe("useCodexRealtime", () => {
     await act(async () => result.current.toggle());
     await act(async () => clients[1].emit({ status: "active", billing: "subscription" }));
     await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
-    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt);
-    expect(clients[1].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt);
+    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: true,
+    });
+    expect(clients[1].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: true,
+    });
     expect(injectScreenObservation).toHaveBeenCalledTimes(1);
     expect(sharing.signal.aborted).toBe(false);
     unmount();
@@ -370,7 +586,10 @@ describe("useCodexRealtime", () => {
       await sharing;
     });
     await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
-    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt);
+    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(sharedFrame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: true,
+    });
     expect(injectScreenObservation).toHaveBeenCalledTimes(1);
     unmount();
   });
@@ -403,7 +622,10 @@ describe("useCodexRealtime", () => {
       // No timer or provider reply was advanced to complete image delivery.
       expect(delivered).toBe(true);
       await expect(sharing).resolves.toEqual({ status: "shared", capturedAt: frame.capturedAt });
-      expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(frame.capturedAt);
+      expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(frame.capturedAt, {
+        pointersEnabled: true,
+        pointerFrameValid: true,
+      });
     } finally {
       unmount();
       notification.resolve();
@@ -436,7 +658,10 @@ describe("useCodexRealtime", () => {
       notification.resolve();
       await notification.promise;
     });
-    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(frame.capturedAt);
+    expect(clients[0].notifyScreenContext).toHaveBeenCalledExactlyOnceWith(frame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: true,
+    });
     unmount();
   });
 
@@ -457,7 +682,10 @@ describe("useCodexRealtime", () => {
     await expect(
       result.current.shareScreenObservation(frame, new AbortController().signal),
     ).resolves.toEqual({ status: "shared", capturedAt: frame.capturedAt });
-    expect(clients[0].notifyScreenContext).toHaveBeenCalledWith(frame.capturedAt);
+    expect(clients[0].notifyScreenContext).toHaveBeenCalledWith(frame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: true,
+    });
 
     act(() => result.current.stop());
     await expect(

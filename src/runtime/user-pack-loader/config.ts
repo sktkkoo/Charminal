@@ -20,6 +20,7 @@
  * - `ambientAudioMuted: boolean`（optional）: scene pack の環境音を mute する
  * - `voiceVolume: number`（optional）: TTS / voice clip / GPT Live の出力音量
  * - `attentionLightNotifications: boolean`（optional）: 入力/承認待ちの照明通知を有効にする。default true
+ * - `screenPointersEnabled: boolean`（optional）: 共有画面上のポインタ表示を有効にする。default true
  * - `motionIntensity: number`（optional）: idle procedural motion の大きさ倍率
  * - `codexRealtimeVoice: string`（optional）: Codex GPT Live の出力 voice。default `sol`
  * - `realtimeVoiceByPersona: Record<string, string>`（optional）: persona pack id ごとの
@@ -72,6 +73,8 @@ export interface YorishiroConfig {
   readonly voiceVolume: number;
   /** 入力/承認待ち時の red flash lighting notification を有効にする。 */
   readonly attentionLightNotifications: boolean;
+  /** 画像共有とは独立した、共有画面上のポインタ表示設定。 */
+  readonly screenPointersEnabled: boolean;
   /** idle procedural motion（呼吸・揺れ・頭）の大きさ倍率。0.0-3.0、default 1.0。 */
   readonly motionIntensity: number;
   /** User 定義の session profile。bundled (`shell` / `claude` / `codex` / `opencode`) と同 id なら override。 */
@@ -127,6 +130,7 @@ export const EMPTY_CONFIG: YorishiroConfig = {
   ambientAudioVolume: 1.0,
   voiceVolume: 1.0,
   attentionLightNotifications: true,
+  screenPointersEnabled: true,
   motionIntensity: 1.0,
   profiles: [],
   defaultProfile: null,
@@ -351,6 +355,7 @@ export function parseConfig(text: string): YorishiroConfig {
     ambientAudioVolume: toUnitFloat(obj.ambientAudioVolume),
     voiceVolume: toUnitFloat(obj.voiceVolume),
     attentionLightNotifications: toDefaultTrueBoolean(obj.attentionLightNotifications),
+    screenPointersEnabled: toDefaultTrueBoolean(obj.screenPointersEnabled),
     motionIntensity: toMotionIntensity(obj.motionIntensity),
     profiles: toSessionProfiles(obj.profiles),
     defaultProfile: toNullableString(obj.defaultProfile),
@@ -388,6 +393,7 @@ export function serializeConfig(cfg: YorishiroConfig): string {
   if (cfg.ambientAudioVolume !== 1.0) out.ambientAudioVolume = cfg.ambientAudioVolume;
   if (cfg.voiceVolume !== 1.0) out.voiceVolume = cfg.voiceVolume;
   if (!cfg.attentionLightNotifications) out.attentionLightNotifications = false;
+  if (!cfg.screenPointersEnabled) out.screenPointersEnabled = false;
   if (cfg.motionIntensity !== 1.0) out.motionIntensity = cfg.motionIntensity;
   if (cfg.profiles.length > 0) out.profiles = cfg.profiles.map(serializeProfile);
   if (cfg.defaultProfile !== null) out.defaultProfile = cfg.defaultProfile;

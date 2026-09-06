@@ -5,7 +5,12 @@ import {
   sessionRealtimeSelectedThread,
   sessionRealtimeSend,
 } from "../../bindings/tauri-commands";
-import { type ScreenObservationFrame, ScreenObservationTransport } from "./screen-observation";
+import { ScreenContextNotifications } from "./screen-context-notifications";
+import {
+  type ScreenObservationFrame,
+  ScreenObservationTransport,
+  screenPointerSettingText,
+} from "./screen-observation";
 
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
@@ -82,15 +87,11 @@ export class CodexThreadTracker {
   private nextQuickChatRequestId = 1;
   private pendingQuickChatPrompts: PendingQuickChatPrompt[] = [];
   private readonly trackedQuickChatTurns = new Map<string, TrackedQuickChatTurn>();
+  private readonly pointerNotifications = new ScreenContextNotifications();
+  private pointerNotificationController = new AbortController();
   private readonly screenObservation = new ScreenObservationTransport({
     request: (method, params) => this.request(method, params as Record<string, unknown>),
-    getThreadId: () =>
-      this.running &&
-      this.connectionId &&
-      this.currentThreadId &&
-      this.knownLoadedThreadIds.has(this.currentThreadId)
-        ? this.currentThreadId
-        : null,
+    getThreadId: () => this.getScreenThreadId(),
   });
 
   constructor(
@@ -113,6 +114,43 @@ export class CodexThreadTracker {
 
   cancelScreenObservation(): void {
     this.screenObservation.cancel();
+  }
+
+  /** User preference metadata; independent of image delivery and never starts a turn. */
+  async notifyScreenPointersEnabled(enabled: boolean): Promise<void> {
+    const threadId = this.getScreenThreadId();
+    if (!threadId) return;
+    const epoch = this.epoch;
+    const connectionId = this.connectionId;
+    this.pointerNotifications.enqueue({
+      client: this.pointerNotificationController,
+      signal: this.pointerNotificationController.signal,
+      isCurrent: () =>
+        this.epoch === epoch &&
+        this.connectionId === connectionId &&
+        this.getScreenThreadId() === threadId,
+      notify: async () => {
+        await this.request("thread/inject_items", {
+          threadId,
+          items: [
+            {
+              type: "message",
+              role: "developer",
+              content: [{ type: "input_text", text: screenPointerSettingText(enabled) }],
+            },
+          ],
+        });
+      },
+    });
+  }
+
+  private getScreenThreadId(): string | null {
+    return this.running &&
+      this.connectionId &&
+      this.currentThreadId &&
+      this.knownLoadedThreadIds.has(this.currentThreadId)
+      ? this.currentThreadId
+      : null;
   }
 
   /**
@@ -166,6 +204,7 @@ export class CodexThreadTracker {
   }
 
   stop(): void {
+    this.pointerNotifications.reset();
     this.screenObservation.cancel();
     this.epoch += 1;
     this.running = false;
@@ -286,6 +325,8 @@ export class CodexThreadTracker {
   private setCurrentThreadId(threadId: string | null): void {
     if (this.currentThreadId === threadId) return;
     this.screenObservation.cancel();
+    this.pointerNotificationController.abort();
+    this.pointerNotificationController = new AbortController();
     this.currentThreadId = threadId;
     this.onCurrentThreadChange(threadId);
   }

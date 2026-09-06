@@ -1,10 +1,9 @@
 interface ScreenContextNotification {
-  /** One accepted voice client; replacing it must not wait for the old client's RPC. */
+  /** One accepted connection owner; replacement must not wait for its predecessor's RPC. */
   readonly client: object;
-  readonly capturedAt: string;
   readonly signal: AbortSignal;
   readonly isCurrent: () => boolean;
-  readonly notify: (capturedAt: string) => Promise<void>;
+  readonly notify: () => Promise<void>;
 }
 
 interface QueuedNotification {
@@ -14,7 +13,7 @@ interface QueuedNotification {
 
 /**
  * Best-effort availability metadata, separate from image delivery. Keep one RPC
- * in flight and only the newest waiting timestamp. Never retain image content.
+ * in flight and only the newest waiting metadata. Never retain image content.
  */
 export class ScreenContextNotifications {
   private active: { readonly client: object } | null = null;
@@ -66,7 +65,7 @@ export class ScreenContextNotifications {
     void Promise.resolve()
       .then(() => {
         if (this.active !== run || !this.isCurrent(notification)) return;
-        return notification.notify(notification.capturedAt);
+        return notification.notify();
       })
       .catch(() => {
         // A voice reconnect/failure must not delay capture or expose provider error content.

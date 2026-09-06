@@ -26,16 +26,24 @@ function owner() {
   };
 }
 
+function enqueue(
+  queue: ScreenContextNotifications,
+  notification: ReturnType<typeof owner> & { capturedAt: string },
+): void {
+  const { capturedAt, notify, ...ownership } = notification;
+  queue.enqueue({ ...ownership, notify: () => notify(capturedAt) });
+}
+
 describe("screen context metadata notifications", () => {
   it("keeps one in flight and coalesces waiting updates to the newest timestamp", async () => {
     const queue = new ScreenContextNotifications();
     const target = owner();
     const first = deferred();
     target.notify.mockReturnValueOnce(first.promise);
-    queue.enqueue({ ...target, capturedAt: "first" });
+    enqueue(queue, { ...target, capturedAt: "first" });
     await flushMicrotasks();
     for (let index = 2; index <= 100; index += 1) {
-      queue.enqueue({ ...target, capturedAt: `frame-${index}` });
+      enqueue(queue, { ...target, capturedAt: `frame-${index}` });
     }
     expect(target.notify).toHaveBeenCalledExactlyOnceWith("first");
     first.resolve();
@@ -48,14 +56,14 @@ describe("screen context metadata notifications", () => {
     const target = owner();
     const first = deferred();
     target.notify.mockReturnValueOnce(first.promise);
-    queue.enqueue({ ...target, capturedAt: "first" });
+    enqueue(queue, { ...target, capturedAt: "first" });
     await flushMicrotasks();
-    queue.enqueue({ ...target, capturedAt: "stopped-share" });
+    enqueue(queue, { ...target, capturedAt: "stopped-share" });
     target.controller.abort();
     first.resolve();
     await flushMicrotasks();
     expect(target.notify).toHaveBeenCalledExactlyOnceWith("first");
-    queue.enqueue({ ...target, signal: new AbortController().signal, capturedAt: "new-share" });
+    enqueue(queue, { ...target, signal: new AbortController().signal, capturedAt: "new-share" });
     await flushMicrotasks();
     expect(target.notify.mock.calls).toEqual([["first"], ["new-share"]]);
   });
@@ -65,9 +73,9 @@ describe("screen context metadata notifications", () => {
     const target = owner();
     const first = deferred();
     target.notify.mockReturnValueOnce(first.promise);
-    queue.enqueue({ ...target, capturedAt: "first" });
+    enqueue(queue, { ...target, capturedAt: "first" });
     await flushMicrotasks();
-    queue.enqueue({ ...target, capturedAt: "old-thread" });
+    enqueue(queue, { ...target, capturedAt: "old-thread" });
     target.isCurrent.mockReturnValue(false);
     first.resolve();
     await flushMicrotasks();
@@ -79,15 +87,15 @@ describe("screen context metadata notifications", () => {
     const previous = owner();
     const previousAck = deferred();
     previous.notify.mockReturnValueOnce(previousAck.promise);
-    queue.enqueue({ ...previous, capturedAt: "old-first" });
+    enqueue(queue, { ...previous, capturedAt: "old-first" });
     await flushMicrotasks();
-    queue.enqueue({ ...previous, capturedAt: "old-queued" });
+    enqueue(queue, { ...previous, capturedAt: "old-queued" });
     const current = owner();
     const currentAck = deferred();
     current.notify.mockReturnValueOnce(currentAck.promise);
-    queue.enqueue({ ...current, capturedAt: "new-first" });
+    enqueue(queue, { ...current, capturedAt: "new-first" });
     await flushMicrotasks();
-    queue.enqueue({ ...current, capturedAt: "new-latest" });
+    enqueue(queue, { ...current, capturedAt: "new-latest" });
     previousAck.resolve();
     await flushMicrotasks();
     expect(previous.notify).toHaveBeenCalledExactlyOnceWith("old-first");
@@ -100,20 +108,20 @@ describe("screen context metadata notifications", () => {
   it("drops work on reset and tolerates synchronous and asynchronous notification failures", async () => {
     const queue = new ScreenContextNotifications();
     const target = owner();
-    queue.enqueue({ ...target, capturedAt: "never-dispatched" });
+    enqueue(queue, { ...target, capturedAt: "never-dispatched" });
     queue.reset();
     await flushMicrotasks();
     expect(target.notify).not.toHaveBeenCalled();
     target.notify.mockImplementationOnce(() => {
       throw new Error("private provider error");
     });
-    queue.enqueue({ ...target, capturedAt: "sync-failure" });
+    enqueue(queue, { ...target, capturedAt: "sync-failure" });
     await flushMicrotasks();
     const failure = deferred();
     target.notify.mockReturnValueOnce(failure.promise);
-    queue.enqueue({ ...target, capturedAt: "async-failure" });
+    enqueue(queue, { ...target, capturedAt: "async-failure" });
     await flushMicrotasks();
-    queue.enqueue({ ...target, capturedAt: "newest" });
+    enqueue(queue, { ...target, capturedAt: "newest" });
     failure.reject(new Error("private provider error"));
     await flushMicrotasks();
     expect(target.notify.mock.calls).toEqual([["sync-failure"], ["async-failure"], ["newest"]]);
@@ -122,7 +130,7 @@ describe("screen context metadata notifications", () => {
   it("does not dispatch when a sharing signal aborts before the initial microtask", async () => {
     const queue = new ScreenContextNotifications();
     const target = owner();
-    queue.enqueue({ ...target, capturedAt: "cancelled" });
+    enqueue(queue, { ...target, capturedAt: "cancelled" });
     target.controller.abort();
     await flushMicrotasks();
     expect(target.notify).not.toHaveBeenCalled();

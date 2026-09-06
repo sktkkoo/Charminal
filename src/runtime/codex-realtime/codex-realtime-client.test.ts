@@ -394,6 +394,30 @@ describe("CodexRealtimeClient", () => {
     client.stop();
   });
 
+  it("keeps disabled and invalid-reference voice notices free of pointer-first guidance", async () => {
+    const client = new CodexRealtimeClient("main-session");
+    await client.start();
+    for (const availability of [
+      { pointersEnabled: false, pointerFrameValid: true },
+      { pointersEnabled: true, pointerFrameValid: false },
+    ]) {
+      bridge.sent = [];
+      await client.notifyScreenContext("2026-09-06T00:00:00.000Z", availability);
+      const text = String(bridge.sent[0].params?.text);
+      expect(text).toContain("Do not call or retry");
+      expect(text).not.toContain("once grounded, show the target");
+      expect(text).not.toContain("If the image is missing or stale");
+    }
+    bridge.sent = [];
+    await client.notifyScreenPointersEnabled(false);
+    expect(bridge.sent).toHaveLength(1);
+    expect(bridge.sent[0]).toMatchObject({
+      method: "thread/realtime/appendText",
+      params: { role: "developer", text: expect.stringContaining("OFF by the user's choice") },
+    });
+    client.stop();
+  });
+
   it("supplements Codex realtime with the active persona as a developer initial item", async () => {
     const diagnostics: CodexRealtimePersonaApplication[] = [];
     const client = new CodexRealtimeClient("main-session", undefined, {

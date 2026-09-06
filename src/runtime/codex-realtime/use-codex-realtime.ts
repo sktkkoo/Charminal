@@ -12,14 +12,19 @@ import {
 } from "./codex-realtime-client";
 import { type CodexQuickChatResponse, CodexThreadTracker } from "./codex-thread-tracker";
 import { ScreenContextNotifications } from "./screen-context-notifications";
-import type { ScreenObservationFrame, ScreenObservationResult } from "./screen-observation";
+import type {
+  ScreenObservationFrame,
+  ScreenObservationResult,
+  ScreenPointerAvailability,
+} from "./screen-observation";
 
 export interface CodexRealtimeClientLike extends LipSyncSource {
   getStatus(): CodexRealtimeStatus;
   start(): Promise<void>;
   stop(): void;
   setMicrophoneMuted(muted: boolean): void;
-  notifyScreenContext?(capturedAt: string): Promise<void>;
+  notifyScreenContext?(capturedAt: string, availability?: ScreenPointerAvailability): Promise<void>;
+  notifyScreenPointersEnabled?(enabled: boolean): Promise<void>;
 }
 
 export type CodexRealtimeClientFactory = (
@@ -47,14 +52,27 @@ export interface CodexThreadTrackerLike {
     signal?: AbortSignal,
   ): Promise<ScreenObservationResult>;
   cancelScreenObservation?(): void;
+  notifyScreenPointersEnabled?(enabled: boolean): Promise<void>;
 }
 
 interface SharedScreenContext {
   readonly capturedAt: string;
+  readonly pointersEnabled: boolean;
+  readonly pointerFrameValid: boolean;
+  readonly pointerRevision: number;
+  readonly pointerEpoch?: number;
   readonly tracker: CodexThreadTrackerLike;
   readonly threadId: string;
   readonly signal: AbortSignal;
   readonly onAbort: () => void;
+}
+
+interface ScreenPointerPolicy {
+  readonly enabled: boolean;
+  readonly known: boolean;
+  readonly revision: number;
+  readonly nativeEpoch: number | null;
+  readonly controller: AbortController;
 }
 
 interface UseCodexRealtimeOptions {
@@ -100,6 +118,8 @@ interface UseCodexRealtimeResult {
     frame: ScreenObservationFrame,
     signal: AbortSignal,
   ) => Promise<ScreenObservationResult>;
+  /** Notify AI surfaces after the native pointer preference has been applied. */
+  readonly notifyScreenPointersEnabled: (enabled: boolean, pointerEpoch?: number) => Promise<void>;
   readonly state: CodexRealtimeState;
   readonly stop: () => void;
   readonly toggle: () => Promise<void>;
@@ -171,10 +191,28 @@ export function useCodexRealtime({
   const clientRef = useRef<CodexRealtimeClientLike | null>(null);
   const threadTrackerRef = useRef<CodexThreadTrackerLike | null>(null);
   const screenNotificationsRef = useRef(new ScreenContextNotifications());
+  const pointerNotificationsRef = useRef(new ScreenContextNotifications());
+  const pointerPolicyRef = useRef<ScreenPointerPolicy>({
+    enabled: true,
+    known: false,
+    revision: 0,
+    nativeEpoch: null,
+    controller: new AbortController(),
+  });
   const sharedScreenContextRef = useRef<SharedScreenContext | null>(null);
   const announcedScreenContextRef = useRef<{
     readonly client: CodexRealtimeClientLike;
     readonly context: SharedScreenContext;
+    readonly policy: ScreenPointerPolicy;
+  } | null>(null);
+  const announcedPointerPolicyRef = useRef<{
+    readonly client: CodexRealtimeClientLike;
+    readonly policy: ScreenPointerPolicy;
+  } | null>(null);
+  const mainPointerPolicyRef = useRef<{
+    readonly tracker: CodexThreadTrackerLike;
+    readonly threadId: string;
+    readonly policy: ScreenPointerPolicy;
   } | null>(null);
   const fallbackRef = useRef(fallbackLipSyncSource);
   const applyLipSyncSourceRef = useRef(applyLipSyncSource);
@@ -214,34 +252,139 @@ export function useCodexRealtime({
     screenNotificationsRef.current.cancelPending();
   }, []);
 
-  const notifySharedScreenContext = useCallback((client: CodexRealtimeClientLike) => {
-    const context = sharedScreenContextRef.current;
+  const notifyLivePointerPolicy = useCallback((client: CodexRealtimeClientLike, force = false) => {
+    const policy = pointerPolicyRef.current;
+    const tracker = threadTrackerRef.current;
+    const threadId = tracker?.getCurrentThreadId();
     if (
-      !context ||
-      context.signal.aborted ||
-      !client.notifyScreenContext ||
+      !policy.known ||
+      !tracker ||
+      !threadId ||
+      !client.notifyScreenPointersEnabled ||
       clientRef.current !== client ||
-      client.getStatus() !== "active" ||
-      threadTrackerRef.current !== context.tracker ||
-      context.tracker.getCurrentThreadId() !== context.threadId
+      client.getStatus() !== "active"
     )
       return;
-    const announced = announcedScreenContextRef.current;
-    if (announced?.client === client && announced.context === context) return;
-    announcedScreenContextRef.current = { client, context };
-    screenNotificationsRef.current.enqueue({
+    const announced = announcedPointerPolicyRef.current;
+    if (!force && announced?.client === client && announced.policy === policy) return;
+    announcedPointerPolicyRef.current = { client, policy };
+    // Pointer OFF must not wait for a previous image-availability ACK. This
+    // separate metadata queue still bounds repeated setting changes to one RPC.
+    pointerNotificationsRef.current.enqueue({
       client,
-      capturedAt: context.capturedAt,
-      signal: context.signal,
+      signal: policy.controller.signal,
       isCurrent: () =>
-        sharedScreenContextRef.current === context &&
+        pointerPolicyRef.current === policy &&
         clientRef.current === client &&
         client.getStatus() === "active" &&
-        threadTrackerRef.current === context.tracker &&
-        context.tracker.getCurrentThreadId() === context.threadId,
-      notify: (capturedAt) => client.notifyScreenContext?.(capturedAt) ?? Promise.resolve(),
+        threadTrackerRef.current === tracker &&
+        tracker.getCurrentThreadId() === threadId,
+      notify: () => client.notifyScreenPointersEnabled?.(policy.enabled) ?? Promise.resolve(),
     });
   }, []);
+
+  const notifySharedScreenContext = useCallback(
+    (client: CodexRealtimeClientLike) => {
+      const context = sharedScreenContextRef.current;
+      const policy = pointerPolicyRef.current;
+      if (
+        !context ||
+        context.signal.aborted ||
+        !client.notifyScreenContext ||
+        clientRef.current !== client ||
+        client.getStatus() !== "active" ||
+        threadTrackerRef.current !== context.tracker ||
+        context.tracker.getCurrentThreadId() !== context.threadId
+      )
+        return;
+      const announced = announcedScreenContextRef.current;
+      if (
+        announced?.client === client &&
+        announced.context === context &&
+        announced.policy === policy
+      )
+        return;
+      announcedScreenContextRef.current = { client, context, policy };
+      const availability: ScreenPointerAvailability = {
+        pointersEnabled: policy.known ? policy.enabled : context.pointersEnabled,
+        pointerFrameValid:
+          context.pointersEnabled &&
+          context.pointerFrameValid &&
+          context.pointerRevision === policy.revision &&
+          (context.pointerEpoch === undefined ||
+            policy.nativeEpoch === null ||
+            context.pointerEpoch === policy.nativeEpoch),
+      };
+      screenNotificationsRef.current.enqueue({
+        client,
+        signal: context.signal,
+        isCurrent: () =>
+          sharedScreenContextRef.current === context &&
+          pointerPolicyRef.current === policy &&
+          clientRef.current === client &&
+          client.getStatus() === "active" &&
+          threadTrackerRef.current === context.tracker &&
+          context.tracker.getCurrentThreadId() === context.threadId,
+        notify: async () => {
+          try {
+            await client.notifyScreenContext?.(context.capturedAt, availability);
+          } finally {
+            // An earlier ON notice may settle after OFF. Reassert the current
+            // policy without making image delivery wait for either metadata RPC.
+            if (pointerPolicyRef.current !== policy) notifyLivePointerPolicy(client, true);
+          }
+        },
+      });
+    },
+    [notifyLivePointerPolicy],
+  );
+
+  const notifyMainPointerPolicy = useCallback(async (force = false): Promise<void> => {
+    const policy = pointerPolicyRef.current;
+    const tracker = threadTrackerRef.current;
+    const threadId = tracker?.getCurrentThreadId();
+    if (!policy.known || !tracker?.notifyScreenPointersEnabled || !threadId) return;
+    const previous = mainPointerPolicyRef.current;
+    if (
+      !force &&
+      previous?.tracker === tracker &&
+      previous.threadId === threadId &&
+      previous.policy === policy
+    )
+      return;
+    const notice = { tracker, threadId, policy };
+    mainPointerPolicyRef.current = notice;
+    try {
+      await tracker.notifyScreenPointersEnabled(policy.enabled);
+    } catch (error) {
+      if (mainPointerPolicyRef.current === notice) mainPointerPolicyRef.current = null;
+      throw error;
+    }
+  }, []);
+
+  const notifyScreenPointersEnabled = useCallback(
+    async (enabled: boolean, pointerEpoch?: number): Promise<void> => {
+      const previous = pointerPolicyRef.current;
+      const nativeEpoch = pointerEpoch ?? previous.nativeEpoch;
+      const changed =
+        previous.enabled !== enabled || (previous.known && nativeEpoch !== previous.nativeEpoch);
+      if (!previous.known || changed) {
+        previous.controller.abort();
+        pointerPolicyRef.current = {
+          enabled,
+          known: true,
+          revision: previous.revision + (changed ? 1 : 0),
+          nativeEpoch,
+          controller: new AbortController(),
+        };
+        screenNotificationsRef.current.cancelPending();
+      }
+      const client = clientRef.current;
+      if (client) notifyLivePointerPolicy(client);
+      await notifyMainPointerPolicy();
+    },
+    [notifyLivePointerPolicy, notifyMainPointerPolicy],
+  );
 
   const restoreFallback = useCallback(() => {
     applyLipSyncSourceRef.current(fallbackRef.current);
@@ -296,6 +439,8 @@ export function useCodexRealtime({
       // stop() 内の同期 idle 通知も stale 扱いにするため、先に所有権を外す。
       clientRef.current = null;
       screenNotificationsRef.current.reset();
+      pointerNotificationsRef.current.reset();
+      announcedPointerPolicyRef.current = null;
       client?.stop();
       setState({ status: "idle" });
       restoreFallbackPlayback();
@@ -322,6 +467,8 @@ export function useCodexRealtime({
             if (!preserveIntentOnFailure) voiceIntentRef.current = false;
             clientRef.current = null;
             screenNotificationsRef.current.reset();
+            pointerNotificationsRef.current.reset();
+            announcedPointerPolicyRef.current = null;
             client.stop();
             setState(nextState);
             restoreFallbackPlayback();
@@ -334,6 +481,8 @@ export function useCodexRealtime({
             if (!preserveIntentOnFailure) voiceIntentRef.current = false;
             clientRef.current = null;
             screenNotificationsRef.current.reset();
+            pointerNotificationsRef.current.reset();
+            announcedPointerPolicyRef.current = null;
             setState(nextState);
             restoreFallbackPlayback();
             restoreFallback();
@@ -344,6 +493,7 @@ export function useCodexRealtime({
           if (nextState.status === "active") {
             preserveIntentOnFailure = false;
             applyLipSyncSourceRef.current(client);
+            notifyLivePointerPolicy(client);
             notifySharedScreenContext(client);
           }
         },
@@ -383,6 +533,8 @@ export function useCodexRealtime({
         if (!preserveIntentOnFailure) voiceIntentRef.current = false;
         clientRef.current = null;
         screenNotificationsRef.current.reset();
+        pointerNotificationsRef.current.reset();
+        announcedPointerPolicyRef.current = null;
         client.stop();
         const message = error instanceof Error ? error.message : String(error);
         console.error("[codex-realtime] start failed", error);
@@ -400,6 +552,7 @@ export function useCodexRealtime({
       personaPromptMode,
       includeStartupContext,
       notifySharedScreenContext,
+      notifyLivePointerPolicy,
     ],
   );
 
@@ -418,6 +571,9 @@ export function useCodexRealtime({
   useEffect(() => {
     clearSharedScreenContext();
     screenNotificationsRef.current.reset();
+    pointerNotificationsRef.current.reset();
+    announcedPointerPolicyRef.current = null;
+    mainPointerPolicyRef.current = null;
     threadTrackerRef.current?.stop();
     threadTrackerRef.current = null;
     setScreenThreadId(null);
@@ -429,6 +585,8 @@ export function useCodexRealtime({
         if (threadTrackerRef.current !== tracker) return;
         clearSharedScreenContext();
         setScreenThreadId(threadId);
+        mainPointerPolicyRef.current = null;
+        if (threadId) void notifyMainPointerPolicy().catch(() => {});
         if (clientRef.current) stopClient(true);
         if (threadId && voiceIntentRef.current) void start(true);
       },
@@ -438,17 +596,31 @@ export function useCodexRealtime({
       },
     );
     threadTrackerRef.current = tracker;
-    void tracker.start().catch((error) => {
-      if (threadTrackerRef.current !== tracker) return;
-      console.warn("[codex-realtime] thread tracker unavailable", error);
-    });
+    void tracker
+      .start()
+      .then(() => notifyMainPointerPolicy())
+      .catch((error) => {
+        if (threadTrackerRef.current !== tracker) return;
+        console.warn("[codex-realtime] thread tracker unavailable", error);
+      });
     return () => {
       if (threadTrackerRef.current === tracker) threadTrackerRef.current = null;
       clearSharedScreenContext();
       screenNotificationsRef.current.reset();
+      pointerNotificationsRef.current.reset();
+      announcedPointerPolicyRef.current = null;
+      mainPointerPolicyRef.current = null;
       tracker.stop();
     };
-  }, [available, clearSharedScreenContext, createThreadTracker, sessionId, start, stopClient]);
+  }, [
+    available,
+    clearSharedScreenContext,
+    createThreadTracker,
+    notifyMainPointerPolicy,
+    sessionId,
+    start,
+    stopClient,
+  ]);
 
   useEffect(() => {
     const sessionChanged = sessionIdRef.current !== sessionId;
@@ -473,6 +645,8 @@ export function useCodexRealtime({
       clientRef.current = null;
       clearSharedScreenContext();
       screenNotificationsRef.current.reset();
+      pointerNotificationsRef.current.reset();
+      announcedPointerPolicyRef.current = null;
       client?.stop();
       restoreFallbackPlayback();
     };
@@ -499,7 +673,20 @@ export function useCodexRealtime({
       if (!tracker?.shareScreenObservation || !threadId || signal.aborted) {
         throw new Error("Main agent is not ready for screen sharing.");
       }
-      const result = await tracker.shareScreenObservation(frame, signal);
+      const policy = pointerPolicyRef.current;
+      const availability: ScreenPointerAvailability = {
+        // A capture reply may predate a settings change. The latest accepted
+        // preference wins; a disabled or invalid captured reference stays invalid.
+        pointersEnabled: policy.known ? policy.enabled : frame.pointersEnabled !== false,
+        pointerFrameValid:
+          (!policy.known || policy.enabled) &&
+          frame.pointerFrameValid !== false &&
+          frame.pointersEnabled !== false &&
+          (frame.pointerEpoch === undefined ||
+            policy.nativeEpoch === null ||
+            frame.pointerEpoch === policy.nativeEpoch),
+      };
+      const result = await tracker.shareScreenObservation({ ...frame, ...availability }, signal);
       if (
         signal.aborted ||
         threadTrackerRef.current !== tracker ||
@@ -508,12 +695,18 @@ export function useCodexRealtime({
         throw new Error("Screen sharing stopped.");
       }
       if (result.status === "shared") {
-        // Retain only the timestamp and its sharing owner. Live may start after
-        // this injection; unchanged pixels need no second capture or injection.
+        // An image already sent before a toggle cannot be retracted. Reassert
+        // the latest policy after its ACK so stale image guidance cannot be last.
+        if (pointerPolicyRef.current !== policy) void notifyMainPointerPolicy(true).catch(() => {});
+        // Retain only timestamp, pointer availability, and sharing ownership.
+        // Unchanged pixels need no second capture or injection on voice reconnect.
         const previous = sharedScreenContextRef.current;
         previous?.signal.removeEventListener("abort", previous.onAbort);
         const context: SharedScreenContext = {
           capturedAt: frame.capturedAt,
+          ...availability,
+          pointerRevision: policy.revision,
+          pointerEpoch: frame.pointerEpoch,
           tracker,
           threadId,
           signal,
@@ -530,12 +723,13 @@ export function useCodexRealtime({
       }
       return result;
     },
-    [clearSharedScreenContext, notifySharedScreenContext],
+    [clearSharedScreenContext, notifySharedScreenContext, notifyMainPointerPolicy],
   );
 
   return {
     screenThreadId,
     shareScreenObservation,
+    notifyScreenPointersEnabled,
     state,
     stop,
     toggle,

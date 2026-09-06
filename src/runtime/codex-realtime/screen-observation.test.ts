@@ -30,6 +30,7 @@ describe("screen observation transport", () => {
     expect(text).toContain('Frame reference: "frame-1"');
     expect(text).toContain("2560 x 1440 pixels");
     expect(text).toContain("screen_pointer_show");
+    expect(text).toContain("ellipse");
     expect(text).toContain("normalized 0..1 from the screenshot TOP LEFT");
     expect(text).toContain("width/height must be positive and fit within the image");
     expect(text).toContain("screen_pointer_clear({})");
@@ -46,6 +47,29 @@ describe("screen observation transport", () => {
       "the image is stale, or the target moved, inspect a fresh shared image before pointing again",
     );
     expect(text).toContain("No response is needed for the capture itself");
+  });
+
+  it.each([
+    { pointersEnabled: false, pointerFrameValid: true, expected: "OFF by the user's choice" },
+    { pointersEnabled: false, pointerFrameValid: false, expected: "OFF by the user's choice" },
+    { pointersEnabled: true, pointerFrameValid: false, expected: "pointer reference is invalid" },
+  ])("keeps image discussion available without forbidden pointer guidance: %j", async ({
+    expected,
+    ...availability
+  }) => {
+    const request = vi.fn(async (_method: string, _params: object) => ({}));
+    const transport = new ScreenObservationTransport({ request, getThreadId: () => "main" });
+    await transport.observe({ ...frame, ...availability });
+    const content = (
+      request.mock.calls[0][1] as {
+        items: Array<{ content: Array<{ text?: string; type: string }> }>;
+      }
+    ).items[0].content;
+    expect(content[0].text).toContain(expected);
+    expect(content[0].text).toContain("Do not call or retry");
+    expect(content[0].text).not.toContain("show the grounded target before");
+    expect(content[0].text).not.toContain("If its frame reference is rejected");
+    expect(content[1].type).toBe("input_image");
   });
 
   it.each([
