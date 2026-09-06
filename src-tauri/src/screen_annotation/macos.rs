@@ -46,8 +46,6 @@ extern "C" {
     fn CGDisplayIsActive(display: u32) -> u32;
     fn CGMainDisplayID() -> u32;
     fn CGDisplayBounds(display: u32) -> NSRect;
-    fn CGDisplayPixelsWide(display: u32) -> usize;
-    fn CGDisplayPixelsHigh(display: u32) -> usize;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -140,22 +138,22 @@ define_class!(
 );
 
 pub(super) fn display_geometry(source_id: u32) -> Result<DisplayGeometry, String> {
-    // CGDisplayBounds is the current global desktop coordinate space. Preserve
-    // the same source dimensions used by capture; CGDisplayPixelsWide/High may
-    // report mode pixels rather than physical Retina backing pixels.
+    // Positions remain in current desktop points; capture validation uses the
+    // same oriented backing-pixel dimensions as ScreenCaptureKit's output size.
     if unsafe { CGDisplayIsActive(source_id) } == 0 {
         return Err("The shared display is no longer active. Choose a display again.".into());
     }
     let bounds = unsafe { CGDisplayBounds(source_id) };
     let main = unsafe { CGDisplayBounds(CGMainDisplayID()) };
+    let (pixel_width, pixel_height) = crate::screen_capture::display_pixel_dimensions(source_id)?;
     let geometry = DisplayGeometry {
         source_id,
         x: bounds.origin.x,
         y: bounds.origin.y,
         width: bounds.size.width,
         height: bounds.size.height,
-        pixel_width: unsafe { CGDisplayPixelsWide(source_id) },
-        pixel_height: unsafe { CGDisplayPixelsHigh(source_id) },
+        pixel_width,
+        pixel_height,
         main_height: main.size.height,
     };
     if ![

@@ -104,6 +104,40 @@ async fn unsupported_capture() -> Result<ScreenCaptureFrame, String> {
 
 const MAX_IMAGE_EDGE: usize = 2560;
 
+/// Capture and pointer validation must agree on the current backing-pixel size.
+#[cfg(target_os = "macos")]
+pub(crate) fn display_pixel_dimensions(source_id: u32) -> Result<(usize, usize), String> {
+    macos::display_pixel_dimensions(source_id)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn oriented_pixel_dimensions(
+    pixels: (usize, usize),
+    bounds: (f64, f64),
+) -> Result<(usize, usize), String> {
+    if pixels.0 == 0
+        || pixels.1 == 0
+        || !bounds.0.is_finite()
+        || !bounds.1.is_finite()
+        || bounds.0 <= 0.0
+        || bounds.1 <= 0.0
+    {
+        return Err("The selected display has no usable pixel dimensions.".into());
+    }
+    // Mode dimensions can describe the unrotated mode. Match the current desktop
+    // orientation, allowing one pixel of rounding without stretching or cropping.
+    let matches = |(width, height): (usize, usize)| {
+        (width as f64 * bounds.1 - height as f64 * bounds.0).abs() <= bounds.0.max(bounds.1)
+    };
+    if matches(pixels) {
+        Ok(pixels)
+    } else if matches((pixels.1, pixels.0)) {
+        Ok((pixels.1, pixels.0))
+    } else {
+        Err("The display mode changed. Refresh the display list and try again.".into())
+    }
+}
+
 pub(crate) fn bounded_dimensions(width: usize, height: usize) -> Result<(usize, usize), String> {
     if width == 0 || height == 0 {
         return Err("The selected display has no visible area.".into());
@@ -129,7 +163,7 @@ mod macos {
     use objc2::runtime::{AnyClass, AnyObject, Bool};
     use objc2::{msg_send, AnyThread};
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImageCompressionFactor};
-    use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber};
+    use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber, NSRect};
     use std::ffi::{c_void, CStr};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
@@ -144,8 +178,11 @@ mod macos {
     extern "C" {
         fn CGGetActiveDisplayList(max_displays: u32, displays: *mut u32, count: *mut u32) -> i32;
         fn CGMainDisplayID() -> u32;
-        fn CGDisplayPixelsWide(display: u32) -> usize;
-        fn CGDisplayPixelsHigh(display: u32) -> usize;
+        fn CGDisplayBounds(display: u32) -> NSRect;
+        fn CGDisplayCopyDisplayMode(display: u32) -> *const c_void;
+        fn CGDisplayModeGetPixelWidth(mode: *const c_void) -> usize;
+        fn CGDisplayModeGetPixelHeight(mode: *const c_void) -> usize;
+        fn CGDisplayModeRelease(mode: *const c_void);
         fn CGPreflightScreenCaptureAccess() -> bool;
         fn CGRequestScreenCaptureAccess() -> bool;
         fn CGImageGetWidth(image: *const c_void) -> usize;
@@ -174,6 +211,25 @@ mod macos {
         AnyClass::get(name).ok_or_else(|| super::UNSUPPORTED.into())
     }
 
+    pub(super) fn display_pixel_dimensions(source_id: u32) -> Result<(usize, usize), String> {
+        // CGDisplayPixelsWide/High can return the logical mode size on Retina.
+        // SCStreamConfiguration requires output pixels, so use the backing size.
+        let mode = unsafe { CGDisplayCopyDisplayMode(source_id) };
+        if mode.is_null() {
+            return Err("The selected display mode is unavailable. Choose a display again.".into());
+        }
+        let pixels = unsafe {
+            let size = (
+                CGDisplayModeGetPixelWidth(mode),
+                CGDisplayModeGetPixelHeight(mode),
+            );
+            CGDisplayModeRelease(mode);
+            size
+        };
+        let bounds = unsafe { CGDisplayBounds(source_id) };
+        super::oriented_pixel_dimensions(pixels, (bounds.size.width, bounds.size.height))
+    }
+
     pub(super) fn list_sources() -> Result<Vec<ScreenCaptureSource>, String> {
         ensure_supported()?;
         // CoreGraphics display metadata does not require screen recording access.
@@ -190,17 +246,21 @@ mod macos {
         let mut displays = ids[..(count as usize).min(ids.len())]
             .iter()
             .enumerate()
-            .map(|(index, id)| ScreenCaptureSource {
-                id: *id,
-                name: format!(
-                    "Display {}{}",
-                    index + 1,
-                    if *id == primary { " (Main)" } else { "" }
-                ),
-                width: unsafe { CGDisplayPixelsWide(*id) },
-                height: unsafe { CGDisplayPixelsHigh(*id) },
+            .filter_map(|(index, id)| {
+                // A different display disconnecting must not block the selected
+                // one. The chosen display is still revalidated before capture.
+                let (width, height) = display_pixel_dimensions(*id).ok()?;
+                Some(ScreenCaptureSource {
+                    id: *id,
+                    name: format!(
+                        "Display {}{}",
+                        index + 1,
+                        if *id == primary { " (Main)" } else { "" }
+                    ),
+                    width,
+                    height,
+                })
             })
-            .filter(|display| display.width > 0 && display.height > 0)
             .collect::<Vec<_>>();
         displays.sort_by_key(|display| display.id != primary);
         Ok(displays)
@@ -461,7 +521,40 @@ mod macos {
 
 #[cfg(test)]
 mod tests {
-    use super::{bounded_dimensions, MAX_IMAGE_EDGE};
+    use super::{bounded_dimensions, oriented_pixel_dimensions, MAX_IMAGE_EDGE};
+
+    #[test]
+    fn uses_retina_backing_detail_instead_of_upscaling_logical_pixels() {
+        let pixels = oriented_pixel_dimensions((2940, 1912), (1470.0, 956.0)).unwrap();
+        assert_eq!(pixels, (2940, 1912));
+        assert_eq!(
+            bounded_dimensions(pixels.0, pixels.1).unwrap(),
+            (2560, 1664)
+        );
+        let native = oriented_pixel_dimensions((1920, 1080), (1920.0, 1080.0)).unwrap();
+        assert_eq!(bounded_dimensions(native.0, native.1).unwrap(), native);
+    }
+
+    #[test]
+    fn respects_portrait_bounds_without_double_rotating_a_mode() {
+        for pixels in [(2940, 1912), (1912, 2940)] {
+            let oriented = oriented_pixel_dimensions(pixels, (956.0, 1470.0)).unwrap();
+            assert_eq!(oriented, (1912, 2940));
+            assert_eq!(
+                bounded_dimensions(oriented.0, oriented.1).unwrap(),
+                (1664, 2560)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_inconsistent_or_unusable_display_modes() {
+        assert!(oriented_pixel_dimensions((1920, 1080), (1470.0, 956.0)).is_err());
+        assert!(oriented_pixel_dimensions((0, 1080), (1920.0, 1080.0)).is_err());
+        for bounds in [(0.0, 1080.0), (1920.0, -1.0), (f64::NAN, 1080.0)] {
+            assert!(oriented_pixel_dimensions((1920, 1080), bounds).is_err());
+        }
+    }
 
     #[test]
     fn bounds_retina_and_portrait_images_without_upscaling() {

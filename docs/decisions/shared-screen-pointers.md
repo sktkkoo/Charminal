@@ -98,8 +98,8 @@ cancels that wait immediately. Its deadline is 16 seconds (the capture timeout o
   `panelY = mainDisplayHeight - displayY - displayHeight`. Its flipped content
   view then draws local coordinates from the top-left. Negative monitor origins,
   vertical offsets and portrait displays are handled in logical points; AppKit
-  renders the view at its own backing scale. CoreGraphics capture dimensions are
-  not assumed to be physical Retina pixels.
+  renders the view at its own backing scale. Capture dimensions use the current
+  display mode's backing pixels, while marker positions remain in logical points.
   See [Apple's CGDisplayBounds contract](https://developer.apple.com/documentation/coregraphics/cgdisplaybounds(_:)).
 - One mark is visible at a time. Replacing or clearing it invalidates its expiry
   watchdog, so an old timer cannot erase a new mark. Stop, source/owner changes,
@@ -404,3 +404,31 @@ One known integration follow-up remains: App's capture-phase Escape shortcut can
 stop voice or exit a view mode before an open sharing dialog receives Escape.
 The dialog's Close button works; the global shortcut must yield to the open dialog
 before Escape can be advertised as its dismissal action.
+
+### Retina capture detail
+
+A read-only display diagnostic found a 1470 × 956 logical desktop whose current
+mode has 2940 × 1912 backing pixels. `CGDisplayPixelsWide/High` returned the logical
+1470 × 956 size on this display. Three earlier delivered JPEGs were inspected only
+for their SOF dimension headers: their actual size was 1470 × 956, matching their
+frame metadata. The capture configuration had therefore requested less detail
+than the display's backing image could supply. JPEG encoding and the existing
+`inject_items` path do not apply a second resize.
+
+Capture and pointer validation now share `CGDisplayModeGetPixelWidth/Height`
+dimensions. Current desktop bounds determine their orientation so a rotated mode
+is neither stretched nor rotated twice. A mismatched or unavailable mode is
+excluded from the source list and cannot be captured; another unavailable display
+does not block the selected one. Normalized marker positions continue to map to
+the same logical desktop bounds, and the existing display-change gates remain.
+
+The 2560-pixel longest-edge limit, JPEG quality, byte limit, and transport are
+unchanged. For the measured mode, the expected output is 2560 × 1664, calculated
+from 2940 × 1912 backing pixels. This is downsampling the real backing image,
+not enlarging an existing 1470 × 956 JPEG. No capture was taken after this change,
+so the new JPEG dimensions still need verification in the rebuilt development app.
+
+The five dimension tests passed in a lightweight standalone harness using the
+current production functions and their test module. Single-job `cargo check
+--offline --lib`, Rust formatting, and diff checks also passed. No full app build,
+new capture, or application restart was performed for this change.
