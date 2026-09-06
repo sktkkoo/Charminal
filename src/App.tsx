@@ -166,6 +166,7 @@ import { registerBundledPomodoro } from "./runtime/bundled-pomodoro";
 import { registerBundledPomodoroUi } from "./runtime/bundled-pomodoro-ui";
 import { appendCodexRealtimePersonaDiagnostic } from "./runtime/codex-realtime/persona-diagnostics";
 import { useCodexRealtime } from "./runtime/codex-realtime/use-codex-realtime";
+import { useScreenPointerSettings } from "./runtime/codex-realtime/use-screen-pointer-settings";
 import { useScreenSharing } from "./runtime/codex-realtime/use-screen-sharing";
 import {
   consumePendingRealtimeStart,
@@ -1188,6 +1189,10 @@ function App() {
     };
   }, []);
 
+  const [initialScreenPointersEnabled, setInitialScreenPointersEnabled] = useState<boolean | null>(
+    null,
+  );
+
   // config write は read-modify-write なので UI / MCP 経路を 1 本の queue で直列化する。
   const pendingConfigWriteRef = useRef<Promise<void>>(Promise.resolve());
   const enqueueConfigWrite = useCallback(<T,>(write: () => Promise<T>): Promise<T> => {
@@ -1218,6 +1223,7 @@ function App() {
         ambientAudioVolume: number;
         voiceVolume: number;
         attentionLightNotifications: boolean;
+        screenPointersEnabled: boolean;
         motionIntensity: number;
         language: AppLanguage;
         voiceFrequency: VoiceFrequency;
@@ -1798,6 +1804,7 @@ function App() {
       try {
         const configText = await readYorishiroConfigText();
         const config = parseConfig(configText);
+        setInitialScreenPointersEnabled(config.screenPointersEnabled);
         const resolvedHomeDir = await userHomeDir().catch(() => null);
         if (resolvedHomeDir !== null) setHomeDir(resolvedHomeDir.trim() || null);
         const resolvedProjectFolder = resolveProjectFolder(
@@ -1893,6 +1900,7 @@ function App() {
           });
         }
       } catch (err) {
+        setInitialScreenPointersEnabled((current) => current ?? false);
         appLog.write({
           phase: "register",
           note: "config read for primaryPersona / activeScene failed",
@@ -4139,6 +4147,7 @@ function App() {
     trackQuickChatPrompt,
     screenThreadId,
     shareScreenObservation,
+    notifyScreenPointersEnabled,
     getLipSyncSource: getCodexRealtimeLipSyncSource,
   } = useCodexRealtime({
     sessionId: tabState.mainSessionId,
@@ -4284,8 +4293,16 @@ function App() {
     voiceReconnectPending,
   ]);
 
+  const screenPointerSettings = useScreenPointerSettings({
+    initialEnabled: initialScreenPointersEnabled,
+    persist: (screenPointersEnabled) => updateConfig({ screenPointersEnabled }),
+    notify: notifyScreenPointersEnabled,
+  });
   const screenSharingAvailable =
-    codexVoiceAvailable && screenThreadId !== null && /Mac/i.test(navigator.platform);
+    codexVoiceAvailable &&
+    screenThreadId !== null &&
+    /Mac/i.test(navigator.platform) &&
+    screenPointerSettings.ready;
   const screenSharing = useScreenSharing({
     available: screenSharingAvailable,
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
@@ -4297,6 +4314,11 @@ function App() {
   speechScreenCaptureRef.current = screenSharing.active ? screenSharing.captureNow : null;
   const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
     ...screenSharing,
+    pointersEnabled: screenPointerSettings.enabled,
+    pointersReady: screenPointerSettings.ready,
+    setPointersEnabled: screenPointerSettings.setEnabled,
+    retryPointers: screenPointerSettings.retry,
+    error: screenSharing.error ?? screenPointerSettings.error,
     available: screenSharingAvailable,
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
     language: appLanguage.resolved,
@@ -5886,10 +5908,14 @@ function App() {
               available={screenSharingAvailable}
               active={screenSharing.active}
               busy={screenSharing.busy}
+              pointersEnabled={screenPointerSettings.enabled}
+              pointersReady={screenPointerSettings.ready}
               intervalSeconds={screenSharing.intervalSeconds}
               sources={screenSharing.sources}
               sourceId={screenSharing.sourceId}
-              error={screenSharing.error ?? auxiliaryScreenSharing.error}
+              error={
+                screenSharing.error ?? screenPointerSettings.error ?? auxiliaryScreenSharing.error
+              }
               lastObservedAt={screenSharing.lastObservedAt}
               language={appLanguage.resolved}
               onIntervalChange={screenSharing.setIntervalSeconds}
@@ -5897,6 +5923,8 @@ function App() {
               onStart={() => void screenSharing.start()}
               onStop={screenSharing.stop}
               onClearAnnotations={() => void screenSharing.clearAnnotations()}
+              onPointersEnabledChange={(enabled) => void screenPointerSettings.setEnabled(enabled)}
+              onRetryPointers={() => void screenPointerSettings.retry()}
               onOpenAuxiliary={() => void auxiliaryScreenSharing.open()}
               onRefreshSources={() => void screenSharing.refreshSources()}
             />

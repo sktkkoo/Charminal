@@ -26,9 +26,12 @@ beforeEach(() => {
     version: 1,
     snapshot: {
       revision: "main-revision",
+      pointerRevision: "pointer-revision",
       available: true,
       active: false,
       busy: false,
+      pointersEnabled: true,
+      pointersReady: true,
       sources: [
         { id: 1, name: "Display 1" },
         { id: 2, name: "Display 2" },
@@ -51,6 +54,57 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("independent screen-sharing controls", () => {
+  it("sends rapid OFF and ON intents before a publication and restores published state on rejection", async () => {
+    let rejectLatest!: (error: Error) => void;
+    vi.mocked(requestAuxiliaryAction)
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockReturnValueOnce(
+        new Promise((_resolve, reject) => {
+          rejectLatest = reject;
+        }),
+      );
+    render(<AuxiliaryScreenSharing />);
+    const toggle = (await screen.findByRole("switch", {
+      name: "Screen markers",
+    })) as HTMLInputElement;
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(true);
+    expect(requestAuxiliaryAction).toHaveBeenNthCalledWith(
+      1,
+      1,
+      { type: "set-pointers-enabled", enabled: false },
+      "pointer-revision",
+    );
+    expect(requestAuxiliaryAction).toHaveBeenNthCalledWith(
+      2,
+      1,
+      { type: "set-pointers-enabled", enabled: true },
+      "pointer-revision",
+    );
+    const refreshed = { version: 2, snapshot: { ...state.snapshot, pointersEnabled: false } };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(refreshed);
+    await act(async () => rejectLatest(new Error("Snapshot changed")));
+    expect(toggle.checked).toBe(false);
+    expect(screen.getByRole("alert").textContent).toContain("Snapshot changed");
+    expect(requestAuxiliaryAction).toHaveBeenCalledTimes(2);
+  });
+
+  it("requests recovery when initial marker synchronization failed", async () => {
+    state = { ...state, snapshot: { ...state.snapshot, pointersReady: false, hasError: true } };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    render(<AuxiliaryScreenSharing />);
+    fireEvent.click(await screen.findByRole("button", { name: "Retry marker setting" }));
+    await waitFor(() =>
+      expect(requestAuxiliaryAction).toHaveBeenCalledWith(
+        1,
+        { type: "retry-pointers" },
+        "pointer-revision",
+      ),
+    );
+  });
+
   it("uses the main owner's state for start, clear, stop, and another start", async () => {
     render(<AuxiliaryScreenSharing />);
     const start = await screen.findByRole("button", { name: "Start sharing" });
@@ -119,5 +173,56 @@ describe("independent screen-sharing controls", () => {
     view.unmount();
     expect(unlisten).toHaveBeenCalledOnce();
     expect(requestAuxiliaryAction).toHaveBeenCalledTimes(callsBeforeClose);
+  });
+
+  it("can disable markers while capture and another control request are pending", async () => {
+    state = { ...state, snapshot: { ...state.snapshot, active: true, busy: true } };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    vi.mocked(requestAuxiliaryAction).mockReturnValueOnce(new Promise(() => {}));
+    render(<AuxiliaryScreenSharing />);
+    const toggle = (await screen.findByRole("switch", {
+      name: "Screen markers",
+    })) as HTMLInputElement;
+    fireEvent.click(screen.getByRole("button", { name: "Clear screen markers" }));
+    expect(toggle.disabled).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(requestAuxiliaryAction).toHaveBeenLastCalledWith(
+        1,
+        { type: "set-pointers-enabled", enabled: false },
+        "pointer-revision",
+      ),
+    );
+    state = { version: 2, snapshot: { ...state.snapshot, pointersEnabled: false } };
+    await act(async () => receive(state));
+    expect(toggle.checked).toBe(false);
+    expect(screen.getByRole("button", { name: "Stop sharing" })).toBeTruthy();
+  });
+
+  it("keeps pending OFF through capture updates and discards it when the pointer owner changes", async () => {
+    vi.mocked(requestAuxiliaryAction).mockReturnValueOnce(new Promise(() => {}));
+    render(<AuxiliaryScreenSharing />);
+    const toggle = (await screen.findByRole("switch", {
+      name: "Screen markers",
+    })) as HTMLInputElement;
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
+    state = {
+      version: 2,
+      snapshot: { ...state.snapshot, revision: "capture-revision", lastObservedAt: 1234 },
+    };
+    await act(async () => receive(state));
+    expect(toggle.checked).toBe(false);
+    expect(requestAuxiliaryAction).toHaveBeenCalledExactlyOnceWith(
+      1,
+      { type: "set-pointers-enabled", enabled: false },
+      "pointer-revision",
+    );
+    state = {
+      version: 3,
+      snapshot: { ...state.snapshot, pointerRevision: "replacement-pointer-owner" },
+    };
+    await act(async () => receive(state));
+    expect(toggle.checked).toBe(true);
   });
 });

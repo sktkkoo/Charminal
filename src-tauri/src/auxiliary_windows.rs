@@ -42,9 +42,12 @@ pub struct SharedDisplay {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScreenSharingSnapshot {
     revision: String,
+    pointer_revision: String,
     available: bool,
     active: bool,
     busy: bool,
+    pointers_enabled: bool,
+    pointers_ready: bool,
     sources: Vec<SharedDisplay>,
     source_id: Option<u32>,
     interval_seconds: u8,
@@ -55,7 +58,11 @@ pub struct ScreenSharingSnapshot {
 
 impl ScreenSharingSnapshot {
     fn validate(&self) -> Result<(), String> {
-        if self.revision.is_empty() || self.revision.len() > 80 {
+        if self.revision.is_empty()
+            || self.revision.len() > 80
+            || self.pointer_revision.is_empty()
+            || self.pointer_revision.len() > 80
+        {
             return Err("Invalid auxiliary state revision".into());
         }
         if !(5..=60).contains(&self.interval_seconds) {
@@ -78,6 +85,10 @@ pub enum ScreenSharingAction {
     Stop,
     RefreshSources,
     ClearAnnotations,
+    RetryPointers,
+    SetPointersEnabled {
+        enabled: bool,
+    },
     SelectSource {
         #[serde(rename = "sourceId")]
         source_id: u32,
@@ -89,9 +100,10 @@ pub enum ScreenSharingAction {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AuxiliaryActionRequest {
     version: u64,
+    pointer_revision: Option<String>,
     action: ScreenSharingAction,
 }
 
@@ -103,8 +115,10 @@ pub struct PublishedSnapshot {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RoutedAction {
     revision: String,
+    pointer_revision: String,
     action: ScreenSharingAction,
 }
 
@@ -140,13 +154,23 @@ fn validate_action(
     published: &PublishedSnapshot,
     request: &AuxiliaryActionRequest,
 ) -> Result<(), String> {
-    if published.version != request.version {
+    let pointer_setting = matches!(
+        &request.action,
+        ScreenSharingAction::SetPointersEnabled { .. } | ScreenSharingAction::RetryPointers
+    );
+    let current_revision = if pointer_setting {
+        request.pointer_revision.as_deref() == Some(published.snapshot.pointer_revision.as_str())
+    } else {
+        published.version == request.version
+    };
+    if !current_revision {
         return Err("Sharing settings changed. Please try again.".into());
     }
     let snapshot = &published.snapshot;
     match &request.action {
         ScreenSharingAction::Start
             if !snapshot.available
+                || !snapshot.pointers_ready
                 || snapshot.active
                 || snapshot.busy
                 || !snapshot
@@ -155,6 +179,12 @@ fn validate_action(
                     .any(|source| Some(source.id) == snapshot.source_id) =>
         {
             Err("Screen sharing is not ready to start".into())
+        }
+        ScreenSharingAction::SetPointersEnabled { .. } if !snapshot.pointers_ready => {
+            Err("Screen pointer settings are not ready".into())
+        }
+        ScreenSharingAction::RetryPointers if snapshot.pointers_ready || !snapshot.has_error => {
+            Err("Screen pointer settings do not need initialization".into())
         }
         ScreenSharingAction::SelectSource { source_id }
             if snapshot.active
@@ -265,6 +295,7 @@ pub fn auxiliary_window_request_action(
         validate_action(published, &request)?;
         RoutedAction {
             revision: published.snapshot.revision.clone(),
+            pointer_revision: published.snapshot.pointer_revision.clone(),
             action: request.action,
         }
     };
@@ -296,9 +327,12 @@ mod tests {
             version: 7,
             snapshot: ScreenSharingSnapshot {
                 revision: "main-owner-revision".into(),
+                pointer_revision: "pointer-owner-revision".into(),
                 available: true,
                 active: false,
                 busy: false,
+                pointers_enabled: true,
+                pointers_ready: true,
                 sources: vec![SharedDisplay {
                     id: 12,
                     name: "Display 1".into(),
@@ -358,18 +392,31 @@ mod tests {
 
     #[test]
     fn stale_controls_cannot_start_or_stop_a_replacement_share() {
-        for action in [ScreenSharingAction::Start, ScreenSharingAction::Stop] {
-            assert!(
-                validate_action(&published(), &AuxiliaryActionRequest { version: 6, action })
-                    .is_err()
-            );
+        for action in [
+            ScreenSharingAction::Start,
+            ScreenSharingAction::Stop,
+            ScreenSharingAction::RetryPointers,
+        ] {
+            assert!(validate_action(
+                &published(),
+                &AuxiliaryActionRequest {
+                    version: 6,
+                    pointer_revision: None,
+                    action
+                }
+            )
+            .is_err());
         }
     }
 
     #[test]
     fn validates_source_interval_and_availability() {
         let mut state = published();
-        let request = |action| AuxiliaryActionRequest { version: 7, action };
+        let request = |action| AuxiliaryActionRequest {
+            version: 7,
+            pointer_revision: None,
+            action,
+        };
         assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_ok());
         state.snapshot.available = false;
         assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_err());
@@ -394,5 +441,49 @@ mod tests {
         assert!(validate_action(&state, &request(ScreenSharingAction::RefreshSources)).is_err());
         assert!(validate_action(&state, &request(ScreenSharingAction::Stop)).is_ok());
         assert!(validate_action(&state, &request(ScreenSharingAction::ClearAnnotations)).is_ok());
+    }
+
+    #[test]
+    fn pointer_toggle_is_independent_of_capture_but_rejects_stale_or_unready_controls() {
+        let mut state = published();
+        state.snapshot.available = false;
+        state.snapshot.busy = true;
+        let request = |enabled| AuxiliaryActionRequest {
+            version: state.version,
+            pointer_revision: Some(state.snapshot.pointer_revision.clone()),
+            action: ScreenSharingAction::SetPointersEnabled { enabled },
+        };
+        for enabled in [false, true] {
+            assert!(validate_action(&state, &request(enabled)).is_ok());
+        }
+        let mut stale = request(false);
+        stale.version -= 1;
+        assert!(validate_action(&state, &stale).is_ok());
+        stale.pointer_revision = Some("old-owner-or-setting".into());
+        assert!(validate_action(&state, &stale).is_err());
+        state.snapshot.pointers_ready = false;
+        assert!(validate_action(&state, &request(false)).is_err());
+        assert!(
+            serde_json::from_value::<ScreenSharingAction>(serde_json::json!({
+                "type": "set-pointers-enabled", "enabled": "true"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn capture_updates_preserve_pointer_actions_but_owner_or_pointer_changes_reject_them() {
+        let mut state = published();
+        let off = AuxiliaryActionRequest {
+            version: state.version,
+            pointer_revision: Some(state.snapshot.pointer_revision.clone()),
+            action: ScreenSharingAction::SetPointersEnabled { enabled: false },
+        };
+        state.version += 1;
+        state.snapshot.revision = "capture-finished-revision".into();
+        state.snapshot.last_observed_at = Some(1000);
+        assert!(validate_action(&state, &off).is_ok());
+        state.snapshot.pointer_revision = "new-owner-or-pointer-setting".into();
+        assert!(validate_action(&state, &off).is_err());
     }
 }

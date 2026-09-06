@@ -32,6 +32,9 @@ export interface ScreenCaptureSource {
 
 export interface ScreenCaptureFrame {
   readonly frameId: string;
+  readonly pointersEnabled: boolean;
+  readonly pointerFrameValid: boolean;
+  readonly pointerEpoch: number;
   readonly sourceId: number;
   readonly sourceName: string;
   readonly capturedAt: number;
@@ -58,6 +61,17 @@ export const screenAnnotationBegin = (
 export const screenAnnotationEnd = (shareId: string): Promise<void> =>
   call("screen_annotation_end", { shareId });
 export const screenAnnotationClear = (): Promise<void> => call("screen_annotation_clear", {});
+export interface ScreenPointerSetting {
+  readonly enabled: boolean;
+  readonly pointerEpoch: number;
+}
+
+export const screenAnnotationSetEnabled = (
+  documentId: string,
+  revision: number,
+  enabled: boolean,
+): Promise<ScreenPointerSetting> =>
+  call("screen_annotation_set_enabled", { documentId, revision, enabled });
 
 // ─── Session ────────────────────────────────────────────────────
 

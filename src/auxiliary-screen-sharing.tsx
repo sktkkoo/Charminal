@@ -1,6 +1,7 @@
 import { LoaderCircle, MonitorUp, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
+  isPointerSettingsAction,
   latestAuxiliarySnapshot,
   listenAuxiliarySnapshot,
   type PublishedAuxiliarySnapshot,
@@ -8,6 +9,7 @@ import {
   requestAuxiliaryAction,
   type ScreenSharingAuxiliaryAction,
 } from "./runtime/auxiliary-windows";
+import { ScreenPointerToggle } from "./screen-pointer-toggle";
 import "./screen-sharing-control.css";
 import "./auxiliary-screen-sharing.css";
 
@@ -73,6 +75,11 @@ export default function AuxiliaryScreenSharing() {
   const [actionError, setActionError] = useState<string>();
   const [requesting, setRequesting] = useState(false);
   const [intervalDraft, setIntervalDraft] = useState(30);
+  const [pointerDraft, setPointerDraft] = useState<{
+    enabled: boolean;
+    pointerRevision: string;
+  } | null>(null);
+  const pointerRequest = useRef(0);
   const latest = useRef(published);
   latest.current = published;
   const requestingRef = useRef(false);
@@ -111,19 +118,37 @@ export default function AuxiliaryScreenSharing() {
 
   const request = async (action: ScreenSharingAuxiliaryAction) => {
     const current = latest.current;
-    if (!current || requestingRef.current) return;
-    requestingRef.current = true;
-    setRequesting(true);
+    const independent = isPointerSettingsAction(action);
+    if (!current || (!independent && requestingRef.current)) return;
+    if (!independent) {
+      requestingRef.current = true;
+      setRequesting(true);
+    }
+    const pointerAttempt = independent ? ++pointerRequest.current : null;
+    if (action.type === "set-pointers-enabled") {
+      setPointerDraft({
+        enabled: action.enabled,
+        pointerRevision: current.snapshot.pointerRevision,
+      });
+    }
     setActionError(undefined);
     try {
-      await requestAuxiliaryAction(current.version, action);
+      if (independent) {
+        await requestAuxiliaryAction(current.version, action, current.snapshot.pointerRevision);
+      } else {
+        await requestAuxiliaryAction(current.version, action);
+      }
     } catch (failure) {
+      if (pointerAttempt !== null && pointerAttempt !== pointerRequest.current) return;
+      if (pointerAttempt !== null) setPointerDraft(null);
       setActionError(String(failure));
       const refreshed = await readAuxiliarySnapshot().catch(() => null);
       if (refreshed) setPublished((previous) => latestAuxiliarySnapshot(previous, refreshed));
     } finally {
-      requestingRef.current = false;
-      setRequesting(false);
+      if (!independent) {
+        requestingRef.current = false;
+        setRequesting(false);
+      }
     }
   };
 
@@ -138,7 +163,8 @@ export default function AuxiliaryScreenSharing() {
   }
 
   const hasSelectedSource = state.sources.some((source) => source.id === state.sourceId);
-  const canStart = state.available && hasSelectedSource && !state.busy && !requesting;
+  const canStart =
+    state.available && state.pointersReady && hasSelectedSource && !state.busy && !requesting;
   const lastViewed =
     state.lastObservedAt === null
       ? null
@@ -223,6 +249,17 @@ export default function AuxiliaryScreenSharing() {
       <p className="screen-sharing-cost" id="sharing-cost">
         {labels.cost}
       </p>
+      <ScreenPointerToggle
+        enabled={
+          pointerDraft && state.pointerRevision === pointerDraft.pointerRevision
+            ? pointerDraft.enabled
+            : state.pointersEnabled
+        }
+        ready={state.pointersReady}
+        language={state.language}
+        onChange={(enabled) => void request({ type: "set-pointers-enabled", enabled })}
+        onRetry={state.hasError ? () => void request({ type: "retry-pointers" }) : undefined}
+      />
       {!state.available ? <p className="screen-sharing-description">{labels.unavailable}</p> : null}
       {state.hasError || actionError ? (
         <p className="screen-sharing-error" role="alert">

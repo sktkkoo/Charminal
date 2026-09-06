@@ -258,6 +258,51 @@
   font-weight: 400;
 }
 
+.screen-sharing-pointer-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  cursor: pointer;
+}
+
+.screen-sharing-pointer-toggle small {
+  color: var(--yorishiro-fg-dim, #a6aba8);
+  font-size: 10px;
+}
+
+.screen-sharing-pointer-toggle input {
+  appearance: none;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 18px;
+  margin: 0;
+  padding: 3px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--yorishiro-border, #3b403d);
+  cursor: inherit;
+}
+
+.screen-sharing-pointer-toggle input::before {
+  display: block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--yorishiro-fg, #e8ebe7);
+  content: "";
+}
+
+.screen-sharing-pointer-toggle input:checked {
+  background: var(--yorishiro-accent, #8eb09c);
+}
+
+.screen-sharing-pointer-toggle input:checked::before {
+  transform: translateX(12px);
+  background: var(--yorishiro-bg, #141619);
+}
+
 .screen-sharing-action:hover:not(:disabled) {
   filter: brightness(1.12);
 }

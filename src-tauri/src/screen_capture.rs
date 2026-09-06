@@ -21,6 +21,9 @@ pub struct ScreenCaptureSource {
 #[serde(rename_all = "camelCase")]
 pub struct ScreenCaptureFrame {
     pub frame_id: String,
+    pub pointers_enabled: bool,
+    pub pointer_frame_valid: bool,
+    pub pointer_epoch: u64,
     pub source_id: u32,
     pub source_name: String,
     pub captured_at: u64,
@@ -86,7 +89,11 @@ pub async fn screen_capture_frame(
     let mut frame = macos::capture(source_id).await?;
     #[cfg(not(target_os = "macos"))]
     let mut frame = unsupported_capture().await?;
-    frame.frame_id = crate::screen_annotation::register_frame(&guard, &frame).await?;
+    let reference = crate::screen_annotation::register_frame(&guard, &frame).await?;
+    frame.frame_id = reference.frame_id;
+    frame.pointers_enabled = reference.pointers_enabled;
+    frame.pointer_frame_valid = reference.pointer_frame_valid;
+    frame.pointer_epoch = reference.pointer_epoch;
     Ok(frame)
 }
 
@@ -438,6 +445,9 @@ mod macos {
             );
             Ok(ScreenCaptureFrame {
                 frame_id: String::new(),
+                pointers_enabled: false,
+                pointer_frame_valid: false,
+                pointer_epoch: 0,
                 source_id: source.id,
                 source_name: source.name.clone(),
                 captured_at,

@@ -3881,6 +3881,7 @@ pub fn run() {
             auxiliary_windows::auxiliary_window_snapshot,
             auxiliary_windows::auxiliary_window_request_action,
             screen_annotation::screen_annotation_document,
+            screen_annotation::screen_annotation_set_enabled,
             screen_annotation::screen_annotation_begin,
             screen_annotation::screen_annotation_end,
             screen_annotation::screen_annotation_clear,

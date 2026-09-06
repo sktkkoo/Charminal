@@ -19,9 +19,13 @@ export function resolveWindowView(label: string, search: string) {
 
 export interface ScreenSharingSnapshot {
   readonly revision: string;
+  /** Changes with the main owner or marker setting, never with capture progress. */
+  readonly pointerRevision: string;
   readonly available: boolean;
   readonly active: boolean;
   readonly busy: boolean;
+  readonly pointersEnabled: boolean;
+  readonly pointersReady: boolean;
   readonly sources: readonly { readonly id: number; readonly name: string }[];
   readonly sourceId: number | null;
   readonly intervalSeconds: number;
@@ -36,13 +40,19 @@ export interface PublishedAuxiliarySnapshot {
 }
 
 export type ScreenSharingAuxiliaryAction =
-  | { readonly type: "start" | "stop" | "refresh-sources" | "clear-annotations" }
+  | { readonly type: "start" | "stop" | "refresh-sources" | "clear-annotations" | "retry-pointers" }
   | { readonly type: "select-source"; readonly sourceId: number }
+  | { readonly type: "set-pointers-enabled"; readonly enabled: boolean }
   | { readonly type: "set-interval"; readonly intervalSeconds: number };
 
 export interface RoutedAuxiliaryAction {
   readonly revision: string;
+  readonly pointerRevision: string;
   readonly action: ScreenSharingAuxiliaryAction;
+}
+
+export function isPointerSettingsAction(action: ScreenSharingAuxiliaryAction): boolean {
+  return action.type === "set-pointers-enabled" || action.type === "retry-pointers";
 }
 
 export interface ScreenSharingAuxiliaryModel {
@@ -50,6 +60,8 @@ export interface ScreenSharingAuxiliaryModel {
   readonly available: boolean;
   readonly active: boolean;
   readonly busy: boolean;
+  readonly pointersEnabled: boolean;
+  readonly pointersReady: boolean;
   readonly sources: readonly { readonly id: number; readonly name: string }[];
   readonly sourceId: number | null;
   readonly intervalSeconds: number;
@@ -60,6 +72,8 @@ export interface ScreenSharingAuxiliaryModel {
   readonly stop: () => void;
   readonly refreshSources: () => Promise<void>;
   readonly clearAnnotations: () => Promise<void>;
+  readonly retryPointers: () => Promise<void>;
+  readonly setPointersEnabled: (enabled: boolean) => Promise<void>;
   readonly setSourceId: (id: number) => void;
   readonly setIntervalSeconds: (seconds: number) => void;
 }
@@ -68,12 +82,16 @@ export interface ScreenSharingAuxiliaryModel {
 export function createScreenSharingSnapshot(
   model: ScreenSharingAuxiliaryModel,
   revision: string,
+  pointerRevision = revision,
 ): ScreenSharingSnapshot {
   return {
     revision,
+    pointerRevision,
     available: model.available,
     active: model.active,
     busy: model.busy,
+    pointersEnabled: model.pointersEnabled,
+    pointersReady: model.pointersReady,
     sources: model.sources.slice(0, 64).map(({ id, name }) => ({ id, name: name.slice(0, 200) })),
     sourceId: model.sourceId,
     intervalSeconds: model.intervalSeconds,
@@ -105,6 +123,7 @@ export class ScreenSharingAuxiliaryHost {
   private model: ScreenSharingAuxiliaryModel | null = null;
   private snapshot: ScreenSharingSnapshot | null = null;
   private signature = "";
+  private pointerSignature = "";
   private disposed = false;
   private unlisten: (() => void) | null = null;
   private publishQueue: Promise<void> = Promise.resolve();
@@ -134,7 +153,18 @@ export class ScreenSharingAuxiliaryHost {
     const signature = JSON.stringify([model.ownerKey, safeFields]);
     if (signature === this.signature) return;
     this.signature = signature;
-    const snapshot = { ...safeFields, revision: this.transport.revision() };
+    const revision = this.transport.revision();
+    const pointerSignature = JSON.stringify([
+      model.ownerKey,
+      model.pointersEnabled,
+      model.pointersReady,
+    ]);
+    const pointerRevision =
+      pointerSignature === this.pointerSignature && this.snapshot
+        ? this.snapshot.pointerRevision
+        : revision;
+    this.pointerSignature = pointerSignature;
+    const snapshot = { ...safeFields, revision, pointerRevision };
     this.snapshot = snapshot;
     this.publishQueue = this.publishQueue
       .then(async () => {
@@ -160,13 +190,19 @@ export class ScreenSharingAuxiliaryHost {
   async handleAction(request: RoutedAuxiliaryAction): Promise<boolean> {
     const model = this.model;
     const snapshot = this.snapshot;
-    if (this.disposed || !model || !snapshot || request.revision !== snapshot.revision)
-      return false;
+    if (this.disposed || !model || !snapshot) return false;
     const { action } = request;
+    if (
+      isPointerSettingsAction(action)
+        ? request.pointerRevision !== snapshot.pointerRevision
+        : request.revision !== snapshot.revision
+    )
+      return false;
     switch (action.type) {
       case "start":
         if (
           !model.available ||
+          !model.pointersReady ||
           model.active ||
           model.busy ||
           !model.sources.some((source) => source.id === model.sourceId)
@@ -183,6 +219,14 @@ export class ScreenSharingAuxiliaryHost {
         break;
       case "clear-annotations":
         await model.clearAnnotations();
+        break;
+      case "retry-pointers":
+        if (model.pointersReady || !model.error) return false;
+        await model.retryPointers();
+        break;
+      case "set-pointers-enabled":
+        if (!model.pointersReady || typeof action.enabled !== "boolean") return false;
+        await model.setPointersEnabled(action.enabled);
         break;
       case "select-source":
         if (
@@ -222,8 +266,11 @@ export function readAuxiliarySnapshot(): Promise<PublishedAuxiliarySnapshot | nu
 export function requestAuxiliaryAction(
   version: number,
   action: ScreenSharingAuxiliaryAction,
+  pointerRevision?: string,
 ): Promise<void> {
-  return invoke("auxiliary_window_request_action", { request: { version, action } });
+  return invoke("auxiliary_window_request_action", {
+    request: { version, action, ...(pointerRevision === undefined ? {} : { pointerRevision }) },
+  });
 }
 
 export function listenAuxiliarySnapshot(

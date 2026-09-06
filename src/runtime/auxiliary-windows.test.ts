@@ -16,6 +16,8 @@ function model(): ScreenSharingAuxiliaryModel {
     available: true,
     active: false,
     busy: false,
+    pointersEnabled: true,
+    pointersReady: true,
     sources: [
       { id: 1, name: "Display 1" },
       { id: 2, name: "Display 2" },
@@ -27,6 +29,8 @@ function model(): ScreenSharingAuxiliaryModel {
     stop: vi.fn(),
     refreshSources: vi.fn(async () => {}),
     clearAnnotations: vi.fn(async () => {}),
+    setPointersEnabled: vi.fn(async () => {}),
+    retryPointers: vi.fn(async () => {}),
     setSourceId: vi.fn(),
     setIntervalSeconds: vi.fn(),
   };
@@ -47,6 +51,116 @@ function transport() {
 }
 
 describe("auxiliary window ownership", () => {
+  it("delivers native-accepted OFF after capture progress replaces the main snapshot", async () => {
+    const port = transport();
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    const current = { ...model(), active: true, busy: true };
+    host.update(current);
+    await host.open();
+    const accepted = port.publish.mock.calls[0][0];
+    host.update({ ...current, busy: false, lastObservedAt: 1234 });
+    expect(
+      await host.handleAction({
+        revision: accepted.revision,
+        pointerRevision: accepted.pointerRevision,
+        action: { type: "set-pointers-enabled", enabled: false },
+      }),
+    ).toBe(true);
+    expect(current.setPointersEnabled).toHaveBeenCalledExactlyOnceWith(false);
+    expect(
+      await host.handleAction({
+        revision: accepted.revision,
+        pointerRevision: accepted.pointerRevision,
+        action: { type: "stop" },
+      }),
+    ).toBe(false);
+    expect(current.stop).not.toHaveBeenCalled();
+    host.dispose();
+  });
+
+  it("delivers an accepted marker retry across unrelated capture publication", async () => {
+    const port = transport();
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    const current = { ...model(), pointersReady: false, error: "Native unavailable" };
+    host.update(current);
+    await host.open();
+    const accepted = port.publish.mock.calls[0][0];
+    host.update({ ...current, busy: true, lastObservedAt: 1234 });
+    expect(
+      await host.handleAction({
+        revision: accepted.revision,
+        pointerRevision: accepted.pointerRevision,
+        action: { type: "retry-pointers" },
+      }),
+    ).toBe(true);
+    expect(current.retryPointers).toHaveBeenCalledOnce();
+    host.dispose();
+  });
+
+  it.each([
+    { name: "main owner", change: { ownerKey: "new-owner" } },
+    { name: "marker setting", change: { pointersEnabled: false } },
+    { name: "marker readiness", change: { pointersReady: false } },
+  ])("revokes old marker requests after $name changes, including a round trip", async ({
+    change,
+  }) => {
+    const port = transport();
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    const current = model();
+    host.update(current);
+    await host.open();
+    const originalPointerRevision = port.publish.mock.calls[0][0].pointerRevision;
+    host.update({ ...current, ...change });
+    host.update(current);
+    expect(
+      await host.handleAction({
+        revision: "revision-3",
+        pointerRevision: originalPointerRevision,
+        action: { type: "set-pointers-enabled", enabled: false },
+      }),
+    ).toBe(false);
+    expect(current.setPointersEnabled).not.toHaveBeenCalled();
+    expect(
+      await host.handleAction({
+        revision: "revision-3",
+        pointerRevision: "revision-3",
+        action: { type: "set-pointers-enabled", enabled: false },
+      }),
+    ).toBe(true);
+    host.dispose();
+  });
+
+  it("allows initialization recovery without allowing sharing before native synchronization", async () => {
+    const port = transport();
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    const current = { ...model(), pointersReady: false, error: "Native failed" };
+    host.update(current);
+    expect(
+      await host.handleAction({
+        revision: "revision-1",
+        pointerRevision: "revision-1",
+        action: { type: "start" },
+      }),
+    ).toBe(false);
+    expect(
+      await host.handleAction({
+        revision: "revision-1",
+        pointerRevision: "revision-1",
+        action: { type: "retry-pointers" },
+      }),
+    ).toBe(true);
+    expect(current.retryPointers).toHaveBeenCalledOnce();
+    host.update({ ...current, pointersReady: true });
+    expect(
+      await host.handleAction({
+        revision: "revision-2",
+        pointerRevision: "revision-2",
+        action: { type: "retry-pointers" },
+      }),
+    ).toBe(false);
+    host.dispose();
+  });
+
   it("requires the allowlisted native label and route before mounting controls", () => {
     expect(resolveWindowView("main", "")).toBe("main");
     expect(resolveWindowView("main", "?auxiliary=screen-sharing-controls")).toBe("main");
@@ -102,17 +216,29 @@ describe("auxiliary window ownership", () => {
     host.update(original);
     const replacement = { ...model(), ownerKey: "replacement" };
     host.update(replacement);
-    expect(await host.handleAction({ revision: "revision-1", action: { type: "start" } })).toBe(
-      false,
-    );
-    expect(await host.handleAction({ revision: "revision-1", action: { type: "stop" } })).toBe(
-      false,
-    );
+    expect(
+      await host.handleAction({
+        revision: "revision-1",
+        pointerRevision: "revision-1",
+        action: { type: "start" },
+      }),
+    ).toBe(false);
+    expect(
+      await host.handleAction({
+        revision: "revision-1",
+        pointerRevision: "revision-1",
+        action: { type: "stop" },
+      }),
+    ).toBe(false);
     expect(original.start).not.toHaveBeenCalled();
     expect(replacement.stop).not.toHaveBeenCalled();
-    expect(await host.handleAction({ revision: "revision-2", action: { type: "start" } })).toBe(
-      true,
-    );
+    expect(
+      await host.handleAction({
+        revision: "revision-2",
+        pointerRevision: "revision-2",
+        action: { type: "start" },
+      }),
+    ).toBe(true);
     expect(replacement.start).toHaveBeenCalledOnce();
     host.dispose();
   });
@@ -122,7 +248,7 @@ describe("auxiliary window ownership", () => {
     const current = model();
     host.update(current);
     const action = (value: RoutedAuxiliaryAction["action"]) =>
-      host.handleAction({ revision: "revision-1", action: value });
+      host.handleAction({ revision: "revision-1", pointerRevision: "revision-1", action: value });
     expect(await action({ type: "select-source", sourceId: 99 })).toBe(false);
     expect(await action({ type: "select-source", sourceId: 2 })).toBe(true);
     expect(current.setSourceId).toHaveBeenCalledWith(2);
@@ -136,16 +262,41 @@ describe("auxiliary window ownership", () => {
     expect(
       await host.handleAction({
         revision: "revision-2",
+        pointerRevision: "revision-2",
         action: { type: "select-source", sourceId: 2 },
       }),
     ).toBe(false);
     expect(
-      await host.handleAction({ revision: "revision-2", action: { type: "refresh-sources" } }),
+      await host.handleAction({
+        revision: "revision-2",
+        pointerRevision: "revision-2",
+        action: { type: "refresh-sources" },
+      }),
     ).toBe(false);
-    expect(await host.handleAction({ revision: "revision-2", action: { type: "stop" } })).toBe(
-      true,
-    );
+    expect(
+      await host.handleAction({
+        revision: "revision-2",
+        pointerRevision: "revision-2",
+        action: { type: "stop" },
+      }),
+    ).toBe(true);
     expect(current.stop).toHaveBeenCalledOnce();
+    expect(
+      await host.handleAction({
+        revision: "revision-2",
+        pointerRevision: "revision-1",
+        action: { type: "set-pointers-enabled", enabled: false },
+      }),
+    ).toBe(true);
+    expect(current.setPointersEnabled).toHaveBeenCalledExactlyOnceWith(false);
+    host.update({ ...current, pointersReady: false });
+    expect(
+      await host.handleAction({
+        revision: "revision-3",
+        pointerRevision: "revision-3",
+        action: { type: "set-pointers-enabled", enabled: true },
+      }),
+    ).toBe(false);
     host.dispose();
   });
 
@@ -169,9 +320,13 @@ describe("auxiliary window ownership", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(port.publish).toHaveBeenCalledTimes(1);
-    expect(await host.handleAction({ revision: "revision-2", action: { type: "start" } })).toBe(
-      false,
-    );
+    expect(
+      await host.handleAction({
+        revision: "revision-2",
+        pointerRevision: "revision-2",
+        action: { type: "start" },
+      }),
+    ).toBe(false);
   });
 
   it("releases subscriptions that finish after an unmount", async () => {

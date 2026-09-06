@@ -5,22 +5,40 @@
 
 use super::{AnnotationTarget, DisplayGeometry};
 use objc2::rc::{autoreleasepool, Retained};
+use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSBezierPath, NSColor, NSFont, NSLineBreakMode, NSLineCapStyle,
-    NSLineJoinStyle, NSPanel, NSScreen, NSStatusWindowLevel, NSTextField, NSView,
-    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
+    NSBackingStoreType, NSBezierPath, NSColor, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSLineBreakMode, NSLineCapStyle, NSLineJoinStyle, NSPanel,
+    NSScreen, NSShadow, NSShadowAttributeName, NSStatusWindowLevel, NSStrokeColorAttributeName,
+    NSStrokeWidthAttributeName, NSTextField, NSView, NSWindowAnimationBehavior,
+    NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
 };
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSAttributedString, NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString,
+};
 use std::cell::RefCell;
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static WINDOW_ID: AtomicU32 = AtomicU32::new(0);
+
+// Muted pencil colors derived from the Yorishiro shell. Pale ink with a fine
+// dark edge stays visible on mixed backgrounds without another screen capture.
+const ACCENT: u32 = 0xb8c7aa;
+const CONTRAST: u32 = 0x27332b;
+const FOREGROUND: u32 = 0xdce4d1;
+const MARK_WIDTH: f64 = 1.7;
+const CONTRAST_WIDTH: f64 = 2.8;
+const LABEL_FONT_SIZE: f64 = 18.0;
+const LABEL_PADDING_X: f64 = 3.0;
+const LABEL_PADDING_Y: f64 = 3.0;
 
 thread_local! {
     // Reusing the panel gives capture a stable ID even while it is ordered out.
     // Its final release, including the retained content view, is on this thread.
     static PANEL: RefCell<Option<Retained<AnnotationPanel>>> = const { RefCell::new(None) };
+    static LABEL_FONT: RefCell<Option<Retained<NSFont>>> = const { RefCell::new(None) };
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
@@ -30,6 +48,28 @@ extern "C" {
     fn CGDisplayBounds(display: u32) -> NSRect;
     fn CGDisplayPixelsWide(display: u32) -> usize;
     fn CGDisplayPixelsHigh(display: u32) -> usize;
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    static kCFAllocatorNull: *const c_void;
+    fn CFDataCreateWithBytesNoCopy(
+        allocator: *const c_void,
+        bytes: *const u8,
+        length: isize,
+        bytes_deallocator: *const c_void,
+    ) -> *const c_void;
+    fn CFRelease(value: *const c_void);
+}
+
+#[link(name = "CoreText", kind = "framework")]
+extern "C" {
+    fn CTFontManagerCreateFontDescriptorFromData(data: *const c_void) -> *const c_void;
+    fn CTFontCreateWithFontDescriptor(
+        descriptor: *const c_void,
+        size: f64,
+        matrix: *const c_void,
+    ) -> *mut c_void;
 }
 
 // NSPanel has no additional subclassing requirements. All overridden method
@@ -59,7 +99,6 @@ define_class!(
 struct Drawing {
     target: AnnotationTarget,
     size: NSSize,
-    label_frame: Option<NSRect>,
 }
 
 // NSView supports drawRect subclassing. Drawing only happens on the main
@@ -85,46 +124,17 @@ define_class!(
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _dirty: NSRect) {
             let drawing = self.ivars();
-            let path = match drawing.target {
-                AnnotationTarget::Arrow { x, y } => {
-                    let arrow = arrow_points(x, y, drawing.size);
-                    let path = NSBezierPath::bezierPath();
-                    path.moveToPoint(arrow.tail);
-                    path.lineToPoint(arrow.tip);
-                    path.moveToPoint(arrow.wing_a);
-                    path.lineToPoint(arrow.tip);
-                    path.lineToPoint(arrow.wing_b);
-                    path
-                }
-                AnnotationTarget::Rect { x, y, width, height } => {
-                    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-                        rect(x, y, width, height),
-                        6.0_f64.min(width / 4.0),
-                        6.0_f64.min(height / 4.0),
-                    )
-                }
-            };
+            let path = annotation_path(drawing.target, drawing.size);
             path.setLineCapStyle(NSLineCapStyle::Round);
             path.setLineJoinStyle(NSLineJoinStyle::Round);
-            // A dark halo preserves the mark on white canvases; amber remains
-            // visible on dark modeling and editing applications.
-            NSColor::colorWithSRGBRed_green_blue_alpha(0.08, 0.06, 0.02, 0.92).setStroke();
-            path.setLineWidth(7.0);
+            // The two thin strokes read as dark ink on a light canvas and as
+            // pale pencil on dark content. No background sampling or animation.
+            color(CONTRAST, 0.84).setStroke();
+            path.setLineWidth(CONTRAST_WIDTH);
             path.stroke();
-            NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.76, 0.23, 1.0).setStroke();
-            path.setLineWidth(3.0);
+            color(ACCENT, 1.0).setStroke();
+            path.setLineWidth(MARK_WIDTH);
             path.stroke();
-
-            if let Some(frame) = drawing.label_frame {
-                let bubble = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-                    frame, 7.0, 7.0,
-                );
-                NSColor::colorWithSRGBRed_green_blue_alpha(0.12, 0.10, 0.07, 0.95).setFill();
-                bubble.fill();
-                NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.76, 0.23, 0.85).setStroke();
-                bubble.setLineWidth(1.0);
-                bubble.stroke();
-            }
         }
     }
 );
@@ -172,6 +182,215 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))
 }
 
+fn color(rgb: u32, alpha: f64) -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(
+        ((rgb >> 16) & 255) as f64 / 255.0,
+        ((rgb >> 8) & 255) as f64 / 255.0,
+        (rgb & 255) as f64 / 255.0,
+        alpha,
+    )
+}
+
+fn annotation_font(_mtm: MainThreadMarker) -> Retained<NSFont> {
+    LABEL_FONT.with(|slot| {
+        slot.borrow_mut()
+            .get_or_insert_with(|| {
+                bundled_font()
+                    .or_else(|| {
+                        ["HiraMaruProN-W4", "HiraginoSans-W4"]
+                            .iter()
+                            .find_map(|name| {
+                                NSFont::fontWithName_size(
+                                    &NSString::from_str(name),
+                                    LABEL_FONT_SIZE,
+                                )
+                            })
+                    })
+                    .unwrap_or_else(|| NSFont::systemFontOfSize(LABEL_FONT_SIZE))
+            })
+            .clone()
+    })
+}
+
+fn bundled_font() -> Option<Retained<NSFont>> {
+    static FONT: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/fonts/KleeOne-SemiBold.ttf"
+    ));
+    // A data-backed descriptor needs no global font registration or temporary
+    // file. AppKit supplies missing-glyph fallback through its normal cascade.
+    // SAFETY: The immutable bytes are static and kCFAllocatorNull prevents
+    // CoreFoundation from freeing them. Each Create is balanced by Release,
+    // except the CTFont whose +1 ownership transfers to toll-free NSFont.
+    unsafe {
+        let data = CFDataCreateWithBytesNoCopy(
+            std::ptr::null(),
+            FONT.as_ptr(),
+            FONT.len() as isize,
+            kCFAllocatorNull,
+        );
+        if data.is_null() {
+            return None;
+        }
+        let descriptor = CTFontManagerCreateFontDescriptorFromData(data);
+        let font = if descriptor.is_null() {
+            None
+        } else {
+            let font =
+                CTFontCreateWithFontDescriptor(descriptor, LABEL_FONT_SIZE, std::ptr::null());
+            CFRelease(descriptor);
+            Retained::from_raw(font.cast::<NSFont>())
+        };
+        CFRelease(data);
+        font.filter(|font| font.fontName().to_string() == "KleeOne-SemiBold")
+    }
+}
+
+fn label_text(text: &str, mtm: MainThreadMarker) -> [Retained<NSAttributedString>; 2] {
+    let font = annotation_font(mtm);
+    let ink = color(FOREGROUND, 1.0);
+    let edge = color(CONTRAST, 0.90);
+    // Negative stroke width draws both fill and outline; the unit is percent
+    // of the font size. This is about 0.7 pt, not a plate around the note.
+    let stroke = NSNumber::new_f64(-4.0);
+    let shadow = NSShadow::new();
+    shadow.setShadowColor(Some(&color(CONTRAST, 0.45)));
+    shadow.setShadowOffset(NSSize::new(0.0, -0.5));
+    shadow.setShadowBlurRadius(1.0);
+    let values: [&AnyObject; 5] = [&font, &edge, &edge, &stroke, &shadow];
+    // SAFETY: Each AppKit attribute has its documented value type. The
+    // attributed string and native text field retain the values they use.
+    unsafe {
+        let attributes = NSDictionary::from_slices(
+            &[
+                NSFontAttributeName,
+                NSForegroundColorAttributeName,
+                NSStrokeColorAttributeName,
+                NSStrokeWidthAttributeName,
+                NSShadowAttributeName,
+            ],
+            &values,
+        );
+        let string = NSString::from_str(text);
+        let outline = NSAttributedString::new_with_attributes(&string, &attributes);
+        let ink_values: [&AnyObject; 2] = [&font, &ink];
+        let ink_attributes = NSDictionary::from_slices(
+            &[NSFontAttributeName, NSForegroundColorAttributeName],
+            &ink_values,
+        );
+        // Drawing the fill separately keeps the dark outline outside the fine
+        // pen strokes, instead of letting it cover their light centers.
+        [
+            outline,
+            NSAttributedString::new_with_attributes(&string, &ink_attributes),
+        ]
+    }
+}
+
+fn annotation_path(target: AnnotationTarget, size: NSSize) -> Retained<NSBezierPath> {
+    match target {
+        AnnotationTarget::Arrow { x, y } => {
+            let arrow = arrow_points(x, y, size);
+            let path = NSBezierPath::bezierPath();
+            path.moveToPoint(arrow.tail);
+            path.curveToPoint_controlPoint1_controlPoint2(
+                arrow.tip,
+                arrow.control_a,
+                arrow.control_b,
+            );
+            path.moveToPoint(arrow.wing_a);
+            path.lineToPoint(arrow.tip);
+            path.lineToPoint(arrow.wing_b);
+            path
+        }
+        AnnotationTarget::Rect {
+            x,
+            y,
+            width,
+            height,
+        } => {
+            // Small, fixed inward bows suggest a single drawn stroke. Corners
+            // remain exact and every control point stays inside the target box.
+            let bend = 1.8_f64.min(width * 0.012).min(height * 0.025);
+            let path = NSBezierPath::bezierPath();
+            path.moveToPoint(NSPoint::new(x, y));
+            for (end, a, b) in [
+                (
+                    (x + width, y),
+                    (x + width * 0.31, y + bend * 0.4),
+                    (x + width * 0.71, y + bend),
+                ),
+                (
+                    (x + width, y + height),
+                    (x + width - bend * 0.45, y + height * 0.28),
+                    (x + width - bend * 0.85, y + height * 0.73),
+                ),
+                (
+                    (x, y + height),
+                    (x + width * 0.68, y + height - bend * 0.6),
+                    (x + width * 0.29, y + height - bend * 0.2),
+                ),
+                (
+                    (x, y),
+                    (x + bend * 0.5, y + height * 0.67),
+                    (x + bend * 0.15, y + height * 0.26),
+                ),
+            ] {
+                path.curveToPoint_controlPoint1_controlPoint2(
+                    NSPoint::new(end.0, end.1),
+                    NSPoint::new(a.0, a.1),
+                    NSPoint::new(b.0, b.1),
+                );
+            }
+            path.closePath();
+            path
+        }
+        AnnotationTarget::Ellipse {
+            x,
+            y,
+            width,
+            height,
+        } => {
+            // Four exact extrema retain the requested bounding box, while
+            // slightly unequal tangents give the oval a quiet, drawn cadence.
+            let shift_x = (width * 0.025).min(4.0);
+            let shift_y = (height * 0.02).min(2.5);
+            let top = NSPoint::new(x + width / 2.0 - shift_x, y);
+            let right = NSPoint::new(x + width, y + height / 2.0 - shift_y);
+            let bottom = NSPoint::new(x + width / 2.0 + shift_x, y + height);
+            let left = NSPoint::new(x, y + height / 2.0 + shift_y);
+            let path = NSBezierPath::bezierPath();
+            path.moveToPoint(top);
+            for (end, a, b) in [
+                (
+                    right,
+                    NSPoint::new(top.x + (right.x - top.x) * 0.59, top.y),
+                    NSPoint::new(right.x, right.y - (right.y - top.y) * 0.50),
+                ),
+                (
+                    bottom,
+                    NSPoint::new(right.x, right.y + (bottom.y - right.y) * 0.60),
+                    NSPoint::new(bottom.x + (right.x - bottom.x) * 0.49, bottom.y),
+                ),
+                (
+                    left,
+                    NSPoint::new(bottom.x - (bottom.x - left.x) * 0.56, bottom.y),
+                    NSPoint::new(left.x, left.y + (bottom.y - left.y) * 0.55),
+                ),
+                (
+                    top,
+                    NSPoint::new(left.x, left.y - (left.y - top.y) * 0.57),
+                    NSPoint::new(top.x - (top.x - left.x) * 0.52, top.y),
+                ),
+            ] {
+                path.curveToPoint_controlPoint1_controlPoint2(end, a, b);
+            }
+            path.closePath();
+            path
+        }
+    }
+}
+
 /// CoreGraphics places (0, 0) at the main display's top-left; AppKit uses its
 /// bottom-left. Subtracting the complete display's bottom handles displays
 /// left of, above, and below the main display, including negative origins.
@@ -188,6 +407,8 @@ fn appkit_frame(geometry: DisplayGeometry) -> NSRect {
 struct ArrowPoints {
     tip: NSPoint,
     tail: NSPoint,
+    control_a: NSPoint,
+    control_b: NSPoint,
     wing_a: NSPoint,
     wing_b: NSPoint,
 }
@@ -195,17 +416,23 @@ struct ArrowPoints {
 fn arrow_points(x: f64, y: f64, size: NSSize) -> ArrowPoints {
     // Put the shaft and arrowhead toward the display's interior without ever
     // clamping/moving the requested tip. This also works at all four corners.
-    let scale = 1.0_f64.min(size.width / 160.0).min(size.height / 120.0);
-    let dx = if x < size.width / 2.0 { 56.0 } else { -56.0 } * scale;
-    let dy = if y < size.height / 2.0 { 44.0 } else { -44.0 } * scale;
-    let length = dx.hypot(dy);
-    let ux = dx / length;
-    let uy = dy / length;
-    let wing_length = 13.0 * scale;
-    let wing_width = 5.0 * scale;
+    let scale = 1.0_f64.min(size.width / 232.0).min(size.height / 160.0);
+    let dx = if x < size.width / 2.0 { 92.0 } else { -92.0 } * scale;
+    let dy = if y < size.height / 2.0 { 56.0 } else { -56.0 } * scale;
+    let control_a = NSPoint::new(x + dx * 0.64, y + dy * 0.96);
+    let control_b = NSPoint::new(x + dx * 0.18, y + dy * 0.28);
+    // Aim the open head along the curve's final tangent, not its chord. The
+    // narrow wings remain inside the display even when the tip is at a corner.
+    let length = (dx * 0.18).hypot(dy * 0.28);
+    let ux = dx * 0.18 / length;
+    let uy = dy * 0.28 / length;
+    let wing_length = 10.5 * scale;
+    let wing_width = 3.4 * scale;
     ArrowPoints {
         tip: NSPoint::new(x, y),
         tail: NSPoint::new(x + dx, y + dy),
+        control_a,
+        control_b,
         wing_a: NSPoint::new(
             x + ux * wing_length - uy * wing_width,
             y + uy * wing_length + ux * wing_width,
@@ -219,21 +446,27 @@ fn arrow_points(x: f64, y: f64, size: NSSize) -> ArrowPoints {
 
 fn label_frame(target: AnnotationTarget, size: NSSize, text_size: NSSize) -> NSRect {
     let margin = 8.0_f64.min(size.width / 8.0).min(size.height / 8.0);
-    let width = (text_size.width.ceil() + 20.0)
+    let width = (text_size.width.ceil() + LABEL_PADDING_X * 2.0)
         .min(300.0)
         .min(size.width - margin * 2.0);
-    let height = (text_size.height.ceil() + 12.0).min(size.height - margin * 2.0);
+    let height = (text_size.height.ceil() + LABEL_PADDING_Y * 2.0).min(size.height - margin * 2.0);
     let (preferred_x, preferred_y) = match target {
         AnnotationTarget::Arrow { x, y } => {
             let tail = arrow_points(x, y, size).tail;
-            let top = if tail.y < y {
-                tail.y - height - 10.0
+            let left = if tail.x < x {
+                tail.x - width - 10.0
             } else {
-                tail.y + 10.0
+                tail.x + 10.0
             };
-            (tail.x - width / 2.0, top)
+            (left, tail.y - height / 2.0)
         }
         AnnotationTarget::Rect {
+            x,
+            y,
+            height: target_height,
+            ..
+        }
+        | AnnotationTarget::Ellipse {
             x,
             y,
             height: target_height,
@@ -263,41 +496,35 @@ fn create_view(
     size: NSSize,
     label: Option<&str>,
 ) -> Retained<AnnotationView> {
-    let label = label.filter(|label| !label.trim().is_empty()).map(|label| {
-        let label = NSTextField::labelWithString(&NSString::from_str(label), mtm);
-        label.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
-        label.setTextColor(Some(&NSColor::whiteColor()));
-        label.setEditable(false);
-        label.setSelectable(false);
-        label.setDrawsBackground(false);
-        label.setMaximumNumberOfLines(1);
-        label.setUsesSingleLineMode(true);
-        if let Some(cell) = label.cell() {
-            cell.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-        }
-        label.sizeToFit();
-        label
+    let labels = label.filter(|label| !label.trim().is_empty()).map(|label| {
+        label_text(label, mtm).map(|text| {
+            let label = NSTextField::labelWithString(&NSString::from_str(label), mtm);
+            label.setAttributedStringValue(&text);
+            label.setEditable(false);
+            label.setSelectable(false);
+            label.setDrawsBackground(false);
+            label.setMaximumNumberOfLines(1);
+            label.setUsesSingleLineMode(true);
+            if let Some(cell) = label.cell() {
+                cell.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+            }
+            label.sizeToFit();
+            label
+        })
     });
-    let label_frame = label
+    let label_frame = labels
         .as_ref()
-        .map(|label| label_frame(target, size, label.frame().size));
-    let view = AnnotationView::alloc(mtm).set_ivars(Drawing {
-        target,
-        size,
-        label_frame,
-    });
+        .map(|labels| label_frame(target, size, labels[1].frame().size));
+    let view = AnnotationView::alloc(mtm).set_ivars(Drawing { target, size });
     // SAFETY: NSView's designated initializer takes NSRect and returns self.
     let view: Retained<AnnotationView> =
         unsafe { msg_send![super(view), initWithFrame: NSRect::new(NSPoint::ZERO, size)] };
-    if let (Some(label), Some(frame)) = (label, label_frame) {
-        label.setFrame(rect(
-            frame.origin.x + 10.0,
-            frame.origin.y + 6.0,
-            (frame.size.width - 20.0).max(1.0),
-            (frame.size.height - 12.0).max(1.0),
-        ));
-        // addSubview retains the new label for the content view's life.
-        view.addSubview(&label);
+    if let (Some(labels), Some(frame)) = (labels, label_frame) {
+        for label in labels {
+            label.setFrame(frame);
+            // addSubview retains both ink passes for the content view's life.
+            view.addSubview(&label);
+        }
     }
     view
 }
@@ -447,14 +674,21 @@ mod tests {
 
     #[test]
     fn arrow_tips_remain_exact_and_heads_point_inward_at_display_edges() {
-        let size = NSSize::new(1440.0, 900.0);
-        for x in [0.0, 720.0, 1440.0] {
-            for y in [0.0, 450.0, 900.0] {
-                let arrow = arrow_points(x, y, size);
-                assert_eq!(arrow.tip, NSPoint::new(x, y));
-                for point in [arrow.tail, arrow.wing_a, arrow.wing_b] {
-                    assert!((0.0..=size.width).contains(&point.x), "{point:?}");
-                    assert!((0.0..=size.height).contains(&point.y), "{point:?}");
+        for size in [NSSize::new(1440.0, 900.0), NSSize::new(80.0, 48.0)] {
+            for x in [0.0, size.width / 2.0, size.width] {
+                for y in [0.0, size.height / 2.0, size.height] {
+                    let arrow = arrow_points(x, y, size);
+                    assert_eq!(arrow.tip, NSPoint::new(x, y));
+                    for point in [
+                        arrow.tail,
+                        arrow.control_a,
+                        arrow.control_b,
+                        arrow.wing_a,
+                        arrow.wing_b,
+                    ] {
+                        assert!((0.0..=size.width).contains(&point.x), "{point:?}");
+                        assert!((0.0..=size.height).contains(&point.y), "{point:?}");
+                    }
                 }
             }
         }
@@ -483,6 +717,18 @@ mod tests {
                 width: 10.0,
                 height: 10.0,
             },
+            AnnotationTarget::Ellipse {
+                x: 0.0,
+                y: 0.0,
+                width: 1440.0,
+                height: 900.0,
+            },
+            AnnotationTarget::Ellipse {
+                x: 1430.0,
+                y: 890.0,
+                width: 10.0,
+                height: 10.0,
+            },
         ];
         for target in targets {
             let label = label_frame(target, size, NSSize::new(1200.0, 17.0));
@@ -490,6 +736,111 @@ mod tests {
             assert!(label.origin.y >= 8.0);
             assert!(label.origin.x + label.size.width <= size.width - 8.0);
             assert!(label.origin.y + label.size.height <= size.height - 8.0);
+        }
+    }
+
+    #[test]
+    fn hand_drawn_outlines_preserve_wide_tall_and_small_target_bounds() {
+        for bounds in [
+            rect(100.0, 200.0, 240.0, 80.0),
+            rect(0.0, 0.0, 40.0, 200.0),
+            rect(10.0, 20.0, 0.5, 0.75),
+        ] {
+            for target in [
+                AnnotationTarget::Rect {
+                    x: bounds.origin.x,
+                    y: bounds.origin.y,
+                    width: bounds.size.width,
+                    height: bounds.size.height,
+                },
+                AnnotationTarget::Ellipse {
+                    x: bounds.origin.x,
+                    y: bounds.origin.y,
+                    width: bounds.size.width,
+                    height: bounds.size.height,
+                },
+            ] {
+                let path = annotation_path(target, NSSize::new(1440.0, 900.0));
+                let actual = path.bounds();
+                for (actual, expected) in [
+                    (actual.origin.x, bounds.origin.x),
+                    (actual.origin.y, bounds.origin.y),
+                    (actual.size.width, bounds.size.width),
+                    (actual.size.height, bounds.size.height),
+                ] {
+                    // AppKit computes cubic extrema with floating-point rounding.
+                    assert!((actual - expected).abs() < 1e-8);
+                }
+                assert!(path.containsPoint(NSPoint::new(
+                    bounds.origin.x + bounds.size.width / 2.0,
+                    bounds.origin.y + bounds.size.height / 2.0,
+                )));
+                if matches!(target, AnnotationTarget::Ellipse { .. }) {
+                    assert!(!path.containsPoint(bounds.origin));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_hand_drawn_paths_have_identical_curves_without_jitter() {
+        use objc2_app_kit::NSBezierPathElement;
+        let size = NSSize::new(1440.0, 900.0);
+        for target in [
+            AnnotationTarget::Arrow { x: 0.0, y: 900.0 },
+            AnnotationTarget::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1440.0,
+                height: 900.0,
+            },
+            AnnotationTarget::Ellipse {
+                x: 180.0,
+                y: 240.0,
+                width: 320.0,
+                height: 180.0,
+            },
+        ] {
+            let first = annotation_path(target, size);
+            let second = annotation_path(target, size);
+            assert_eq!(first.elementCount(), second.elementCount());
+            let mut curves = 0;
+            for index in 0..first.elementCount() {
+                let mut a = [NSPoint::ZERO; 3];
+                let mut b = [NSPoint::ZERO; 3];
+                // SAFETY: AppKit writes at most three points per path element.
+                let (kind_a, kind_b) = unsafe {
+                    (
+                        first.elementAtIndex_associatedPoints(index, a.as_mut_ptr()),
+                        second.elementAtIndex_associatedPoints(index, b.as_mut_ptr()),
+                    )
+                };
+                assert_eq!(kind_a, kind_b);
+                assert_eq!(a, b);
+                if kind_a == NSBezierPathElement::CubicCurveTo {
+                    curves += 1;
+                }
+            }
+            assert!(curves > 0);
+        }
+    }
+
+    #[test]
+    fn arrow_labels_do_not_cover_the_target_even_with_long_text() {
+        let size = NSSize::new(1440.0, 900.0);
+        for x in [0.0, 720.0, 1440.0] {
+            for y in [0.0, 450.0, 900.0] {
+                let frame = label_frame(
+                    AnnotationTarget::Arrow { x, y },
+                    size,
+                    NSSize::new(1200.0, 15.0),
+                );
+                let covers_target = x >= frame.origin.x
+                    && x <= frame.origin.x + frame.size.width
+                    && y >= frame.origin.y
+                    && y <= frame.origin.y + frame.size.height;
+                assert!(!covers_target, "label {frame:?} covers ({x}, {y})");
+            }
         }
     }
 }

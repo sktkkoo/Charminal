@@ -1,11 +1,14 @@
 import { ExternalLink, LoaderCircle, MonitorUp, RefreshCw, X } from "lucide-react";
 import { type CSSProperties, useEffect, useId, useRef, useState } from "react";
+import { ScreenPointerToggle } from "./screen-pointer-toggle";
 import "./screen-sharing-control.css";
 
 export interface ScreenSharingControlProps {
   readonly available: boolean;
   readonly active: boolean;
   readonly busy: boolean;
+  readonly pointersEnabled: boolean;
+  readonly pointersReady: boolean;
   readonly intervalSeconds: number;
   readonly sources: readonly { readonly id: number; readonly name: string }[];
   readonly sourceId: number | null;
@@ -16,6 +19,8 @@ export interface ScreenSharingControlProps {
   readonly onStart: () => void;
   readonly onStop: () => void;
   readonly onClearAnnotations: () => void;
+  readonly onRetryPointers: () => void;
+  readonly onPointersEnabledChange: (enabled: boolean) => void;
   readonly onRefreshSources: () => void;
   readonly onOpenAuxiliary?: () => void;
   readonly language?: string;
@@ -81,6 +86,8 @@ export function ScreenSharingControl({
   available,
   active,
   busy,
+  pointersEnabled,
+  pointersReady,
   intervalSeconds,
   sources,
   sourceId,
@@ -91,6 +98,8 @@ export function ScreenSharingControl({
   onStart,
   onStop,
   onClearAnnotations,
+  onPointersEnabledChange,
+  onRetryPointers,
   onRefreshSources,
   onOpenAuxiliary,
   language = "en",
@@ -109,7 +118,7 @@ export function ScreenSharingControl({
   const isJapanese = language.startsWith("ja");
   const labels = strings[isJapanese ? "ja" : "en"];
   const hasSelectedSource = sources.some((source) => source.id === sourceId);
-  const canStart = available && hasSelectedSource && !busy;
+  const canStart = available && pointersReady && hasSelectedSource && !busy;
   const lastViewed =
     lastObservedAt !== undefined && Number.isFinite(lastObservedAt)
       ? new Date(lastObservedAt).toLocaleTimeString(isJapanese ? "ja-JP" : "en-US", {
@@ -292,6 +301,13 @@ export function ScreenSharingControl({
           <p className="screen-sharing-cost" id={costId}>
             {labels.cost}
           </p>
+          <ScreenPointerToggle
+            enabled={pointersEnabled}
+            ready={pointersReady}
+            language={language}
+            onChange={onPointersEnabledChange}
+            onRetry={error ? onRetryPointers : undefined}
+          />
           {!available ? <p className="screen-sharing-description">{labels.unavailable}</p> : null}
           {error ? (
             <p className="screen-sharing-error" role="alert">

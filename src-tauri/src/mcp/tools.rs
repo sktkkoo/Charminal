@@ -1206,7 +1206,7 @@ impl Yorishiro {
 
     /// A host-owned, click-through native mark on the explicitly shared display.
     #[tool(
-        description = "Point at a place you are explaining on the user's shared display, above external apps. First inspect the shared-screen image and use its exact frameId. kind=arrow points its tip at (x,y); kind=rect outlines (x,y,width,height). All coordinates are normalized 0..1 from the IMAGE TOP LEFT, not app/CSS/global coordinates. Optional single-line label (80 characters); durationMs defaults to 8000, range 500..15000. Replaces the previous mark, never clicks or edits. Requires active sharing and a recent matching frame; expired/stopped/changed displays are rejected. During capture this call waits for completion. Say the mark is displayed only after this tool succeeds. The mark identifies your reference, not measured model attention. Images may be stale; ask for updated context when the app content moved."
+        description = "Point at a place you are explaining on the user's shared display, above external apps. First inspect the shared-screen image and use its exact frameId. kind=arrow points its tip at (x,y); kind=rect or kind=ellipse outlines the bounding box (x,y,width,height). An ellipse can circle a target; its width and height use image axes. All coordinates are normalized 0..1 from the IMAGE TOP LEFT, not app/CSS/global coordinates. Optional single-line label (80 characters); durationMs defaults to 8000, range 500..15000. Replaces the previous mark, never clicks or edits. Requires user-enabled screen pointers, active sharing, and a recent matching frame; expired/stopped/changed displays are rejected. If the user disabled pointers, discuss the shared image without marks and do not call or retry pointer tools until the user enables them. Re-enabling requires a fresh shared image; old frameIds stay invalid. During capture this call waits for completion. Say the mark is displayed only after this tool succeeds. The mark identifies your reference, not measured model attention. Images may be stale; ask for updated context when the app content moved."
     )]
     async fn screen_pointer_show(
         &self,
@@ -1265,7 +1265,7 @@ const SERVER_INSTRUCTIONS: &str = concat!(
                 "- 照明・カメラ等のパラメータ確認 → controls_get（scene pack 依存のパスを確認）\n",
                 "- 照明・カメラ等を変更 → controls_transition（controls_set / controls_set_many は使わず、必ず controls_transition を使う）\n",
                 "- スクリーンショットを撮る → app_screenshot（ターミナル UI 込みのウィンドウ全体。macOS のみ。初回は「画面収録」の許可が必要）\n",
-                "- 共有画面で説明対象を指し示す → screen_pointer_show（共有画像を実際に確認し、その frameId と画像左上原点の 0..1 座標で矢印・囲みを出す。外部アプリ上にも表示。消す → screen_pointer_clear。内部の注意を可視化したものではなく、説明対象の印。画像が古い・対象が動いた場合は最新の共有画像を確認する）\n",
+                "- 共有画面で説明対象を指し示す → screen_pointer_show（共有画像を実際に確認し、その frameId と画像左上原点の 0..1 座標で矢印・矩形・楕円を出す。外部アプリ上にも表示。消す → screen_pointer_clear。ユーザーがポインターをOFFにした場合は印なしで説明し、ONにするまで呼出・再試行しない。ONに戻した後も最新の共有画像が必要。内部の注意を可視化したものではなく、説明対象の印。画像が古い・対象が動いた場合は最新の共有画像を確認する）\n",
                 "- 表情だけ変える → body_expression_set\n",
                 "- ポーズ・ジェスチャーだけ → body_animation_play\n",
                 "- pack の一覧・有効化・無効化 → list_packs / enable_pack / disable_pack\n",

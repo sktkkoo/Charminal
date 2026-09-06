@@ -45,7 +45,7 @@ let annotationBeginQueue: Promise<void> = Promise.resolve();
 // document prevents a Start waiting on permission from borrowing a new epoch.
 let annotationDocument: Promise<string> | null = null;
 
-function getAnnotationDocument(): Promise<string> {
+export function getAnnotationDocument(): Promise<string> {
   if (annotationDocument) return annotationDocument;
   const pending = Promise.resolve()
     .then(() => screenAnnotationDocument())
@@ -232,6 +232,9 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
           const result = await latest.current.share(
             {
               frameId: frame.frameId,
+              pointersEnabled: frame.pointersEnabled,
+              pointerFrameValid: frame.pointerFrameValid,
+              pointerEpoch: frame.pointerEpoch,
               width: frame.width,
               height: frame.height,
               imageDataUrl: frame.dataUrl,

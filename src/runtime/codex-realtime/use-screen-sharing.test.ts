@@ -26,6 +26,9 @@ vi.mock("../../bindings/tauri-commands", () => ({
 
 const frame = {
   frameId: "frame-1",
+  pointersEnabled: true,
+  pointerFrameValid: true,
+  pointerEpoch: 7,
   sourceId: 1,
   sourceName: "Display 1",
   dataUrl: "data:image/jpeg;base64,YQ==",
@@ -238,6 +241,9 @@ describe("useScreenSharing", () => {
     expect(share).toHaveBeenCalledWith(
       {
         frameId: frame.frameId,
+        pointersEnabled: frame.pointersEnabled,
+        pointerFrameValid: frame.pointerFrameValid,
+        pointerEpoch: frame.pointerEpoch,
         width: frame.width,
         height: frame.height,
         imageDataUrl: frame.dataUrl,
@@ -274,6 +280,28 @@ describe("useScreenSharing", () => {
       expect.objectContaining({ frameId: "after-expiry", imageDataUrl: frame.dataUrl }),
       expect.any(AbortSignal),
     );
+  });
+
+  it("continues sharing images with the native OFF and invalid-pointer-frame metadata", async () => {
+    vi.mocked(screenCaptureFrame).mockResolvedValueOnce({
+      ...frame,
+      pointersEnabled: false,
+      pointerFrameValid: false,
+    });
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.start());
+    expect(result.current.active).toBe(true);
+    expect(share).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        imageDataUrl: frame.dataUrl,
+        pointersEnabled: false,
+        pointerFrameValid: false,
+        pointerEpoch: 7,
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(screenAnnotationEnd).not.toHaveBeenCalled();
   });
 
   it("fails visibly without continuing capture when delivery fails", async () => {

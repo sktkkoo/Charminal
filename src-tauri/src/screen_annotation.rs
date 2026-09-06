@@ -29,6 +29,8 @@ const MAX_DURATION_MS: u64 = 15_000;
 const POINTER_CAPTURE_WAIT: Duration = Duration::from_secs(16);
 const POINTER_WAIT_EXPIRED: &str =
     "The screen capture did not finish in time. Inspect a fresh shared image before pointing.";
+const POINTERS_DISABLED: &str =
+    "Screen pointers are disabled by the user. Continue discussing the shared image without marks. Do not call or retry pointer tools until the user enables screen pointers.";
 #[cfg(not(target_os = "macos"))]
 const UNSUPPORTED: &str = "Screen pointers require macOS 14 or later.";
 
@@ -57,6 +59,12 @@ pub(super) enum AnnotationTarget {
         width: f64,
         height: f64,
     },
+    Ellipse {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -64,6 +72,7 @@ pub(super) enum AnnotationTarget {
 pub enum ScreenPointerKind {
     Arrow,
     Rect,
+    Ellipse,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -72,13 +81,13 @@ pub struct ScreenPointerRequest {
     /// Opaque frameId supplied with the shared-screen image you inspected.
     pub frame_id: String,
     pub kind: ScreenPointerKind,
-    /// Normalized image coordinate: 0 is left, 1 is right. Arrow tip or rect left.
+    /// Normalized image coordinate: 0 is left, 1 is right. Arrow tip or bounds left.
     pub x: f64,
-    /// Normalized image coordinate: 0 is top, 1 is bottom. Arrow tip or rect top.
+    /// Normalized image coordinate: 0 is top, 1 is bottom. Arrow tip or bounds top.
     pub y: f64,
-    /// Required for rect: positive normalized width, contained in the image.
+    /// Required for rect/ellipse: positive normalized width, contained in the image.
     pub width: Option<f64>,
-    /// Required for rect: positive normalized height, contained in the image.
+    /// Required for rect/ellipse: positive normalized height, contained in the image.
     pub height: Option<f64>,
     /// Optional single-line label, at most 80 characters. Plain text only.
     pub label: Option<String>,
@@ -92,6 +101,13 @@ pub struct ScreenPointerResult {
     status: &'static str,
     frame_id: String,
     duration_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenPointerSettingsResult {
+    enabled: bool,
+    pointer_epoch: u64,
 }
 
 impl ScreenPointerRequest {
@@ -120,9 +136,9 @@ impl ScreenPointerRequest {
                 }
                 AnnotationTarget::Arrow { x, y }
             }
-            ScreenPointerKind::Rect => {
+            ScreenPointerKind::Rect | ScreenPointerKind::Ellipse => {
                 let (Some(width), Some(height)) = (self.width, self.height) else {
-                    return Err("A rect requires width and height.".into());
+                    return Err("A rect or ellipse requires width and height.".into());
                 };
                 if !unit(width)
                     || !unit(height)
@@ -132,14 +148,24 @@ impl ScreenPointerRequest {
                     || self.y + height > 1.0 + f64::EPSILON
                 {
                     return Err(
-                        "The rect must have positive dimensions and fit inside the image.".into(),
+                        "The shape must have positive dimensions and fit inside the image.".into(),
                     );
                 }
-                AnnotationTarget::Rect {
-                    x,
-                    y,
-                    width: width * geometry.width,
-                    height: height * geometry.height,
+                let width = width * geometry.width;
+                let height = height * geometry.height;
+                match self.kind {
+                    ScreenPointerKind::Ellipse => AnnotationTarget::Ellipse {
+                        x,
+                        y,
+                        width,
+                        height,
+                    },
+                    _ => AnnotationTarget::Rect {
+                        x,
+                        y,
+                        width,
+                        height,
+                    },
                 }
             }
         };
@@ -175,6 +201,9 @@ struct VisibleAnnotation {
 
 struct AnnotationState {
     document_id: String,
+    pointers_enabled: bool,
+    setting_revision: u64,
+    pointer_epoch: u64,
     lease: Option<SharingLease>,
     visible: Option<VisibleAnnotation>,
     generation: u64,
@@ -185,6 +214,9 @@ impl Default for AnnotationState {
     fn default() -> Self {
         Self {
             document_id: uuid::Uuid::new_v4().to_string(),
+            pointers_enabled: true,
+            setting_revision: 0,
+            pointer_epoch: 0,
             lease: None,
             visible: None,
             generation: 0,
@@ -211,8 +243,42 @@ impl AnnotationState {
 
     fn reload(&mut self) {
         self.document_id = uuid::Uuid::new_v4().to_string();
+        self.setting_revision = 0;
         self.lease = None;
         self.clear();
+    }
+
+    fn set_enabled(
+        &mut self,
+        document_id: &str,
+        revision: u64,
+        enabled: bool,
+    ) -> Result<bool, String> {
+        if document_id != self.document_id {
+            return Err(
+                "The application reloaded. Change screen pointers from the current window.".into(),
+            );
+        }
+        if revision <= self.setting_revision {
+            return Err("This screen pointer setting update was superseded.".into());
+        }
+        // A newer ON can reach native before the intervening OFF. Even when
+        // the final value matches, a skipped revision must revoke old marks.
+        let skipped_update = revision - self.setting_revision > 1;
+        self.setting_revision = revision;
+        if self.pointers_enabled == enabled && !skipped_update {
+            return Ok(false);
+        }
+        self.pointers_enabled = enabled;
+        self.pointer_epoch = self.pointer_epoch.wrapping_add(1);
+        // The display remains shared. Both edges revoke all previous image
+        // references, including fingerprint reuse, so re-enabling never grants
+        // old or delayed pointer calls authority to draw again.
+        if let Some(lease) = self.lease.as_mut() {
+            lease.frames.clear();
+        }
+        self.clear();
+        Ok(true)
     }
 
     fn begin(&mut self, id: String, geometry: DisplayGeometry) {
@@ -290,11 +356,18 @@ impl AnnotationState {
         id: &str,
         geometry: DisplayGeometry,
         fingerprint: u64,
-        width: usize,
-        height: usize,
+        dimensions: (usize, usize),
+        capture_epoch: u64,
         now: Instant,
     ) -> Result<String, String> {
+        let current_epoch = self.pointer_epoch;
         let lease = self.lease(id, geometry)?;
+        if capture_epoch != current_epoch {
+            // Sharing continues through a pointer toggle. Deliver the pixels,
+            // but do not mint pointer authority from a pre-toggle capture.
+            return Ok(uuid::Uuid::new_v4().to_string());
+        }
+        let (width, height) = dimensions;
         lease
             .frames
             .retain(|frame| now.duration_since(frame.observed_at) <= FRAME_MAX_AGE);
@@ -324,6 +397,9 @@ impl AnnotationState {
     }
 
     fn frame_geometry(&self, id: &str, now: Instant) -> Result<DisplayGeometry, String> {
+        if !self.pointers_enabled {
+            return Err(POINTERS_DISABLED.into());
+        }
         let lease = self
             .lease
             .as_ref()
@@ -368,6 +444,9 @@ impl AnnotationState {
         pending: &PendingShow,
         now: Instant,
     ) -> Result<(DisplayGeometry, bool), String> {
+        if !self.pointers_enabled {
+            return Err(POINTERS_DISABLED.into());
+        }
         if self.document_id != pending.document_id || self.generation != pending.generation {
             return Err("This pointer request was cleared or superseded.".into());
         }
@@ -495,6 +574,33 @@ pub fn screen_annotation_document(window: tauri::WebviewWindow) -> Result<String
         .lock()
         .map_err(|_| "Screen pointer state is unavailable.")?;
     Ok(state.document_id.clone())
+}
+
+/// A user setting, independent of the sharing lease. Only the current main
+/// document can change it; request ordering survives rapid toggles/remounts.
+#[tauri::command]
+pub async fn screen_annotation_set_enabled(
+    window: tauri::WebviewWindow,
+    document_id: String,
+    revision: u64,
+    enabled: bool,
+) -> Result<ScreenPointerSettingsResult, String> {
+    require_host(&window)?;
+    on_main(window.app_handle(), move |app| {
+        let managed = app.state::<ScreenAnnotationState>();
+        let mut state = managed
+            .0
+            .lock()
+            .map_err(|_| "Screen pointer state is unavailable.")?;
+        if state.set_enabled(&document_id, revision, enabled)? || !state.pointers_enabled {
+            hide();
+        }
+        Ok(ScreenPointerSettingsResult {
+            enabled: state.pointers_enabled,
+            pointer_epoch: state.pointer_epoch,
+        })
+    })
+    .await
 }
 
 /// Page reload destroys the JS owner without destroying the native main window.
@@ -740,6 +846,14 @@ pub struct CaptureGuard {
     app: AppHandle,
     share_id: String,
     geometry: DisplayGeometry,
+    pointer_epoch: u64,
+}
+
+pub(crate) struct FrameReference {
+    pub frame_id: String,
+    pub pointers_enabled: bool,
+    pub pointer_frame_valid: bool,
+    pub pointer_epoch: u64,
 }
 
 impl Drop for CaptureGuard {
@@ -779,7 +893,7 @@ pub async fn begin_capture(
     source_id: u32,
 ) -> Result<CaptureGuard, String> {
     let id = share_id.clone();
-    let geometry = on_main(app, move |app| {
+    let (geometry, pointer_epoch) = on_main(app, move |app| {
         let geometry = display_geometry(source_id)?;
         let managed = app.state::<ScreenAnnotationState>();
         let mut state = managed
@@ -801,20 +915,21 @@ pub async fn begin_capture(
         lease.capturing = true;
         state.changed();
         hide();
-        Ok(geometry)
+        Ok((geometry, state.pointer_epoch))
     })
     .await?;
     Ok(CaptureGuard {
         app: app.clone(),
         share_id,
         geometry,
+        pointer_epoch,
     })
 }
 
-pub async fn register_frame(
+pub(crate) async fn register_frame(
     guard: &CaptureGuard,
     frame: &crate::screen_capture::ScreenCaptureFrame,
-) -> Result<String, String> {
+) -> Result<FrameReference, String> {
     if frame.source_id != guard.geometry.source_id || frame.width == 0 || frame.height == 0 {
         return Err("Screen capture does not match the shared display.".into());
     }
@@ -833,6 +948,7 @@ pub async fn register_frame(
     let height = frame.height;
     let id = guard.share_id.clone();
     let geometry = guard.geometry;
+    let pointer_epoch = guard.pointer_epoch;
     on_main(&guard.app, move |app| {
         let managed = app.state::<ScreenAnnotationState>();
         let mut state = managed
@@ -845,7 +961,20 @@ pub async fn register_frame(
             }
             return Err("The display changed while capturing. Start sharing again.".into());
         }
-        state.register(&id, geometry, fingerprint, width, height, Instant::now())
+        let frame_id = state.register(
+            &id,
+            geometry,
+            fingerprint,
+            (width, height),
+            pointer_epoch,
+            Instant::now(),
+        )?;
+        Ok(FrameReference {
+            frame_id,
+            pointers_enabled: state.pointers_enabled,
+            pointer_frame_valid: pointer_epoch == state.pointer_epoch,
+            pointer_epoch,
+        })
     })
     .await
 }
@@ -902,6 +1031,16 @@ mod tests {
                 height: 540.0
             }
         );
+        rect.kind = ScreenPointerKind::Ellipse;
+        assert_eq!(
+            rect.resolve(g).unwrap().0,
+            AnnotationTarget::Ellipse {
+                x: 1440.0,
+                y: 540.0,
+                width: 480.0,
+                height: 540.0
+            }
+        );
         let portrait = DisplayGeometry {
             width: 900.0,
             height: 1600.0,
@@ -939,12 +1078,160 @@ mod tests {
     }
 
     #[test]
+    fn ellipse_uses_the_same_normalized_bounds_as_rect_on_retina_and_portrait_displays() {
+        let mut ellipse = request(ScreenPointerKind::Ellipse, 0.75, 0.5);
+        ellipse.width = Some(0.25);
+        ellipse.height = Some(0.5);
+        assert_eq!(
+            ellipse.resolve(geometry()).unwrap().0,
+            AnnotationTarget::Ellipse {
+                x: 1440.0,
+                y: 540.0,
+                width: 480.0,
+                height: 540.0
+            }
+        );
+        let portrait = DisplayGeometry {
+            width: 900.0,
+            height: 1600.0,
+            ..geometry()
+        };
+        assert_eq!(
+            ellipse.resolve(portrait).unwrap().0,
+            AnnotationTarget::Ellipse {
+                x: 675.0,
+                y: 800.0,
+                width: 225.0,
+                height: 800.0
+            }
+        );
+        let from_json: ScreenPointerRequest = serde_json::from_str(
+            r#"{"frameId":"frame","kind":"ellipse","x":0.75,"y":0.5,"width":0.25,"height":0.5}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            from_json.resolve(geometry()).unwrap().0,
+            ellipse.resolve(geometry()).unwrap().0
+        );
+    }
+
+    #[test]
+    fn rectangle_and_ellipse_share_strict_bounding_box_validation() {
+        for kind in [ScreenPointerKind::Rect, ScreenPointerKind::Ellipse] {
+            let mut shape = request(kind, 0.25, 0.5);
+            assert!(shape.resolve(geometry()).is_err());
+            shape.width = Some(0.75);
+            shape.height = Some(0.5);
+            assert!(shape.resolve(geometry()).is_ok());
+            for dimension in [f64::NAN, f64::INFINITY, -0.1, 0.0, 0.76] {
+                shape.width = Some(dimension);
+                assert!(shape.resolve(geometry()).is_err());
+            }
+            shape.width = Some(0.75);
+            for dimension in [f64::NAN, f64::INFINITY, -0.1, 0.0, 0.51] {
+                shape.height = Some(dimension);
+                assert!(shape.resolve(geometry()).is_err());
+            }
+        }
+        let schema = serde_json::to_string(&schemars::schema_for!(ScreenPointerRequest)).unwrap();
+        for kind in ["arrow", "rect", "ellipse"] {
+            assert!(schema.contains(kind));
+        }
+        let mut json = serde_json::json!({
+            "frameId": "frame", "kind": "ellipse", "x": 0.1, "y": 0.2,
+            "width": 0.3, "height": 0.4
+        });
+        assert!(serde_json::from_value::<ScreenPointerRequest>(json.clone()).is_ok());
+        json["strokeColor"] = serde_json::json!("red");
+        assert!(serde_json::from_value::<ScreenPointerRequest>(json).is_err());
+    }
+
+    #[test]
+    fn reenable_requires_a_new_capture_and_never_revives_pre_toggle_work() {
+        let now = Instant::now();
+        let (mut state, pending) = waiting_pointer(now);
+        let document = state.document_id.clone();
+        let original_epoch = state.pointer_epoch;
+        state.set_enabled(&document, 1, false).unwrap();
+        let disabled_epoch = state.pointer_epoch;
+        let disabled_frame = state
+            .register("lease", geometry(), 1, (2560, 1440), disabled_epoch, now)
+            .unwrap();
+        // Identical shared images still deduplicate while pointers are OFF.
+        assert_eq!(
+            state
+                .register("lease", geometry(), 1, (2560, 1440), disabled_epoch, now)
+                .unwrap(),
+            disabled_frame
+        );
+        state.set_enabled(&document, 2, true).unwrap();
+        assert!(state.visible.is_none());
+        assert!(state.pending_geometry(&pending, now).is_err());
+        assert!(state
+            .frame_geometry(&pending.request.frame_id, now)
+            .is_err());
+        assert!(state.frame_geometry(&disabled_frame, now).is_err());
+        for epoch in [original_epoch, disabled_epoch] {
+            let late_frame = state
+                .register("lease", geometry(), 1, (2560, 1440), epoch, now)
+                .unwrap();
+            assert!(state.frame_geometry(&late_frame, now).is_err());
+        }
+        assert!(state.lease.as_ref().unwrap().frames.is_empty());
+        let fresh_epoch = state.pointer_epoch;
+        let fresh = state
+            .register("lease", geometry(), 1, (2560, 1440), fresh_epoch, now)
+            .unwrap();
+        assert_ne!(fresh, pending.request.frame_id);
+        assert_ne!(fresh, disabled_frame);
+        assert!(state.frame_geometry(&fresh, now).is_ok());
+        let mut next = request(ScreenPointerKind::Arrow, 0.5, 0.5);
+        next.frame_id = fresh;
+        assert!(state.reserve_show(Arc::new(next), now).is_ok());
+        assert!(state.visible.is_none());
+    }
+
+    #[test]
+    fn setting_updates_are_document_fenced_and_ordered_across_reloads() {
+        let mut state = AnnotationState::default();
+        let document = state.document_id.clone();
+        assert!(state.set_enabled(&document, 0, false).is_err());
+        state.set_enabled(&document, 2, false).unwrap();
+        assert!(state.set_enabled(&document, 1, true).is_err());
+        assert!(!state.pointers_enabled);
+        state.set_enabled(&document, 4, true).unwrap();
+        assert!(state.set_enabled(&document, 3, false).is_err());
+        assert!(state.pointers_enabled);
+        state.set_enabled(&document, 5, false).unwrap();
+        state.reload();
+        assert!(!state.pointers_enabled);
+        assert!(state.set_enabled(&document, 100, true).is_err());
+        let current_document = state.document_id.clone();
+        assert!(!state.set_enabled(&current_document, 1, false).unwrap());
+        state
+            .begin_for_document(&current_document, "new".into(), geometry())
+            .unwrap();
+        assert!(!state.pointers_enabled);
+    }
+
+    #[test]
+    fn reapplying_the_current_setting_preserves_existing_frame_authority() {
+        let now = Instant::now();
+        let (mut state, pending) = waiting_pointer(now);
+        let document = state.document_id.clone();
+        let changes = state.changes.subscribe();
+        assert!(!state.set_enabled(&document, 1, true).unwrap());
+        assert!(state.pending_geometry(&pending, now).is_ok());
+        assert!(!changes.has_changed().unwrap());
+    }
+
+    #[test]
     fn stop_and_source_change_revoke_old_tokens_and_late_stops_preserve_new_lease() {
         let now = Instant::now();
         let mut state = AnnotationState::default();
         state.begin("first".into(), geometry());
         let frame = state
-            .register("first", geometry(), 1, 2560, 1440, now)
+            .register("first", geometry(), 1, (2560, 1440), 0, now)
             .unwrap();
         assert!(state.frame_geometry(&frame, now).is_ok());
         state.end("first");
@@ -952,17 +1239,19 @@ mod tests {
         state.begin("second".into(), geometry());
         assert!(!state.end("first"));
         assert!(state
-            .register("first", geometry(), 2, 2560, 1440, now)
+            .register("first", geometry(), 2, (2560, 1440), 0, now)
             .is_err());
         let next = state
-            .register("second", geometry(), 3, 2560, 1440, now)
+            .register("second", geometry(), 3, (2560, 1440), 0, now)
             .unwrap();
         assert!(state.frame_geometry(&next, now).is_ok());
         let moved = DisplayGeometry {
             x: 0.0,
             ..geometry()
         };
-        assert!(state.register("second", moved, 3, 2560, 1440, now).is_err());
+        assert!(state
+            .register("second", moved, 3, (2560, 1440), 0, now)
+            .is_err());
         assert!(state.frame_geometry(&next, now).is_err());
     }
 
@@ -975,7 +1264,7 @@ mod tests {
             .begin_for_document(&old_document, "old".into(), geometry())
             .unwrap();
         let frame = state
-            .register("old", geometry(), 1, 2560, 1440, now)
+            .register("old", geometry(), 1, (2560, 1440), 0, now)
             .unwrap();
         state.reload();
         assert!(state.frame_geometry(&frame, now).is_err());
@@ -996,7 +1285,7 @@ mod tests {
         let mut state = AnnotationState::default();
         state.begin("lease".into(), geometry());
         let frame = state
-            .register("lease", geometry(), 7, 2560, 1440, now)
+            .register("lease", geometry(), 7, (2560, 1440), 0, now)
             .unwrap();
         for seconds in [5, 30, 60, 90, 120, 150] {
             assert_eq!(
@@ -1005,8 +1294,8 @@ mod tests {
                         "lease",
                         geometry(),
                         7,
-                        2560,
-                        1440,
+                        (2560, 1440),
+                        0,
                         now + Duration::from_secs(seconds)
                     )
                     .unwrap(),
@@ -1028,11 +1317,11 @@ mod tests {
         let mut state = AnnotationState::default();
         state.begin("lease".into(), geometry());
         let first = state
-            .register("lease", geometry(), 1, 2560, 1440, now)
+            .register("lease", geometry(), 1, (2560, 1440), 0, now)
             .unwrap();
         for fingerprint in 2..=5 {
             state
-                .register("lease", geometry(), fingerprint, 2560, 1440, now)
+                .register("lease", geometry(), fingerprint, (2560, 1440), 0, now)
                 .unwrap();
         }
         assert_eq!(state.lease.as_ref().unwrap().frames.len(), FRAME_LIMIT);
@@ -1066,13 +1355,93 @@ mod tests {
         let mut state = AnnotationState::default();
         state.begin("lease".into(), geometry());
         let frame = state
-            .register("lease", geometry(), 1, 2560, 1440, now)
+            .register("lease", geometry(), 1, (2560, 1440), 0, now)
             .unwrap();
         state.lease.as_mut().unwrap().capturing = true;
         let mut request = request(ScreenPointerKind::Arrow, 0.5, 0.5);
         request.frame_id = frame;
         let pending = state.reserve_show(Arc::new(request), now).unwrap();
         (state, pending)
+    }
+
+    #[tokio::test]
+    async fn disabling_immediately_clears_and_wakes_waiters_without_stopping_sharing() {
+        let now = Instant::now();
+        let (mut state, pending) = waiting_pointer(now);
+        let document = state.document_id.clone();
+        state.visible = Some(VisibleAnnotation {
+            generation: pending.generation,
+            geometry: geometry(),
+            target: AnnotationTarget::Arrow { x: 100.0, y: 200.0 },
+            label: None,
+            expires_at: now + Duration::from_secs(8),
+        });
+        let mut changes = state.changes.subscribe();
+        assert!(state.set_enabled(&document, 1, false).unwrap());
+        tokio::time::timeout(Duration::from_millis(100), changes.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.visible.is_none());
+        assert_eq!(state.lease.as_ref().unwrap().id, "lease");
+        assert!(state.lease.as_ref().unwrap().capturing);
+        assert_eq!(
+            state.pending_geometry(&pending, now).unwrap_err(),
+            POINTERS_DISABLED
+        );
+        assert_eq!(
+            state
+                .frame_geometry(&pending.request.frame_id, now)
+                .unwrap_err(),
+            POINTERS_DISABLED
+        );
+        assert!(state.reserve_show(pending.request.clone(), now).is_err());
+        assert!(state.finish_capture("lease"));
+        assert!(state.visible.is_none());
+
+        assert!(state.set_enabled(&document, 2, true).unwrap());
+        assert!(state.visible.is_none());
+        assert!(state.pending_geometry(&pending, now).is_err());
+        assert!(state
+            .frame_geometry(&pending.request.frame_id, now)
+            .is_err());
+        let fresh = state
+            .register(
+                "lease",
+                geometry(),
+                1,
+                (2560, 1440),
+                state.pointer_epoch,
+                now,
+            )
+            .unwrap();
+        assert_ne!(fresh, pending.request.frame_id);
+        assert!(state.frame_geometry(&fresh, now).is_ok());
+    }
+
+    #[test]
+    fn reordered_toggles_and_old_documents_cannot_restore_marks_or_change_the_preference() {
+        let now = Instant::now();
+        let (mut state, pending) = waiting_pointer(now);
+        let old_document = state.document_id.clone();
+        // ON revision 2 overtakes OFF revision 1. It must still revoke old work.
+        assert!(state.set_enabled(&old_document, 2, true).unwrap());
+        assert!(state.pending_geometry(&pending, now).is_err());
+        assert!(state
+            .frame_geometry(&pending.request.frame_id, now)
+            .is_err());
+        assert!(state.set_enabled(&old_document, 1, false).is_err());
+        assert!(state.pointers_enabled);
+        state.set_enabled(&old_document, 3, false).unwrap();
+        assert!(state.set_enabled(&old_document, 2, true).is_err());
+        state.reload();
+        assert!(!state.pointers_enabled);
+        assert!(state.set_enabled(&old_document, 99, true).is_err());
+        assert!(!state.pointers_enabled);
+        let document = state.document_id.clone();
+        assert!(!state.set_enabled(&document, 1, false).unwrap());
+        assert!(state.set_enabled(&document, 1, true).is_err());
+        assert!(!state.pointers_enabled);
     }
 
     #[tokio::test]
@@ -1125,7 +1494,7 @@ mod tests {
         state.lease.as_mut().unwrap().geometry = geometry();
         for fingerprint in 2..=5 {
             state
-                .register("lease", geometry(), fingerprint, 2560, 1440, now)
+                .register("lease", geometry(), fingerprint, (2560, 1440), 0, now)
                 .unwrap();
         }
         assert!(state.pending_geometry(&pending, now).is_err());
