@@ -3,7 +3,7 @@
 **Status:** experimental implementation, branched from `feat/shared-screen-companion`
 
 The resident can point to the part of a shared display it is explaining. An
-amber arrow or outline, with an optional short label, appears over the actual
+arrow, rectangle, or ellipse, with an optional short note, appears over the actual
 desktop, including other applications. These are reference marks chosen by the
 agent, not a measurement of the model's internal attention. The existing Codex
 image transport and voice delegation remain the entry points; no new image
@@ -33,11 +33,16 @@ npm run tauri dev
    image inspection, and `screen_pointer_show`, with a grounded mark before a lengthy
    explanation. Live does not receive or claim to see the image itself. Corrections
    such as “その右隣” can replace the current mark.
-4. Continue clicking, dragging, and typing in the target app while a mark is
+4. Use **Screen markers** / **画面の目印** in either set of controls to turn marks
+   off independently of sharing. OFF immediately clears marks and waiting requests;
+   images continue to reach the same agent. The preference defaults to ON and is
+   saved as `screenPointersEnabled` in the existing user config. Turning it back on
+   permits new marks only from a subsequent capture, without restoring old marks.
+5. Continue clicking, dragging, and typing in the target app while a mark is
    visible. It must not take focus or intercept input. Use **Clear screen
    markers** / **画面の目印を消す** in either set of controls, ask the agent to clear
    it, or wait for expiry (8 seconds by default; at most 15 seconds).
-5. Stop sharing: the mark and all frame references are revoked. Start sharing a
+6. Stop sharing: the mark and all frame references are revoked. Start sharing a
    different display and confirm old frame references are rejected. Disconnecting
    or rearranging/rescaling the selected display also invalidates references;
    start sharing again before pointing.
@@ -57,12 +62,15 @@ MCP call, using the **actual** `frameId` accompanying an inspected image:
 }
 ```
 
-Call `screen_pointer_show` with that object. An arrow uses `kind: "arrow"` and
-only `x`/`y`; omit width and height. `screen_pointer_clear({})` removes the current
+Call `screen_pointer_show` with that object. Use `kind: "ellipse"` with the same
+bounding-box fields for an ellipse or circle. Width and height refer to their
+respective image axes; equal normalized dimensions produce a circle only for a
+square image. An arrow uses `kind: "arrow"` and only `x`/`y`; omit width and height.
+`screen_pointer_clear({})` removes the current
 mark without stopping sharing. A tool success acknowledges native display, not
 the correctness of the agent's interpretation. During an in-flight capture the
 same tool call waits for native capture completion, then revalidates its frame,
-display and sharing lease before drawing. Clear, Stop or a newer pointer request
+display and sharing lease before drawing. OFF, Clear, Stop or a newer pointer request
 cancels that wait immediately. Its deadline is 16 seconds (the capture timeout of
 15 seconds plus a UI handoff margin); a timeout never acknowledges a shown marker.
 
@@ -70,7 +78,7 @@ cancels that wait immediately. Its deadline is 16 seconds (the capture timeout o
 
 - Each native capture returns an opaque frame reference and its actual JPEG
   dimensions, which travel with the image to the same main agent thread.
-- `x`/`y` and rectangle dimensions are in 0–1 image coordinates with a top-left
+- `x`/`y` and rectangle/ellipse dimensions are in 0–1 image coordinates with a top-left
   origin. Divide image pixel coordinates by the supplied image width/height.
   The host maps these directly to the selected display's logical point bounds;
   neither app-window CSS coordinates nor Retina backing pixels are substituted.
@@ -100,6 +108,68 @@ cancels that wait immediately. Its deadline is 16 seconds (the capture timeout o
 - The pointer panel is hidden during capture and its native window ID is also
   excluded from the ScreenCaptureKit filter. The still-current, unexpired mark
   is restored after capture. This prevents self-feedback in subsequent images.
+
+## Independent marker preference
+
+The main window applies the persisted preference before sharing can start. Both
+controls use that single owner and native document epoch; an auxiliary view cannot
+grant pointer authority directly. Settings have monotonically increasing request
+revisions, so an old ON cannot undo a later OFF. A newer update that skips an
+intermediate revision also revokes marks when the final boolean is unchanged.
+Reload preserves the native preference while replacing document authority.
+
+Both toggle edges revoke pending requests and all old frame references, including
+fingerprint reuse. Capture keeps its sharing lease. If a capture began before a
+toggle and finishes afterward, its image still reaches the agent, but its reference
+cannot authorize a mark. The native response includes `pointersEnabled` and
+`pointerFrameValid`; a new capture after ON provides a usable reference even when
+its pixels are unchanged. OFF errors explicitly instruct the agent to stop pointer
+calls and retries until the user enables them.
+
+Changing the preference also sends a text-only update to the validated main thread
+and updates Live's metadata. It neither starts a new turn nor requests another
+capture. The latest explicit preference takes precedence over delayed image
+metadata, and voice reconnects replay the current state. Audio, image delivery and
+native OFF do not wait for metadata acknowledgement or queued config writes.
+
+## Native handwriting and readability
+
+All three shapes share a restrained pencil treatment: a 1.7-point pale sage
+stroke over a 2.8-point dark edge. The arrow follows a shallow cubic curve with
+an exact target tip. Rectangle corners and ellipse extrema preserve the supplied
+bounding box; small, fixed inward bows and asymmetric tangents provide the drawn
+character. Repeated draws produce the same path, with no random jitter or drawing
+animation.
+
+Notes have no background plate or enclosing border. Klee One SemiBold at 18 points
+provides Japanese handwriting. Each note draws its dark glyph outline and soft
+shadow first, then its light face, keeping the outline from covering fine pen
+strokes. Labels sit beside the arrow tail or outside a shape where space allows;
+long text remains on one line and truncates within the display bounds.
+
+The fixed light/dark treatment works without classifying the background or taking
+another capture. It is the same palette over light, dark and mixed content. The
+font is embedded from the pinned, unmodified Fontworks release and created directly
+from data by CoreText on first use, then cached on the main thread. It is never
+installed into the system. A local Japanese font and the system font provide
+fallbacks. The 8.49 MiB font and its app-bundled OFL notice are documented in
+[the font provenance record](../../src-tauri/assets/fonts/README.md).
+
+These previews use the actual native renderer and font over synthetic backgrounds;
+they are not the earlier image-generation concept or screenshots of private apps:
+
+- [Dark workspace](../assets/screen-pointers-dark.png)
+- [Light workspace](../assets/screen-pointers-light.png)
+- [Mixed, textured background](../assets/screen-pointers-mixed.png)
+
+Regenerate them on macOS after building Rust dependencies:
+
+```sh
+python3 scripts/render-screen-pointers.py
+```
+
+The harness creates hidden native views without taking a desktop screenshot,
+requesting Screen Recording permission, or activating a window.
 
 ## Latency investigation
 
@@ -131,6 +201,16 @@ proxy hop took 0.094–0.527 ms. These are API/CPU timings in an otherwise idle 
 not physical display-presentation timestamps or measurements inside a loaded Yorishiro.
 Screen Recording preflight was false for that probe process, so capture timing was
 skipped without requesting permission or saving screen pixels.
+
+The final handwriting renderer was measured separately with a Tao/AppKit probe:
+one cold show took 41.342 ms; 21 warm shows across all three shapes took
+0.661–1.187 ms (median 0.954 ms). Warm forced-paint calls took 0.083–0.145 ms,
+and main-queue dispatch took 0.025–0.058 ms. The probe asserted unchanged focus,
+non-key/non-main behavior, mouse transparency, stable window identity and content
+release on hide, with zero captures. These are API/CPU measurements, not physical
+presentation or authenticated voice-to-pointer latency, and are not a controlled
+before/after comparison with the earlier probe. See the
+[complete numeric record](../assets/screen-pointers-latency.txt).
 
 The existing Codex V3 protocol still requires Live to delegate actual image grounding
 to the main agent. The installed 0.153.4 schema exposes no verified direct realtime
@@ -173,6 +253,13 @@ The controls stay above ordinary app windows. Main-window destruction or documen
 reload also closes its auxiliary windows, preventing an orphaned control surface
 from retaining a snapshot from the previous owner.
 
+Pointer settings use a separate revision that changes only with the owning main
+session/thread, pointer preference, or pointer readiness. Both native acceptance
+and main-window application validate it. A capture completion between those two
+steps therefore cannot silently discard an OFF action, while an old owner or
+superseded pointer preference remains fenced out. Other auxiliary actions retain
+the existing complete-snapshot revision check.
+
 ## Limits and validation
 
 The feature supports the existing macOS full-display sharing route. It does not
@@ -180,7 +267,7 @@ track a moving object/window within a display: scrolling, changing a Blender
 viewport, or moving an application can make a reference semantically stale even
 though monitor geometry is unchanged. The agent must use recent context and ask
 for an updated image when needed. Marks are short-lived; they neither click nor
-edit objects. Hand-drawn image generation, edit previews, and strict speech/mark
+edit objects. AI-generated edit previews and strict speech/mark
 synchronization remain separate work.
 
 Automated coverage includes normalized/Retina/portrait coordinates, negative and
@@ -198,3 +285,9 @@ An authenticated end-to-end voice/Screen Recording session, an actual Tauri
 auxiliary-window open/close round-trip, multiple physical monitors, and external
 fullscreen/Spaces transitions still require a user trial. Pure coordinate tests
 and the native panel smoke test do not establish those behaviors.
+
+For this change, all 427 Rust tests (409 library and 18 CLI), the related frontend
+tests, strict all-target/all-feature Clippy, formatting and the frontend production
+build passed. The local debug macOS `.app` also built successfully, and its readable
+OFL resource was checked against the source license. This build was not installed,
+launched as an authenticated user session, signed for distribution, or published.
