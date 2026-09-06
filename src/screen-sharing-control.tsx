@@ -22,7 +22,7 @@ export interface ScreenSharingControlProps {
   readonly onRetryPointers: () => void;
   readonly onPointersEnabledChange: (enabled: boolean) => void;
   readonly onRefreshSources: () => void;
-  readonly onOpenAuxiliary?: () => void;
+  readonly onOpenAuxiliary?: () => Promise<void>;
   readonly language?: string;
 }
 
@@ -32,52 +32,46 @@ const strings = {
     activeTitle: "Screen sharing on",
     close: "Close screen sharing settings",
     openAuxiliary: "Open screen sharing in a separate window",
-    description:
-      "While sharing, the display updates periodically and when you start speaking in the call. You can ask for screen markers.",
     display: "Display",
     chooseDisplay: "Choose a display",
     noDisplays: "No displays available",
     refresh: "Refresh displays",
     interval: "Periodic interval",
     seconds: (value: number) => `${value} seconds`,
-    cost: "Screen sharing sends images and can use many tokens. More frequent updates increase usage.",
+    cost: "Sending images periodically uses many tokens.",
     unavailable: "Select an agent that supports screen sharing to start.",
     on: "Sharing",
     off: "Off",
     busy: "Sharing image…",
     waiting: "Waiting for the first image…",
-    stopped: "Screen sharing is off.",
     lastViewed: "Last shared",
     cancel: "Cancel",
     start: "Start sharing",
     stop: "Stop sharing",
-    clearAnnotations: "Clear screen markers",
+    clearAnnotations: "Clear pointing",
   },
   ja: {
     title: "画面共有",
     activeTitle: "画面共有中",
     close: "画面共有の設定を閉じる",
     openAuxiliary: "画面共有を別ウィンドウで開く",
-    description:
-      "共有中は一定間隔と、通話で話し始めたときに画面を更新します。画面の場所を目印で示すよう頼めます。",
-    display: "共有する画面",
+    display: "画面選択",
     chooseDisplay: "画面を選択",
     noDisplays: "共有できる画面がありません",
     refresh: "画面一覧を更新",
     interval: "定期更新の間隔",
     seconds: (value: number) => `${value}秒`,
-    cost: "画面共有は画像の送信でトークンを多く消費します。更新が多いほど使用量が増えます。",
+    cost: "画像の定期送信ではトークンを多く消費します。",
     unavailable: "画面共有に対応するエージェントを選択してください。",
     on: "共有中",
     off: "停止中",
     busy: "画像を共有中…",
     waiting: "最初の画像の共有を待っています…",
-    stopped: "画面共有は停止しています。",
     lastViewed: "最終共有",
     cancel: "キャンセル",
     start: "共有を開始",
     stop: "共有を停止",
-    clearAnnotations: "画面の目印を消す",
+    clearAnnotations: "指し示しを消す",
   },
 } as const;
 
@@ -105,18 +99,21 @@ export function ScreenSharingControl({
   language = "en",
 }: ScreenSharingControlProps) {
   const [open, setOpen] = useState(false);
+  const [openingAuxiliary, setOpeningAuxiliary] = useState(false);
+  const [auxiliaryError, setAuxiliaryError] = useState<string>();
   const [panelStyle, setPanelStyle] = useState<CSSProperties>({});
+  const openingAuxiliaryRef = useRef(false);
   const rootRef = useRef<HTMLFieldSetElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelId = useId();
   const titleId = useId();
-  const descriptionId = useId();
   const displayId = useId();
   const intervalId = useId();
   const costId = useId();
   const isJapanese = language.startsWith("ja");
   const labels = strings[isJapanese ? "ja" : "en"];
+  const displayError = auxiliaryError ?? error;
   const hasSelectedSource = sources.some((source) => source.id === sourceId);
   const canStart = available && pointersReady && hasSelectedSource && !busy;
   const lastViewed =
@@ -131,6 +128,22 @@ export function ScreenSharingControl({
   const openPanel = () => {
     setOpen(true);
     if (!active) onRefreshSources();
+  };
+
+  const openAuxiliary = async () => {
+    if (!onOpenAuxiliary || openingAuxiliaryRef.current) return;
+    openingAuxiliaryRef.current = true;
+    setOpeningAuxiliary(true);
+    setAuxiliaryError(undefined);
+    try {
+      await onOpenAuxiliary();
+      setOpen(false);
+    } catch (failure) {
+      setAuxiliaryError(failure instanceof Error ? failure.message : String(failure));
+    } finally {
+      openingAuxiliaryRef.current = false;
+      setOpeningAuxiliary(false);
+    }
   };
 
   useEffect(() => {
@@ -189,7 +202,7 @@ export function ScreenSharingControl({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
-        title={error ?? (active ? labels.activeTitle : labels.title)}
+        title={displayError ?? (active ? labels.activeTitle : labels.title)}
         onClick={() => (open ? setOpen(false) : openPanel())}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
@@ -208,7 +221,6 @@ export function ScreenSharingControl({
           style={panelStyle}
           role="dialog"
           aria-labelledby={titleId}
-          aria-describedby={descriptionId}
         >
           <div className="screen-sharing-heading">
             <h2 id={titleId}>{labels.title}</h2>
@@ -220,10 +232,16 @@ export function ScreenSharingControl({
                 type="button"
                 className="screen-sharing-icon-button"
                 aria-label={labels.openAuxiliary}
+                aria-busy={openingAuxiliary}
                 title={labels.openAuxiliary}
-                onClick={onOpenAuxiliary}
+                disabled={openingAuxiliary}
+                onClick={() => void openAuxiliary()}
               >
-                <ExternalLink size={14} aria-hidden="true" />
+                {openingAuxiliary ? (
+                  <LoaderCircle size={14} className="screen-sharing-spinner" aria-hidden="true" />
+                ) : (
+                  <ExternalLink size={14} aria-hidden="true" />
+                )}
               </button>
             ) : null}
             <button
@@ -239,9 +257,6 @@ export function ScreenSharingControl({
               <X size={14} aria-hidden="true" />
             </button>
           </div>
-          <p className="screen-sharing-description" id={descriptionId}>
-            {labels.description}
-          </p>
           <label className="screen-sharing-label" htmlFor={displayId}>
             {labels.display}
           </label>
@@ -309,11 +324,11 @@ export function ScreenSharingControl({
             onRetry={error ? onRetryPointers : undefined}
           />
           {!available ? <p className="screen-sharing-description">{labels.unavailable}</p> : null}
-          {error ? (
+          {displayError ? (
             <p className="screen-sharing-error" role="alert">
-              {error}
+              {displayError}
             </p>
-          ) : (
+          ) : active || busy ? (
             <div className="screen-sharing-status" role="status" aria-live="polite">
               {busy ? (
                 <>
@@ -325,10 +340,10 @@ export function ScreenSharingControl({
                   {labels.lastViewed}: {lastViewed}
                 </span>
               ) : (
-                <span>{active ? labels.waiting : labels.stopped}</span>
+                <span>{labels.waiting}</span>
               )}
             </div>
-          )}
+          ) : null}
           {active ? (
             <button
               type="button"

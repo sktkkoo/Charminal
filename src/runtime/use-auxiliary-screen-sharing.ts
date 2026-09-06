@@ -22,11 +22,15 @@ export function useAuxiliaryScreenSharing(model: ScreenSharingAuxiliaryModel) {
   }, [model]);
 
   const open = useCallback(async () => {
+    const bridge = host.current;
     setError(undefined);
     try {
-      await host.current?.open();
+      if (!bridge) throw new Error("Screen sharing controls are not ready.");
+      await bridge.open();
+      if (host.current !== bridge) throw new Error("Screen sharing controls changed. Try again.");
     } catch (failure) {
-      setError(String(failure));
+      if (host.current === bridge) setError(String(failure));
+      throw failure;
     }
   }, []);
 

@@ -16,56 +16,45 @@ import "./auxiliary-screen-sharing.css";
 const text = {
   en: {
     title: "Screen sharing",
-    description:
-      "While sharing, the display updates periodically and when you start speaking in the call.",
-    display: "Shared display",
+    display: "Display",
     noDisplays: "No displays available",
     refresh: "Refresh displays",
     interval: "Periodic interval",
     seconds: (value: number) => `${value} seconds`,
-    cost: "Screen sharing sends images and uses tokens. More frequent updates increase usage.",
+    cost: "Sending images periodically uses many tokens.",
     unavailable: "Choose an agent that supports screen sharing in the main window.",
     on: "Sharing",
     off: "Off",
     busy: "Sharing image…",
     waiting: "Waiting for the first image…",
-    stopped: "Screen sharing is off.",
     lastViewed: "Last shared",
     cancel: "Cancel",
     start: "Start sharing",
     stop: "Stop sharing",
-    clear: "Clear screen markers",
-    markers:
-      "Ask the resident to point to a part of the shared display. Markers expire automatically.",
+    clear: "Clear pointing",
     error: "Screen sharing failed. Check the main window for details.",
     pending: "Waiting for the main window…",
-    closeNote: "Closing these controls keeps sharing running. Use Stop sharing to end it.",
   },
   ja: {
     title: "画面共有",
-    description: "共有中は一定間隔と、通話で話し始めたときに画面を更新します。",
-    display: "共有する画面",
+    display: "画面選択",
     noDisplays: "共有できる画面がありません",
     refresh: "画面一覧を更新",
     interval: "定期更新の間隔",
     seconds: (value: number) => `${value}秒`,
-    cost: "画面共有は画像の送信でトークンを消費します。更新が多いほど使用量が増えます。",
+    cost: "画像の定期送信ではトークンを多く消費します。",
     unavailable: "メインウィンドウで画面共有に対応するエージェントを選択してください。",
     on: "共有中",
     off: "停止中",
     busy: "画像を共有中…",
     waiting: "最初の画像の共有を待っています…",
-    stopped: "画面共有は停止しています。",
     lastViewed: "最終共有",
     cancel: "キャンセル",
     start: "共有を開始",
     stop: "共有を停止",
-    clear: "画面の目印を消す",
-    markers: "住人に共有画面の場所を指し示すよう話しかけてください。目印は時間が経つと消えます。",
+    clear: "指し示しを消す",
     error: "画面共有でエラーが発生しました。詳細はメインウィンドウで確認してください。",
     pending: "メインウィンドウに接続しています…",
-    closeNote:
-      "このウィンドウを閉じても共有は続きます。終了するには「共有を停止」を押してください。",
   },
 } as const;
 
@@ -187,7 +176,6 @@ export default function AuxiliaryScreenSharing() {
           {state.active ? labels.on : labels.off}
         </span>
       </header>
-      <p className="screen-sharing-description">{labels.description}</p>
       <label className="screen-sharing-label" htmlFor="shared-display">
         {labels.display}
       </label>
@@ -266,22 +254,20 @@ export default function AuxiliaryScreenSharing() {
           {actionError ?? labels.error}
         </p>
       ) : null}
-      <p className="screen-sharing-status" role="status" aria-live="polite">
-        {state.busy ? (
-          <>
-            <LoaderCircle size={13} className="screen-sharing-spinner" aria-hidden="true" />
-            {labels.busy}
-          </>
-        ) : state.active ? (
-          lastViewed ? (
+      {state.active || state.busy ? (
+        <p className="screen-sharing-status" role="status" aria-live="polite">
+          {state.busy ? (
+            <>
+              <LoaderCircle size={13} className="screen-sharing-spinner" aria-hidden="true" />
+              {labels.busy}
+            </>
+          ) : lastViewed ? (
             `${labels.lastViewed}: ${lastViewed}`
           ) : (
             labels.waiting
-          )
-        ) : (
-          labels.stopped
-        )}
-      </p>
+          )}
+        </p>
+      ) : null}
       <button
         type="button"
         className="screen-sharing-action"
@@ -301,9 +287,7 @@ export default function AuxiliaryScreenSharing() {
         >
           {labels.clear}
         </button>
-        <p className="screen-sharing-description">{labels.markers}</p>
       </div>
-      <p className="screen-sharing-description auxiliary-sharing-close-note">{labels.closeNote}</p>
     </main>
   );
 }

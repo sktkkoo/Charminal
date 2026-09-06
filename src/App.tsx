@@ -5909,7 +5909,7 @@ function App() {
               onClearAnnotations={() => void screenSharing.clearAnnotations()}
               onPointersEnabledChange={(enabled) => void screenPointerSettings.setEnabled(enabled)}
               onRetryPointers={() => void screenPointerSettings.retry()}
-              onOpenAuxiliary={() => void auxiliaryScreenSharing.open()}
+              onOpenAuxiliary={auxiliaryScreenSharing.open}
               onRefreshSources={() => void screenSharing.refreshSources()}
             />
           ) : null

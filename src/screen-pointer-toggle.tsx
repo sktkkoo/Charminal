@@ -8,14 +8,11 @@ interface Props {
 
 export function ScreenPointerToggle({ enabled, ready, language, onChange, onRetry }: Props) {
   const japanese = language.startsWith("ja");
-  const label = japanese ? "画面の目印" : "Screen markers";
+  const label = japanese ? "エージェントの指し示し" : "Agent pointing";
   return (
     <div>
       <label className="screen-sharing-pointer-toggle">
-        <span>
-          <span className="screen-sharing-label">{label}</span>
-          <small>{japanese ? "オフでも画面共有は続きます。" : "Sharing continues when off."}</small>
-        </span>
+        <span className="screen-sharing-label">{label}</span>
         <input
           type="checkbox"
           role="switch"
@@ -28,7 +25,7 @@ export function ScreenPointerToggle({ enabled, ready, language, onChange, onRetr
       </label>
       {!ready && onRetry ? (
         <button type="button" className="screen-sharing-action" onClick={onRetry}>
-          {japanese ? "目印の設定を再試行" : "Retry marker setting"}
+          {japanese ? "指し示し設定を再試行" : "Retry pointing setup"}
         </button>
       ) : null}
     </div>

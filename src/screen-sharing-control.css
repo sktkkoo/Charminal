@@ -267,11 +267,6 @@
   cursor: pointer;
 }
 
-.screen-sharing-pointer-toggle small {
-  color: var(--yorishiro-fg-dim, #a6aba8);
-  font-size: 10px;
-}
-
 .screen-sharing-pointer-toggle input {
   appearance: none;
   flex: 0 0 30px;

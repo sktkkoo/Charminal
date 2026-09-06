@@ -65,7 +65,7 @@ describe("independent screen-sharing controls", () => {
       );
     render(<AuxiliaryScreenSharing />);
     const toggle = (await screen.findByRole("switch", {
-      name: "Screen markers",
+      name: "Agent pointing",
     })) as HTMLInputElement;
     fireEvent.click(toggle);
     expect(toggle.checked).toBe(false);
@@ -95,7 +95,7 @@ describe("independent screen-sharing controls", () => {
     state = { ...state, snapshot: { ...state.snapshot, pointersReady: false, hasError: true } };
     vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
     render(<AuxiliaryScreenSharing />);
-    fireEvent.click(await screen.findByRole("button", { name: "Retry marker setting" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Retry pointing setup" }));
     await waitFor(() =>
       expect(requestAuxiliaryAction).toHaveBeenCalledWith(
         1,
@@ -113,7 +113,7 @@ describe("independent screen-sharing controls", () => {
     await waitFor(() => expect(requestAuxiliaryAction).toHaveBeenCalledWith(1, { type: "start" }));
     state = { version: 2, snapshot: { ...state.snapshot, active: true } };
     await act(async () => receive(state));
-    fireEvent.click(screen.getByRole("button", { name: "Clear screen markers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear pointing" }));
     await waitFor(() =>
       expect(requestAuxiliaryAction).toHaveBeenLastCalledWith(2, { type: "clear-annotations" }),
     );
@@ -156,7 +156,7 @@ describe("independent screen-sharing controls", () => {
 
   it("selects and refreshes a stopped source, and disposes only its state listener when closed", async () => {
     const view = render(<AuxiliaryScreenSharing />);
-    const select = await screen.findByRole("combobox", { name: "Shared display" });
+    const select = await screen.findByRole("combobox", { name: "Display" });
     fireEvent.change(select, { target: { value: "2" } });
     await waitFor(() =>
       expect(requestAuxiliaryAction).toHaveBeenCalledWith(1, {
@@ -181,9 +181,9 @@ describe("independent screen-sharing controls", () => {
     vi.mocked(requestAuxiliaryAction).mockReturnValueOnce(new Promise(() => {}));
     render(<AuxiliaryScreenSharing />);
     const toggle = (await screen.findByRole("switch", {
-      name: "Screen markers",
+      name: "Agent pointing",
     })) as HTMLInputElement;
-    fireEvent.click(screen.getByRole("button", { name: "Clear screen markers" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clear pointing" }));
     expect(toggle.disabled).toBe(false);
     fireEvent.click(toggle);
     await waitFor(() =>
@@ -203,7 +203,7 @@ describe("independent screen-sharing controls", () => {
     vi.mocked(requestAuxiliaryAction).mockReturnValueOnce(new Promise(() => {}));
     render(<AuxiliaryScreenSharing />);
     const toggle = (await screen.findByRole("switch", {
-      name: "Screen markers",
+      name: "Agent pointing",
     })) as HTMLInputElement;
     fireEvent.click(toggle);
     expect(toggle.checked).toBe(false);
