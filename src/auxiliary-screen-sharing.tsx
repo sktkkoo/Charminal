@@ -31,7 +31,6 @@ const text = {
     cancel: "Cancel",
     start: "Start sharing",
     stop: "Stop sharing",
-    clear: "Clear pointing",
     error: "Screen sharing failed. Check the main window for details.",
     pending: "Waiting for the main window…",
   },
@@ -52,7 +51,6 @@ const text = {
     cancel: "キャンセル",
     start: "共有を開始",
     stop: "共有を停止",
-    clear: "指し示しを消す",
     error: "画面共有でエラーが発生しました。詳細はメインウィンドウで確認してください。",
     pending: "メインウィンドウに接続しています…",
   },
@@ -144,7 +142,10 @@ export default function AuxiliaryScreenSharing() {
   if (!state) {
     return (
       <main className="screen-sharing-panel auxiliary-sharing">
-        <h1>{labels.title}</h1>
+        <header className="screen-sharing-heading">
+          <h1>{labels.title}</h1>
+          <span className="screen-sharing-experimental">Experimental</span>
+        </header>
         <p role="status">{labels.pending}</p>
         {actionError ? <p role="alert">{actionError}</p> : null}
       </main>
@@ -172,6 +173,7 @@ export default function AuxiliaryScreenSharing() {
       <header className="screen-sharing-heading">
         <MonitorUp size={18} aria-hidden="true" />
         <h1>{labels.title}</h1>
+        <span className="screen-sharing-experimental">Experimental</span>
         <span className="screen-sharing-badge" data-active={state.active}>
           {state.active ? labels.on : labels.off}
         </span>
@@ -277,17 +279,6 @@ export default function AuxiliaryScreenSharing() {
       >
         {state.active ? labels.stop : state.busy ? labels.cancel : labels.start}
       </button>
-      <div className="auxiliary-sharing-markers">
-        <button
-          type="button"
-          className="screen-sharing-action"
-          data-active="true"
-          disabled={!state.active || requesting}
-          onClick={() => void request({ type: "clear-annotations" })}
-        >
-          {labels.clear}
-        </button>
-      </div>
     </main>
   );
 }

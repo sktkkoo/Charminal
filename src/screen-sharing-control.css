@@ -84,6 +84,12 @@
   color: var(--yorishiro-accent, #8eb09c);
 }
 
+.screen-sharing-experimental {
+  flex-shrink: 0;
+  color: var(--yorishiro-fg-dim, #a6aba8);
+  font-size: 9px;
+}
+
 .screen-sharing-description,
 .screen-sharing-cost {
   margin: 0 0 12px;
@@ -249,13 +255,6 @@
 .screen-sharing-action[data-active="true"] {
   background: var(--yorishiro-button-bg, #24282b);
   color: var(--yorishiro-fg, #e8ebe7);
-}
-
-.screen-sharing-clear {
-  margin-bottom: 8px;
-  background: transparent;
-  color: var(--yorishiro-fg, #e8ebe7);
-  font-weight: 400;
 }
 
 .screen-sharing-pointer-toggle {

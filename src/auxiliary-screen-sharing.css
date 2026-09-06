@@ -23,10 +23,6 @@
   margin-left: auto;
 }
 
-.auxiliary-sharing-markers {
-  margin-top: 12px;
-}
-
 .auxiliary-sharing button:focus-visible {
   outline: 2px solid var(--yorishiro-accent, #8eb09c);
   outline-offset: 2px;

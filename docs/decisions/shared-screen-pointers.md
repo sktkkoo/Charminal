@@ -25,8 +25,8 @@ npm run tauri dev
    Portrait always open a separate window. Terminal, Theater, and Immersive use
    an inline panel when its full content fits, otherwise a separate window.
    Resizing an open panel does not move it to another window. The separate controls
-   can start, cancel, stop, select the next display, set the periodic interval, and
-   clear marks while the main window remains small. Opening controls does not start
+   can start, cancel, stop, select the next display, and set the periodic interval
+   while the main window remains small. Opening controls does not start
    capture, and closing them leaves the existing sharing session running. If the
    separate window fails to open, use the compact retry card or the sharing button
    again; Close dismisses the error.
@@ -47,9 +47,9 @@ npm run tauri dev
    saved as `screenPointersEnabled` in the existing user config. Turning it back on
    permits new marks only from a subsequent capture, without restoring old marks.
 5. Continue clicking, dragging, and typing in the target app while a mark is
-   visible. It must not take focus or intercept input. Use **Clear pointing** /
-   **指し示しを消す** in either set of controls, ask the agent to clear
-   it, or wait for expiry (8 seconds by default; at most 15 seconds).
+   visible. It must not take focus or intercept input. Ask the agent to clear
+   it, or wait for expiry (8 seconds by default; at most 15 seconds). The controls
+   omit a manual clear button; Agent pointing OFF and Stop sharing still clear marks.
 6. Stop sharing: the mark and all frame references are revoked. Start sharing a
    different display and confirm old frame references are rejected. Disconnecting
    or rearranging/rescaling the selected display also invalidates references;
@@ -225,9 +225,11 @@ presentation or authenticated voice-to-pointer latency, and are not a controlled
 before/after comparison with the earlier probe. See the
 [complete numeric record](../assets/screen-pointers-latency.txt).
 
-The existing Codex V3 protocol still requires Live to delegate actual image grounding
-to the main agent. The installed 0.153.4 schema exposes no verified direct realtime
-image/tool path. No model or provider was changed. App connects speech-start events
+The current app delegates Live's image inspection to the main agent. The installed
+0.153.4 schema exposes no verified direct realtime image/tool path, and the existing
+WebRTC data channel's compatibility with public Realtime image/tool events remains
+unverified. See the [direct Live investigation](codex-live-image-input.md).
+No model or provider was changed. App connects speech-start events
 from the accepted Live client to the existing sharing hook's `captureNow()`. This
 only acts within an already active sharing lease, bypasses the periodic interval,
 and joins an in-flight capture/delivery instead of starting concurrent work. Audio
@@ -296,7 +298,7 @@ auxiliary state/action boundaries. The native AppKit smoke test on the local
 Retina display checked panel geometry, unchanged frontmost process, inability to
 become key/main, mouse-event transparency, hide/re-show, stable window ID, and
 readable Japanese labels. The actual auxiliary React view was checked at 360 ×
-530 with IPC mocks, including clear/stop/source-change/restart and focus
+530 with IPC mocks, including stop/source-change/restart and focus
 preservation during state updates.
 
 An authenticated end-to-end voice/Screen Recording session, an actual Tauri
@@ -304,7 +306,7 @@ auxiliary-window open/close round-trip, multiple physical monitors, and external
 fullscreen/Spaces transitions still require a user trial. Pure coordinate tests
 and the native panel smoke test do not establish those behaviors.
 
-For this change, all 427 Rust tests (409 library and 18 CLI), the related frontend
+At the initial implementation checkpoint, all 427 Rust tests (409 library and 18 CLI), the related frontend
 tests, strict all-target/all-feature Clippy, formatting and the frontend production
 build passed. The local debug macOS `.app` also built successfully, and its readable
 OFL resource was checked against the source license. This build was not installed,
@@ -330,8 +332,9 @@ reads, StrictMode, component/module replacement, delayed native replies in eithe
 order, delayed persistence, and failed reads/writes.
 
 The main and auxiliary controls use concise matching labels and retain only the
-one-line token-usage notice. The first pop-out implementation closed the original
-sharing popover after success and retained its controls on failure. It is now
+one-line token-usage notice, with a small Experimental label beside the heading.
+The first pop-out implementation closed the original sharing popover after success
+and retained its controls on failure. It is now
 superseded by automatic destination selection, described below. Repeated clicks
 share one pending open request; opening controls does not close the main application
 window or stop sharing.
@@ -397,13 +400,20 @@ At this checkpoint, 47 related UI/bridge tests and TypeScript passed, along with
 the production frontend build. A browser fixture using the real title bar,
 controls, and voice-layer CSS verified destination selection, click-time resize
 decisions, and both retry paths in a 200 × 300 viewport. Auxiliary IPC was mocked;
-this does not verify the actual native window load. A user trial reported a black
-auxiliary window, and its loading path is still under investigation.
+this does not verify the actual native window load. A user trial initially reported
+a black auxiliary window, then controls appearing after a long wait alongside
+broader UI slowdown. Its cause was not established; loading in a real session
+still needs verification.
 
 One known integration follow-up remains: App's capture-phase Escape shortcut can
 stop voice or exit a view mode before an open sharing dialog receives Escape.
 The dialog's Close button works; the global shortcut must yield to the open dialog
 before Escape can be advertised as its dismissal action.
+
+The final controls cleanup removed the manual clear button from both views and
+added the Experimental label. Pointer OFF, Stop sharing, automatic expiry, the
+native clear command, and the agent's `screen_pointer_clear` tool remain available.
+All 27 existing inline and auxiliary UI tests passed after that cleanup.
 
 ### Retina capture detail
 

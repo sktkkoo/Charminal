@@ -5907,7 +5907,6 @@ function App() {
               onSourceChange={screenSharing.setSourceId}
               onStart={() => void screenSharing.start()}
               onStop={screenSharing.stop}
-              onClearAnnotations={() => void screenSharing.clearAnnotations()}
               onPointersEnabledChange={(enabled) => void screenPointerSettings.setEnabled(enabled)}
               onRetryPointers={() => void screenPointerSettings.retry()}
               onOpenAuxiliary={auxiliaryScreenSharing.open}

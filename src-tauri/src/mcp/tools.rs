@@ -1222,7 +1222,7 @@ impl Yorishiro {
     }
 
     #[tool(
-        description = "Clear the resident's shared-display arrow or outline immediately. Keeps screen sharing active. Also available to the user in the sharing controls; marks otherwise expire automatically."
+        description = "Clear the resident's shared-display arrow or outline immediately. Keeps screen sharing active. Marks otherwise expire automatically."
     )]
     async fn screen_pointer_clear(
         &self,

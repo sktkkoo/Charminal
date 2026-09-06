@@ -105,7 +105,7 @@ describe("independent screen-sharing controls", () => {
     );
   });
 
-  it("uses the main owner's state for start, clear, stop, and another start", async () => {
+  it("uses the main owner's state for start, stop, and another start", async () => {
     render(<AuxiliaryScreenSharing />);
     const start = await screen.findByRole("button", { name: "Start sharing" });
     expect(requestAuxiliaryAction).not.toHaveBeenCalled();
@@ -113,10 +113,6 @@ describe("independent screen-sharing controls", () => {
     await waitFor(() => expect(requestAuxiliaryAction).toHaveBeenCalledWith(1, { type: "start" }));
     state = { version: 2, snapshot: { ...state.snapshot, active: true } };
     await act(async () => receive(state));
-    fireEvent.click(screen.getByRole("button", { name: "Clear pointing" }));
-    await waitFor(() =>
-      expect(requestAuxiliaryAction).toHaveBeenLastCalledWith(2, { type: "clear-annotations" }),
-    );
     expect(screen.getByRole("button", { name: "Stop sharing" })).toBeTruthy();
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "Stop sharing" }));
@@ -188,7 +184,9 @@ describe("independent screen-sharing controls", () => {
     const toggle = (await screen.findByRole("switch", {
       name: "Agent pointing",
     })) as HTMLInputElement;
-    fireEvent.click(screen.getByRole("button", { name: "Clear pointing" }));
+    const interval = screen.getByRole("slider", { name: "Periodic interval" });
+    fireEvent.change(interval, { target: { value: "20" } });
+    fireEvent.pointerUp(interval);
     expect(toggle.disabled).toBe(false);
     fireEvent.click(toggle);
     await waitFor(() =>

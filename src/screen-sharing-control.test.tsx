@@ -41,7 +41,6 @@ function props(): ScreenSharingControlProps {
     onSourceChange: vi.fn(),
     onStart: vi.fn(),
     onStop: vi.fn(),
-    onClearAnnotations: vi.fn(),
     onPointersEnabledChange: vi.fn(),
     onRetryPointers: vi.fn(),
     onRefreshSources: vi.fn(),
@@ -220,7 +219,6 @@ describe("screen sharing control", () => {
     );
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(p.onRefreshSources).not.toHaveBeenCalled();
-    expect(p.onClearAnnotations).not.toHaveBeenCalled();
     expect(p.onStop).not.toHaveBeenCalled();
   });
 

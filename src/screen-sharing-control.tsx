@@ -19,7 +19,6 @@ export interface ScreenSharingControlProps {
   readonly onSourceChange: (id: number) => void;
   readonly onStart: () => void;
   readonly onStop: () => void;
-  readonly onClearAnnotations: () => void;
   readonly onRetryPointers: () => void;
   readonly onPointersEnabledChange: (enabled: boolean) => void;
   readonly onRefreshSources: () => void;
@@ -50,7 +49,6 @@ const strings = {
     cancel: "Cancel",
     start: "Start sharing",
     stop: "Stop sharing",
-    clearAnnotations: "Clear pointing",
   },
   ja: {
     title: "画面共有",
@@ -74,7 +72,6 @@ const strings = {
     cancel: "キャンセル",
     start: "共有を開始",
     stop: "共有を停止",
-    clearAnnotations: "指し示しを消す",
   },
 } as const;
 
@@ -116,7 +113,6 @@ export function ScreenSharingControl({
   onSourceChange,
   onStart,
   onStop,
-  onClearAnnotations,
   onPointersEnabledChange,
   onRetryPointers,
   onRefreshSources,
@@ -344,6 +340,7 @@ export function ScreenSharingControl({
             <span className="screen-sharing-badge" data-active={active}>
               {active ? labels.on : labels.off}
             </span>
+            <span className="screen-sharing-experimental">Experimental</span>
             <button
               ref={closeRef}
               type="button"
@@ -443,15 +440,6 @@ export function ScreenSharingControl({
                 <span>{labels.waiting}</span>
               )}
             </div>
-          ) : null}
-          {active ? (
-            <button
-              type="button"
-              className="screen-sharing-action screen-sharing-clear"
-              onClick={onClearAnnotations}
-            >
-              {labels.clearAnnotations}
-            </button>
           ) : null}
           <button
             type="button"
