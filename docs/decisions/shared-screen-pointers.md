@@ -103,12 +103,17 @@ cancels that wait immediately. Its deadline is 16 seconds (the capture timeout o
   native document epoch also rejects a begin queued before reload. A late old Stop or
   capture completion cannot affect a new lease. Voice reconnection alone does
   not change ownership.
-- At most four distinct recent frame references are retained, for up to 120
+- At most 128 distinct recent frame references are retained, for up to 120
   seconds after observation. Equal JPEGs with equal dimensions reuse their
   reference and refresh it, so the existing image deduplication does not strand
   the agent with an invalid token. Only fingerprints and geometry are retained
   here, not pixels. If native replaces a reference, the frontend shares it again
   even when the pixels match.
+- A show request accepted before capture finishes retains its original reference
+  and observation time through capacity eviction. It still checks that image's
+  age, document, sharing lease, pointer setting, generation, and display geometry
+  before drawing. Only re-observation of the exact same cached image ID can refresh
+  its age; a different newer image never lends its timestamp or coordinates.
 - The pointer panel is hidden during capture and its native window ID is also
   excluded from the ScreenCaptureKit filter. The still-current, unexpired mark
   is restored after capture. This prevents self-feedback in subsequent images.
@@ -329,3 +334,35 @@ or stop sharing. UI tests exercise successful, pending, and failed opens.
 For this follow-up, 288 related frontend/configuration/UI tests and the native
 MCP-instructions test passed, along with TypeScript, Biome, Rust formatting, and
 the frontend production build. The existing large-bundle warning remains.
+
+### Frequent-capture reference eviction
+
+Local native results from the reported failure returned `no longer available`
+for images only about 15–17 seconds old at tool-call submission. The calls completed
+roughly 3–7 seconds later. This was capacity eviction, not the 120-second age
+limit: four distinct references at a five-second interval could lose the first
+image in about 20 seconds. A capture finishing while an accepted pointer was waiting
+could also remove its reference. Cursor motion alone can change the JPEG fingerprint.
+
+The reference history now holds up to 128 metadata records within the same
+120-second freshness limit, and an accepted show retains the exact inspected
+reference during its bounded capture wait. Images are not retained by this cache,
+old IDs are never replaced by the latest ID, and expired or revoked authority stays
+invalid. Regression cases cover the old 20-second failure, five-second updates
+plus speech-capture bursts, eviction while waiting, age renewal only for the same
+image, and cancellation after OFF, clear, Stop, document or display changes.
+
+Periodic capture is separately limited to 20–60 seconds, with the existing
+30-second default. Main and auxiliary sliders, both action validators, and the
+actual timer use that range; a retained pre-update five-second value is normalized.
+Speech-triggered capture still joins an in-flight request or captures immediately.
+The interval change reduces avoidable updates but does not replace reference
+retention, because speech captures can occur between periodic updates.
+
+The native regressions passed after first reproducing both capacity failures on
+the old implementation. All 31 annotation tests, seven auxiliary-window tests,
+strict all-target/all-feature Clippy, and Rust formatting passed. The accepted
+reference also keeps its latest same-ID observation when renewal is followed by
+capacity eviction; it cannot fall back to an older timestamp or borrow a newly
+issued ID for identical pixels. An independent review found no remaining issue
+with reference identity or the existing revocation boundaries.

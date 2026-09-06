@@ -20,7 +20,10 @@ use tokio::sync::watch;
 mod macos;
 
 const FRAME_MAX_AGE: Duration = Duration::from_secs(120);
-const FRAME_LIMIT: usize = 4;
+// Keep only reference metadata, bounded independently of image freshness. Fast
+// five-second sampling and speech-triggered captures must not evict an inspected
+// image after just a few updates while the agent is preparing its response.
+const FRAME_LIMIT: usize = 128;
 const DEFAULT_DURATION_MS: u64 = 8_000;
 const MAX_DURATION_MS: u64 = 15_000;
 // screen_capture::macos::capture bounds its OS callback at 15 seconds. Allow
@@ -29,6 +32,7 @@ const MAX_DURATION_MS: u64 = 15_000;
 const POINTER_CAPTURE_WAIT: Duration = Duration::from_secs(16);
 const POINTER_WAIT_EXPIRED: &str =
     "The screen capture did not finish in time. Inspect a fresh shared image before pointing.";
+const FRAME_TOO_OLD: &str = "This shared-screen image is too old. Wait for a fresh shared image.";
 const POINTERS_DISABLED: &str =
     "Screen pointers are disabled by the user. Continue discussing the shared image without marks. Do not call or retry pointer tools until the user enables screen pointers.";
 #[cfg(not(target_os = "macos"))]
@@ -173,6 +177,7 @@ impl ScreenPointerRequest {
     }
 }
 
+#[derive(Clone)]
 struct FrameAnchor {
     id: String,
     fingerprint: u64,
@@ -205,6 +210,8 @@ struct AnnotationState {
     setting_revision: u64,
     pointer_epoch: u64,
     lease: Option<SharingLease>,
+    // One accepted reference survives cache eviction while capture completes.
+    pending_frame: Option<FrameAnchor>,
     visible: Option<VisibleAnnotation>,
     generation: u64,
     changes: watch::Sender<u64>,
@@ -218,6 +225,7 @@ impl Default for AnnotationState {
             setting_revision: 0,
             pointer_epoch: 0,
             lease: None,
+            pending_frame: None,
             visible: None,
             generation: 0,
             changes: watch::channel(0).0,
@@ -293,6 +301,7 @@ impl AnnotationState {
 
     fn clear(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.pending_frame = None;
         self.visible = None;
         self.changed();
     }
@@ -313,6 +322,7 @@ impl AnnotationState {
             // waiting for capture. User clear/stop always advance generation.
             if self.generation == generation {
                 self.generation = self.generation.wrapping_add(1);
+                self.pending_frame = None;
             }
             self.changed();
         }
@@ -380,6 +390,13 @@ impl AnnotationState {
             frame.observed_at = now;
             let frame_id = frame.id.clone();
             lease.frames.push_back(frame);
+            if let Some(pending) = self
+                .pending_frame
+                .as_mut()
+                .filter(|pending| pending.id == frame_id)
+            {
+                pending.observed_at = now;
+            }
             return Ok(frame_id);
         }
         let frame_id = uuid::Uuid::new_v4().to_string();
@@ -408,9 +425,7 @@ impl AnnotationState {
             "This frame is no longer available. Inspect a recent shared-screen image first.",
         )?;
         if now.duration_since(frame.observed_at) > FRAME_MAX_AGE {
-            return Err(
-                "This shared-screen image is too old. Wait for a fresh shared image.".into(),
-            );
+            return Err(FRAME_TOO_OLD.into());
         }
         Ok(lease.geometry)
     }
@@ -422,13 +437,16 @@ impl AnnotationState {
     ) -> Result<PendingShow, String> {
         let geometry = self.frame_geometry(&request.frame_id, now)?;
         request.resolve(geometry)?;
-        let share_id = self
-            .lease
-            .as_ref()
-            .ok_or("Screen sharing is stopped.")?
-            .id
+        let lease = self.lease.as_ref().ok_or("Screen sharing is stopped.")?;
+        let share_id = lease.id.clone();
+        let frame = lease
+            .frames
+            .iter()
+            .find(|frame| frame.id == request.frame_id)
+            .expect("frame was validated without releasing the state lock")
             .clone();
         self.generation = self.generation.wrapping_add(1);
+        self.pending_frame = Some(frame);
         self.changed();
         Ok(PendingShow {
             request,
@@ -455,7 +473,18 @@ impl AnnotationState {
             .as_ref()
             .filter(|lease| lease.id == pending.share_id)
             .ok_or("This screen sharing lease has ended.")?;
-        let geometry = self.frame_geometry(&pending.request.frame_id, now)?;
+        // Capacity eviction must not cancel an already accepted show during
+        // capture. Only a fresh observation of this exact ID may renew its age;
+        // never borrow the latest image's timestamp or replace the request ID.
+        let frame = self
+            .pending_frame
+            .as_ref()
+            .filter(|frame| frame.id == pending.request.frame_id)
+            .ok_or("This pointer request was cleared or superseded.")?;
+        if now.duration_since(frame.observed_at) > FRAME_MAX_AGE {
+            return Err(FRAME_TOO_OLD.into());
+        }
+        let geometry = lease.geometry;
         if geometry != pending.geometry {
             return Err("The shared display changed. Start sharing again before pointing.".into());
         }
@@ -788,6 +817,7 @@ fn try_show(
         expires_at: Instant::now() + Duration::from_millis(duration_ms),
     };
     draw(&mark)?;
+    state.pending_frame = None;
     state.visible = Some(mark);
     // Start cleanup from the UI action, even if the MCP caller disconnects
     // immediately after drawing and never receives its result.
@@ -1312,6 +1342,236 @@ mod tests {
     }
 
     #[test]
+    fn recent_frame_survives_fast_capture_cadence_and_speech_bursts() {
+        let now = Instant::now();
+        let mut state = AnnotationState::default();
+        state.begin("lease".into(), geometry());
+        let first = state
+            .register("lease", geometry(), 1, (2560, 1440), 0, now)
+            .unwrap();
+        // A fast periodic update used to evict the inspected image at 20 seconds,
+        // long before its 120-second freshness limit. Speech adds extra captures.
+        for tick in 1..=24 {
+            let observed_at = now + Duration::from_secs(tick * 5);
+            let captures_this_tick = if tick > 4 { 4 } else { 1 };
+            for burst in 0..captures_this_tick {
+                state
+                    .register(
+                        "lease",
+                        geometry(),
+                        tick * 4 + burst,
+                        (2560, 1440),
+                        0,
+                        observed_at,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(
+                state.frame_geometry(&first, observed_at),
+                Ok(geometry()),
+                "the inspected frame disappeared at {} seconds",
+                tick * 5
+            );
+        }
+        assert_eq!(state.lease.as_ref().unwrap().frames.len(), 85);
+        let expired_at = now + FRAME_MAX_AGE + Duration::from_millis(1);
+        assert_eq!(
+            state.frame_geometry(&first, expired_at).unwrap_err(),
+            FRAME_TOO_OLD
+        );
+        state
+            .register("lease", geometry(), 999, (2560, 1440), 0, expired_at)
+            .unwrap();
+        assert!(state
+            .lease
+            .as_ref()
+            .unwrap()
+            .frames
+            .iter()
+            .all(|frame| frame.id != first));
+    }
+
+    #[test]
+    fn accepted_pointer_survives_capacity_eviction_during_capture() {
+        let now = Instant::now();
+        let mut state = AnnotationState::default();
+        state.begin("lease".into(), geometry());
+        let first = state
+            .register("lease", geometry(), 1, (2560, 1440), 0, now)
+            .unwrap();
+        for fingerprint in 2..=FRAME_LIMIT as u64 {
+            state
+                .register(
+                    "lease",
+                    geometry(),
+                    fingerprint,
+                    (2560, 1440),
+                    0,
+                    now + Duration::from_secs(1),
+                )
+                .unwrap();
+        }
+        state.lease.as_mut().unwrap().capturing = true;
+        let mut request = request(ScreenPointerKind::Arrow, 0.5, 0.5);
+        request.frame_id = first.clone();
+        let pending = state
+            .reserve_show(Arc::new(request), now + Duration::from_secs(2))
+            .unwrap();
+        let finished_at = now + Duration::from_secs(3);
+        state
+            .register(
+                "lease",
+                geometry(),
+                FRAME_LIMIT as u64 + 1,
+                (2560, 1440),
+                0,
+                finished_at,
+            )
+            .unwrap();
+        assert_eq!(state.lease.as_ref().unwrap().frames.len(), FRAME_LIMIT);
+        // New requests cannot borrow an evicted ID. The already accepted request
+        // must still use its original image, never substitute the latest frame.
+        assert!(state
+            .frame_geometry(&pending.request.frame_id, finished_at)
+            .is_err());
+        assert_eq!(
+            state.pending_geometry(&pending, finished_at),
+            Ok((geometry(), true))
+        );
+        assert!(state.finish_capture("lease"));
+        assert_eq!(
+            state.pending_geometry(&pending, finished_at),
+            Ok((geometry(), false))
+        );
+        assert_eq!(pending.request.frame_id, first);
+        assert_ne!(
+            pending.request.frame_id,
+            state.lease.as_ref().unwrap().frames.back().unwrap().id
+        );
+    }
+
+    #[test]
+    fn accepted_reference_still_expires_and_cannot_borrow_a_new_id_for_identical_pixels() {
+        let now = Instant::now();
+        let (mut state, initial) = waiting_pointer(now);
+        let requested_at = now + FRAME_MAX_AGE - Duration::from_secs(1);
+        let pending = state
+            .reserve_show(initial.request.clone(), requested_at)
+            .unwrap();
+        evict_initial_frame(&mut state, requested_at);
+        assert_eq!(
+            state.pending_geometry(&pending, now + FRAME_MAX_AGE),
+            Ok((geometry(), true))
+        );
+        // The 16-second capture wait cannot extend the inspected image's TTL.
+        // Even identical pixels now receive a different ID after cache eviction.
+        let expired_at = now + FRAME_MAX_AGE + Duration::from_millis(1);
+        assert_eq!(
+            state.pending_geometry(&pending, expired_at).unwrap_err(),
+            FRAME_TOO_OLD
+        );
+        let replacement = state
+            .register("lease", geometry(), 1, (2560, 1440), 0, expired_at)
+            .unwrap();
+        assert_ne!(replacement, pending.request.frame_id);
+        assert!(state.frame_geometry(&replacement, expired_at).is_ok());
+        assert_eq!(
+            state.pending_geometry(&pending, expired_at).unwrap_err(),
+            FRAME_TOO_OLD
+        );
+    }
+
+    #[test]
+    fn accepted_reference_keeps_same_id_refresh_even_after_capacity_eviction() {
+        let now = Instant::now();
+        for evict in [false, true] {
+            let (mut state, initial) = waiting_pointer(now);
+            let pending = state
+                .reserve_show(initial.request.clone(), now + Duration::from_secs(115))
+                .unwrap();
+            let refreshed = state
+                .register(
+                    "lease",
+                    geometry(),
+                    1,
+                    (2560, 1440),
+                    0,
+                    now + Duration::from_secs(118),
+                )
+                .unwrap();
+            assert_eq!(refreshed, pending.request.frame_id);
+            if evict {
+                evict_initial_frame(&mut state, now + Duration::from_secs(119));
+                assert!(state
+                    .frame_geometry(&refreshed, now + Duration::from_secs(119))
+                    .is_err());
+            }
+            assert!(state.finish_capture("lease"));
+            assert_eq!(
+                state.pending_geometry(&pending, now + Duration::from_secs(121)),
+                Ok((geometry(), false)),
+                "same-ID observation must survive cache eviction: {evict}"
+            );
+        }
+    }
+
+    #[test]
+    fn evicted_accepted_reference_never_bypasses_revocation() {
+        let now = Instant::now();
+        for operation in 0..8 {
+            let (mut state, pending) = waiting_pointer(now);
+            evict_initial_frame(&mut state, now);
+            assert!(state.pending_geometry(&pending, now).is_ok());
+            match operation {
+                0 => state.clear(),
+                1 => {
+                    state.end("lease");
+                }
+                2 => state.reload(),
+                3 => state.begin("replacement-lease".into(), geometry()),
+                4 => {
+                    let document = state.document_id.clone();
+                    state.set_enabled(&document, 1, false).unwrap();
+                    assert_eq!(
+                        state.pending_geometry(&pending, now).unwrap_err(),
+                        POINTERS_DISABLED
+                    );
+                    state.set_enabled(&document, 2, true).unwrap();
+                }
+                5 => {
+                    let document = state.document_id.clone();
+                    state.set_enabled(&document, 2, true).unwrap();
+                }
+                6 => {
+                    state.lease.as_mut().unwrap().geometry.source_id += 1;
+                }
+                _ => {
+                    let mut replacement = request(ScreenPointerKind::Arrow, 0.1, 0.1);
+                    replacement.frame_id = state
+                        .lease
+                        .as_ref()
+                        .unwrap()
+                        .frames
+                        .back()
+                        .unwrap()
+                        .id
+                        .clone();
+                    state.reserve_show(Arc::new(replacement), now).unwrap();
+                }
+            }
+            assert!(state.pending_geometry(&pending, now).is_err());
+        }
+    }
+
+    fn evict_initial_frame(state: &mut AnnotationState, now: Instant) {
+        for fingerprint in 2..=FRAME_LIMIT as u64 + 1 {
+            state
+                .register("lease", geometry(), fingerprint, (2560, 1440), 0, now)
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn captures_are_bounded_and_pointer_requests_wait_during_capture() {
         let now = Instant::now();
         let mut state = AnnotationState::default();
@@ -1319,7 +1579,7 @@ mod tests {
         let first = state
             .register("lease", geometry(), 1, (2560, 1440), 0, now)
             .unwrap();
-        for fingerprint in 2..=5 {
+        for fingerprint in 2..=FRAME_LIMIT as u64 + 1 {
             state
                 .register("lease", geometry(), fingerprint, (2560, 1440), 0, now)
                 .unwrap();
@@ -1483,20 +1743,13 @@ mod tests {
     }
 
     #[test]
-    fn pending_request_revalidates_frame_age_eviction_and_display_geometry() {
+    fn pending_request_revalidates_frame_age_and_display_geometry() {
         let now = Instant::now();
         let (mut state, pending) = waiting_pointer(now);
         assert!(state
             .pending_geometry(&pending, now + FRAME_MAX_AGE + Duration::from_millis(1))
             .is_err());
         state.lease.as_mut().unwrap().geometry.x += 1.0;
-        assert!(state.pending_geometry(&pending, now).is_err());
-        state.lease.as_mut().unwrap().geometry = geometry();
-        for fingerprint in 2..=5 {
-            state
-                .register("lease", geometry(), fingerprint, (2560, 1440), 0, now)
-                .unwrap();
-        }
         assert!(state.pending_geometry(&pending, now).is_err());
     }
 
