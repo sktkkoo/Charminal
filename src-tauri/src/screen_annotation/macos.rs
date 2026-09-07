@@ -23,13 +23,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static WINDOW_ID: AtomicU32 = AtomicU32::new(0);
 
-// Muted pencil colors derived from the Yorishiro shell. Pale ink with a fine
-// dark edge stays visible on mixed backgrounds without another screen capture.
-const ACCENT: u32 = 0xb8c7aa;
-const CONTRAST: u32 = 0x27332b;
-const FOREGROUND: u32 = 0xdce4d1;
+// Neutral dark gray ink with a white edge stays visible on mixed backgrounds
+// without another screen capture.
+const ACCENT: u32 = 0x333333;
+const CONTRAST: u32 = 0xffffff;
+const FOREGROUND: u32 = 0x333333;
 const MARK_WIDTH: f64 = 1.7;
-const CONTRAST_WIDTH: f64 = 2.8;
+const CONTRAST_WIDTH: f64 = 5.0;
 const LABEL_FONT_SIZE: f64 = 18.0;
 const LABEL_PADDING_X: f64 = 3.0;
 const LABEL_PADDING_Y: f64 = 3.0;
@@ -125,9 +125,9 @@ define_class!(
             let path = annotation_path(drawing.target, drawing.size);
             path.setLineCapStyle(NSLineCapStyle::Round);
             path.setLineJoinStyle(NSLineJoinStyle::Round);
-            // The two thin strokes read as dark ink on a light canvas and as
-            // pale pencil on dark content. No background sampling or animation.
-            color(CONTRAST, 0.84).setStroke();
+            // A white backing keeps the dark stroke visible on dark content.
+            // No background sampling or animation.
+            color(CONTRAST, 1.0).setStroke();
             path.setLineWidth(CONTRAST_WIDTH);
             path.stroke();
             color(ACCENT, 1.0).setStroke();
@@ -247,14 +247,16 @@ fn bundled_font() -> Option<Retained<NSFont>> {
 fn label_text(text: &str, mtm: MainThreadMarker) -> [Retained<NSAttributedString>; 2] {
     let font = annotation_font(mtm);
     let ink = color(FOREGROUND, 1.0);
-    let edge = color(CONTRAST, 0.90);
+    let edge = color(CONTRAST, 1.0);
     // Negative stroke width draws both fill and outline; the unit is percent
-    // of the font size. This is about 0.7 pt, not a plate around the note.
-    let stroke = NSNumber::new_f64(-4.0);
+    // of the font size. A 2.16 pt white stroke surrounds the dark letterforms.
+    let stroke = NSNumber::new_f64(-12.0);
+    // Thicken the handwriting slightly while keeping Japanese counters open.
+    let ink_stroke = NSNumber::new_f64(-2.5);
     let shadow = NSShadow::new();
-    shadow.setShadowColor(Some(&color(CONTRAST, 0.45)));
+    shadow.setShadowColor(Some(&color(CONTRAST, 0.70)));
     shadow.setShadowOffset(NSSize::new(0.0, -0.5));
-    shadow.setShadowBlurRadius(1.0);
+    shadow.setShadowBlurRadius(1.5);
     let values: [&AnyObject; 5] = [&font, &edge, &edge, &stroke, &shadow];
     // SAFETY: Each AppKit attribute has its documented value type. The
     // attributed string and native text field retain the values they use.
@@ -271,13 +273,18 @@ fn label_text(text: &str, mtm: MainThreadMarker) -> [Retained<NSAttributedString
         );
         let string = NSString::from_str(text);
         let outline = NSAttributedString::new_with_attributes(&string, &attributes);
-        let ink_values: [&AnyObject; 2] = [&font, &ink];
+        let ink_values: [&AnyObject; 4] = [&font, &ink, &ink, &ink_stroke];
         let ink_attributes = NSDictionary::from_slices(
-            &[NSFontAttributeName, NSForegroundColorAttributeName],
+            &[
+                NSFontAttributeName,
+                NSForegroundColorAttributeName,
+                NSStrokeColorAttributeName,
+                NSStrokeWidthAttributeName,
+            ],
             &ink_values,
         );
-        // Drawing the fill separately keeps the dark outline outside the fine
-        // pen strokes, instead of letting it cover their light centers.
+        // Drawing the fill separately keeps the light outline outside the fine
+        // pen strokes, instead of letting it cover their dark centers.
         [
             outline,
             NSAttributedString::new_with_attributes(&string, &ink_attributes),

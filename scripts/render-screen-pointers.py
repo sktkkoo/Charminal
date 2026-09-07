@@ -23,6 +23,11 @@ output_dir.mkdir(parents=True, exist_ok=True)
 source = (project / "src-tauri/src/screen_annotation/macos.rs").read_text()
 
 prefix='''#![allow(dead_code)]
+mod screen_capture {
+    pub(crate) fn display_pixel_dimensions(_: u32) -> Result<(usize, usize), String> {
+        Err("Synthetic previews do not inspect displays".to_string())
+    }
+}
 mod screen_annotation {
     #[derive(Debug,Clone,Copy,PartialEq)]
     pub(super) struct DisplayGeometry {pub source_id:u32,pub x:f64,pub y:f64,pub width:f64,pub height:f64,pub pixel_width:usize,pub pixel_height:usize,pub main_height:f64}
@@ -116,7 +121,7 @@ pub(crate) fn render_preview(){
         let size=NSSize::new(1120.0,504.0);
         let allocated=PreviewCanvas::alloc(mtm).set_ivars(PreviewStyle{mode});
         let canvas:Retained<PreviewCanvas>=unsafe{msg_send![super(allocated),initWithFrame:NSRect::new(NSPoint::ZERO,size)]};
-        let fg=if dark{FOREGROUND}else{0x28312b};
+        let fg=if dark{0xe4e4e4}else{0x282828};
         let dim=if dark{0x89968b}else{0x758173};
         caption(&canvas,mtm,"Yorishiro / 画面の注記",32.0,24.0,21.0,fg);
         caption(&canvas,mtm,match mode{0=>"Dark workspace · native handwriting",1=>"Light workspace · native handwriting",_=>"Mixed synthetic scene · native handwriting"},32.0,62.0,12.0,dim);
