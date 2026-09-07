@@ -118,7 +118,7 @@ cancels that wait immediately. Its deadline is 16 seconds (the capture timeout o
   age, document, sharing lease, pointer setting, generation, and display geometry
   before drawing. Only re-observation of the exact same cached image ID can refresh
   its age; a different newer image never lends its timestamp or coordinates.
-- The pointer panel is hidden during capture and its native window ID is also
+- The pointer panel remains visible during capture and its pinned native window ID is
   excluded from the ScreenCaptureKit filter. The still-current, unexpired mark
   is restored after capture. This prevents self-feedback in subsequent images.
 

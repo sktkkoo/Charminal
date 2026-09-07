@@ -37,7 +37,7 @@ mod screen_annotation {
 '''
 suffix=r'''
 use objc2::AnyThread;
-use objc2_app_kit::NSGradient;
+use objc2_app_kit::{NSGradient, NSTextField};
 #[derive(Debug)] struct PreviewStyle {mode:u8}
 define_class!(
     #[unsafe(super(NSView))]
@@ -116,9 +116,9 @@ pub(crate) fn render_preview(){
     let covered=font.coveredCharacterSet();
     for character in "この稜線設定のまとまり丸みここを調整範囲".encode_utf16() {assert!(covered.characterIsMember(character));}
     println!("Native label font={} size={} first_load_us={} Japanese_glyphs_verified=true",font.fontName(),font.pointSize(),font_start.elapsed().as_micros());
-    for (mode,name) in [(0,"dark"),(1,"light"),(2,"mixed")] {
+    for (mode,name) in [(0,"dark"),(1,"light"),(2,"mixed"),(3,"text-check")] {
         let dark=mode!=1;
-        let size=NSSize::new(1120.0,504.0);
+        let size=NSSize::new(1120.0,if mode==3{820.0}else{504.0});
         let allocated=PreviewCanvas::alloc(mtm).set_ivars(PreviewStyle{mode});
         let canvas:Retained<PreviewCanvas>=unsafe{msg_send![super(allocated),initWithFrame:NSRect::new(NSPoint::ZERO,size)]};
         let fg=if dark{0xe4e4e4}else{0x282828};
@@ -126,12 +126,18 @@ pub(crate) fn render_preview(){
         caption(&canvas,mtm,"Yorishiro / 画面の注記",32.0,24.0,21.0,fg);
         caption(&canvas,mtm,match mode{0=>"Dark workspace · native handwriting",1=>"Light workspace · native handwriting",_=>"Mixed synthetic scene · native handwriting"},32.0,62.0,12.0,dim);
         for (x,title) in [(52.0,"矢印"),(412.0,"囲み"),(772.0,"楕円")] {caption(&canvas,mtm,title,x,136.0,12.0,dim);}
+        if mode != 3 {
         for (target,label) in [
             (AnnotationTarget::Arrow{x:126.0,y:320.0},"この稜線"),
             (AnnotationTarget::Rect{x:424.0,y:228.0,width:252.0,height:142.0},"設定のまとまり"),
             (AnnotationTarget::Ellipse{x:792.0,y:228.0,width:232.0,height:142.0},"この丸み"),
         ] {canvas.addSubview(&create_view(mtm,target,size,Some(label)));}
-        caption(&canvas,mtm,"同じ注釈を明暗の背景で確認。背景の図形はプレビュー用の合成図です。",32.0,466.0,11.0,dim);
+        } else {
+            for (index,text) in ["ヨリ", "テスト", "文字の上が切れていないか確認するテストです", "What is your name?", "How are you?", "長い文字列でも最後まで表示できるか確認します。日本語と English text の混在でも文字や縁取りが上下左右で欠けないことを確認する表示テストです。"].iter().enumerate() {
+                canvas.addSubview(&create_view(mtm,AnnotationTarget::Rect{x:32.0,y:210.0+index as f64*105.0,width:32.0,height:20.0},size,Some(text)));
+            }
+        }
+        if mode != 3 { caption(&canvas,mtm,"同じ注釈を明暗の背景で確認。背景の図形はプレビュー用の合成図です。",32.0,466.0,11.0,dim); }
         let panel=create_panel(mtm,NSRect::new(NSPoint::ZERO,size));panel.setContentView(Some(&canvas));
         let bitmap=canvas.bitmapImageRepForCachingDisplayInRect(NSRect::new(NSPoint::ZERO,size)).unwrap();
         canvas.cacheDisplayInRect_toBitmapImageRep(NSRect::new(NSPoint::ZERO,size),&bitmap);
