@@ -212,6 +212,7 @@ struct AnnotationState {
     lease: Option<SharingLease>,
     // One accepted reference survives cache eviction while capture completes.
     pending_frame: Option<FrameAnchor>,
+    active_capture: Option<String>,
     visible: Option<VisibleAnnotation>,
     generation: u64,
     changes: watch::Sender<u64>,
@@ -226,6 +227,7 @@ impl Default for AnnotationState {
             pointer_epoch: 0,
             lease: None,
             pending_frame: None,
+            active_capture: None,
             visible: None,
             generation: 0,
             changes: watch::channel(0).0,
@@ -329,6 +331,10 @@ impl AnnotationState {
     }
 
     fn finish_capture(&mut self, share_id: &str) -> bool {
+        if self.active_capture.as_deref() == Some(share_id) {
+            self.active_capture = None;
+            self.changed();
+        }
         let Some(lease) = self.lease.as_mut().filter(|lease| lease.id == share_id) else {
             return false;
         };
@@ -488,7 +494,7 @@ impl AnnotationState {
         if geometry != pending.geometry {
             return Err("The shared display changed. Start sharing again before pointing.".into());
         }
-        Ok((geometry, lease.capturing))
+        Ok((geometry, lease.capturing || self.active_capture.is_some()))
     }
 
     fn should_hide(
@@ -869,10 +875,10 @@ fn start_watchdog(app: &AppHandle, generation: u64) {
     });
 }
 
-/// Hide annotations throughout capture, so a new/replaced window cannot sneak
-/// into a ScreenCaptureKit filter that was already constructed. Show requests
-/// await a bounded completion notification and only acknowledge an actual draw.
+/// Keep existing marks visible while excluding their pinned window from capture.
+/// New show requests wait until capture completes so its filter stays valid.
 pub struct CaptureGuard {
+    pub(crate) excluded_window: Option<u32>,
     app: AppHandle,
     share_id: String,
     geometry: DisplayGeometry,
@@ -895,24 +901,7 @@ impl Drop for CaptureGuard {
             let Ok(mut state) = managed.0.lock() else {
                 return;
             };
-            if !state.finish_capture(&share_id) {
-                return;
-            }
-            if let Some(mark) = state.visible.as_ref() {
-                let generation = mark.generation;
-                let geometry_matches =
-                    display_geometry(mark.geometry.source_id).ok() == Some(mark.geometry);
-                if Instant::now() < mark.expires_at && geometry_matches && draw(mark).is_ok() {
-                    return;
-                }
-                if geometry_matches {
-                    state.expire_visible(generation);
-                } else {
-                    state.lease = None;
-                    state.clear();
-                }
-                hide();
-            }
+            state.finish_capture(&share_id);
         });
     }
 }
@@ -923,13 +912,16 @@ pub async fn begin_capture(
     source_id: u32,
 ) -> Result<CaptureGuard, String> {
     let id = share_id.clone();
-    let (geometry, pointer_epoch) = on_main(app, move |app| {
+    let (geometry, pointer_epoch, excluded_window) = on_main(app, move |app| {
         let geometry = display_geometry(source_id)?;
         let managed = app.state::<ScreenAnnotationState>();
         let mut state = managed
             .0
             .lock()
             .map_err(|_| "Screen pointer state is unavailable.")?;
+        if state.active_capture.is_some() {
+            return Err("A screen capture is already in progress.".into());
+        }
         let lease = match state.lease(&id, geometry) {
             Ok(lease) => lease,
             Err(error) => {
@@ -943,12 +935,18 @@ pub async fn begin_capture(
             return Err("A screen capture is already in progress.".into());
         }
         lease.capturing = true;
+        let excluded_window = if state.visible.is_some() {
+            window_id()
+        } else {
+            None
+        };
+        state.active_capture = Some(id.clone());
         state.changed();
-        hide();
-        Ok((geometry, state.pointer_epoch))
+        Ok((geometry, state.pointer_epoch, excluded_window))
     })
     .await?;
     Ok(CaptureGuard {
+        excluded_window,
         app: app.clone(),
         share_id,
         geometry,
@@ -1569,6 +1567,47 @@ mod tests {
                 .register("lease", geometry(), fingerprint, (2560, 1440), 0, now)
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn capture_completion_does_not_resurrect_expired_marks() {
+        let now = Instant::now();
+        let (mut state, pending) = waiting_pointer(now);
+        state.active_capture = Some("lease".into());
+        state.visible = Some(VisibleAnnotation {
+            generation: pending.generation,
+            geometry: geometry(),
+            target: AnnotationTarget::Arrow { x: 100.0, y: 100.0 },
+            label: Some("test".into()),
+            expires_at: now + Duration::from_secs(1),
+        });
+        let expiry = state.visible.as_ref().unwrap().expires_at;
+        assert!(state.finish_capture("lease"));
+        assert_eq!(state.visible.as_ref().unwrap().expires_at, expiry);
+        state.active_capture = Some("lease".into());
+        state.expire_visible(pending.generation);
+        assert!(state.finish_capture("lease"));
+        assert!(state.visible.is_none());
+    }
+
+    #[test]
+    fn restarted_sharing_waits_for_old_capture_without_replaying_a_mark() {
+        let now = Instant::now();
+        let (mut state, _) = waiting_pointer(now);
+        state.active_capture = Some("lease".into());
+        state.end("lease");
+        state.begin("new".into(), geometry());
+        let frame = state
+            .register("new", geometry(), 1, (2560, 1440), 0, now)
+            .unwrap();
+        let mut req = request(ScreenPointerKind::Arrow, 0.5, 0.5);
+        req.frame_id = frame;
+        let pending = state.reserve_show(Arc::new(req), now).unwrap();
+        assert!(state.pending_geometry(&pending, now).unwrap().1);
+        assert!(!state.finish_capture("lease"));
+        assert!(!state.pending_geometry(&pending, now).unwrap().1);
+        assert_eq!(state.lease.as_ref().unwrap().id, "new");
+        assert!(state.visible.is_none());
     }
 
     #[test]
