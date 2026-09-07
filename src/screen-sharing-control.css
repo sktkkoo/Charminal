@@ -313,6 +313,19 @@
   outline-offset: 2px;
 }
 
+/* Keep the sharing and close icons frameless, including after focus is restored. */
+.screen-sharing-control .screen-sharing-trigger,
+.screen-sharing-heading > .screen-sharing-icon-button {
+  outline: none;
+}
+
+.screen-sharing-control .screen-sharing-trigger:focus-visible,
+.screen-sharing-heading > .screen-sharing-icon-button:focus-visible {
+  outline: none;
+  background: var(--yorishiro-accent-soft, #202922);
+  color: var(--yorishiro-fg, #e8ebe7);
+}
+
 .screen-sharing-open-error {
   display: flex;
   flex-direction: column;

@@ -21,9 +21,12 @@ export interface ScreenPointerAvailability {
 }
 
 export function screenPointerSettingText(enabled: boolean): string {
-  return enabled
-    ? "Shared-screen pointers are ON. While sharing is active, proactively use a marker when a clearly identified target in the latest inspected shared image helps explain the current conversation about that screen; no separate request to point is needed. Omit markers for unrelated conversation, uncertain targets, or when they add no clarity. Sharing remains independent. Only frame references from the current pointer setting are valid; after an OFF/ON transition, inspect a newer shared image instead of retrying an earlier reference. This availability update is not a request to act or speak."
-    : "Shared-screen pointers are OFF by the user's choice. Continue inspecting and discussing shared images when asked. Do not call or retry screen_pointer_show or other pointer tools, or use an alternative overlay. Wait until the user enables pointers again. This availability update is not a request to act or speak.";
+  const sharingStateGuidance =
+    "This reports only the pointer preference, not screen-sharing status. Enabling pointers does not start screen sharing, and disabling pointers does not stop it. Do not infer or claim that sharing is active or that you can see the screen from this notice. Confirm current sharing only from explicit current sharing-state evidence; a previously attached image does not prove sharing is still active. If the user says sharing has not started, acknowledge the correction instead of contradicting them based on this preference.";
+  const pointerGuidance = enabled
+    ? "Shared-screen pointer preference is ON. While sharing is active, proactively use a marker when a clearly identified target in the latest inspected shared image helps explain the current conversation about that screen; no separate request to point is needed. Omit markers for unrelated conversation, uncertain targets, or when they add no clarity. Only frame references from the current pointer setting are valid; after an OFF/ON transition, inspect a newer shared image instead of retrying an earlier reference. This availability update is not a request to act or speak."
+    : "Shared-screen pointer preference is OFF by the user's choice. Continue inspecting and discussing shared images when asked. Do not call or retry screen_pointer_show or other pointer tools, or use an alternative overlay. Wait until the user enables pointers again. This availability update is not a request to act or speak.";
+  return `${sharingStateGuidance} ${pointerGuidance}`;
 }
 
 export function screenPointerUnavailableText(

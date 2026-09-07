@@ -260,7 +260,7 @@ export class CodexRealtimeClient implements LipSyncSource {
       threadId: this.threadId,
       role: "developer",
       text: [
-        `The user enabled desktop sharing. A screenshot captured at ${capturedAt} is attached to the current main agent thread.`,
+        `A screenshot captured at ${capturedAt} is attached to the current main agent thread. This confirms delivery of that capture, not that screen sharing is still active. Confirm current sharing only from explicit current sharing-state evidence.`,
         "This availability update is not a user utterance or request to act or speak. You have not personally viewed the image. When visual context matters, delegate inspection of the latest actual attached shared-screen image to the main agent.",
         unavailable ??
           "While sharing is active and pointers are ON, proactively include a marker when it would clarify the current conversation about the shared screen; no separate request to point is needed. Use one delegation containing the user's conversational question, image inspection, and screen_pointer_show if the main agent can clearly identify a relevant target in the latest actual attached image. Once grounded, show the target before a lengthy explanation and return a brief answer. Omit markers for unrelated conversation, uncertain targets, or when they add no clarity. Arrow, rectangle, and ellipse markers are available. If the image is missing or stale, or the target moved, inspect a fresh shared image before pointing. Use screen_pointer_clear to remove marks. A disabled-pointer result overrides earlier guidance: do not retry until the user enables pointers again.",
