@@ -2,6 +2,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { StartupErrorBoundary } from "./components/StartupErrorBoundary";
 import { resolveWindowView } from "./runtime/auxiliary-windows";
 
 const view = resolveWindowView(
@@ -27,8 +28,10 @@ const Application = React.lazy(async () => {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <React.Suspense fallback={null}>
-      <Application />
-    </React.Suspense>
+    <StartupErrorBoundary>
+      <React.Suspense fallback={null}>
+        <Application />
+      </React.Suspense>
+    </StartupErrorBoundary>
   </React.StrictMode>,
 );

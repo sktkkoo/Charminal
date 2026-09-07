@@ -24,3 +24,37 @@ body,
   background: #020304;
   color: #e8ebe7;
 }
+
+/* Recovery must remain visible even if application styles never load. */
+#startup-error {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 24px;
+  background: #151815;
+  color: #e8ebe7;
+  font: 14px / 1.6 system-ui, sans-serif;
+  -webkit-app-region: no-drag;
+}
+
+#startup-error h1 {
+  font-size: 20px;
+}
+
+#startup-error button {
+  padding: 8px 16px;
+  margin: 8px 0 16px;
+  cursor: pointer;
+}
+
+#startup-error summary {
+  cursor: pointer;
+}
+
+#startup-error pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
