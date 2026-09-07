@@ -3,7 +3,7 @@ import * as ReactThreeFiber from "@react-three/fiber";
 import * as ReactThreePostprocessing from "@react-three/postprocessing";
 import { getVersion } from "@tauri-apps/api/app";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type {
   AmbientAudioAPI,
@@ -30,6 +30,7 @@ import * as ReactDomClient from "react-dom/client";
 import * as THREE from "three";
 import {
   checkTutorialDone,
+  exitWindowFullscreen,
   listSupportedAgents,
   markTutorialDone,
   prepareLocalizedPluginDir,
@@ -367,7 +368,10 @@ import {
   writeSessionPersonasText,
   writeYorishiroConfigText,
 } from "./runtime/user-pack-loader/yorishiro-io";
-import { enqueueNativeWindowMutation } from "./runtime/view-mode-native-window";
+import {
+  createNativeWindowLayoutApplier,
+  enqueueNativeWindowMutation,
+} from "./runtime/view-mode-native-window";
 import {
   nextViewModeHudVisibility,
   shouldRevealViewModeHud,
@@ -3246,51 +3250,13 @@ function App() {
     let currentAbort: AbortController | null = null;
     let currentLayout: UiLayout | null = null;
     let currentEntryId: string | null = null;
-    let savedWindowSize: LogicalSize | null = null;
-    let savedFullscreen: boolean | null = null;
+    const applyWindowLayout = createNativeWindowLayoutApplier(
+      getCurrentWindow(),
+      exitWindowFullscreen,
+    );
     const applyNativeWindowLayout = (layout: UiLayout | null): void => {
-      const width = layout?.window?.width;
-      const height = layout?.window?.height;
-      const minWidth = layout?.window?.minWidth ?? 900;
-      const minHeight = layout?.window?.minHeight ?? 600;
-      const alwaysOnTop = layout?.window?.alwaysOnTop ?? false;
-      const fullscreen = layout?.window?.fullscreen ?? false;
-
-      // active UI が短時間に連続で変わっても古い async call が後から勝たないよう直列化する。
-      void enqueueNativeWindowMutation(async () => {
-        const appWindow = getCurrentWindow();
-        const requestsSize = width !== undefined || height !== undefined;
-        if (requestsSize && savedWindowSize === null) {
-          const [innerSize, scaleFactor] = await Promise.all([
-            appWindow.innerSize(),
-            appWindow.scaleFactor(),
-          ]);
-          savedWindowSize = innerSize.toLogical(scaleFactor);
-        }
-
-        await appWindow.setMinSize(new LogicalSize(minWidth, minHeight));
-        if (requestsSize) {
-          const [innerSize, scaleFactor] = await Promise.all([
-            appWindow.innerSize(),
-            appWindow.scaleFactor(),
-          ]);
-          const currentSize = innerSize.toLogical(scaleFactor);
-          await appWindow.setSize(
-            new LogicalSize(width ?? currentSize.width, height ?? currentSize.height),
-          );
-        } else if (savedWindowSize !== null) {
-          const restoreSize = savedWindowSize;
-          savedWindowSize = null;
-          await appWindow.setSize(restoreSize);
-        }
-        await appWindow.setAlwaysOnTop(alwaysOnTop);
-        if (savedFullscreen === null) savedFullscreen = await appWindow.isFullscreen();
-        await appWindow.setFullscreen(fullscreen || savedFullscreen === true);
-        if (!layout && savedFullscreen !== null) {
-          await appWindow.setFullscreen(savedFullscreen);
-          savedFullscreen = null;
-        }
-      }).catch((error) => {
+      // Keep native transitions serialized when View Modes change in quick succession.
+      void enqueueNativeWindowMutation(() => applyWindowLayout(layout)).catch((error) => {
         devLog.write({
           subsystem: "UiPack",
           phase: "window-layout",

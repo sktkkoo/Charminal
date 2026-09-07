@@ -10,6 +10,7 @@ mod screen_annotation;
 mod screen_capture;
 mod sessions;
 mod tts;
+mod window_fullscreen;
 
 use pty::{start_hook_server, PtyState};
 use realtime_bridge::RealtimeBridgeState;
@@ -3948,6 +3949,7 @@ pub fn run() {
             history::snapshot_prune,
             external_attach_sync_client_count,
             set_window_controls_visible,
+            window_fullscreen::exit_window_fullscreen,
             system_exec
         ])
         .setup(move |app| {
