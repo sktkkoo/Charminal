@@ -241,6 +241,41 @@ describe("useCodexRealtime", () => {
     source: "Display 1",
   };
 
+  it("keeps pointer preferences local through voice startup until a screen is shared", async () => {
+    const { result, clients, notifyPointerSetting, unmount } = setup([
+      Promise.resolve(),
+      Promise.resolve(),
+    ]);
+    await result.current.notifyScreenPointersEnabled(true, 1);
+    await act(async () => result.current.toggle());
+    await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
+    expect(notifyPointerSetting).not.toHaveBeenCalled();
+    expect(clients[0].notifyScreenPointersEnabled).not.toHaveBeenCalled();
+    expect(clients[0].notifyScreenContext).not.toHaveBeenCalled();
+
+    const sharing = new AbortController();
+    await result.current.shareScreenObservation(sharedFrame, sharing.signal);
+    expect(notifyPointerSetting).toHaveBeenCalledExactlyOnceWith(true);
+    expect(clients[0].notifyScreenContext).toHaveBeenLastCalledWith(sharedFrame.capturedAt, {
+      pointersEnabled: true,
+      pointerFrameValid: true,
+    });
+    await result.current.notifyScreenPointersEnabled(false, 2);
+    expect(notifyPointerSetting).toHaveBeenLastCalledWith(false);
+    expect(clients[0].notifyScreenPointersEnabled).toHaveBeenLastCalledWith(false);
+
+    sharing.abort();
+    await result.current.notifyScreenPointersEnabled(true, 3);
+    expect(notifyPointerSetting).toHaveBeenCalledTimes(2);
+    expect(clients[0].notifyScreenPointersEnabled).toHaveBeenCalledTimes(1);
+    act(() => result.current.stop());
+    await act(async () => result.current.toggle());
+    await act(async () => clients[1].emit({ status: "active", billing: "subscription" }));
+    expect(clients[1].notifyScreenPointersEnabled).not.toHaveBeenCalled();
+    expect(clients[1].notifyScreenContext).not.toHaveBeenCalled();
+    unmount();
+  });
+
   it("notifies OFF without waiting for image metadata and replays OFF on reconnect", async () => {
     const { result, clients, notifyPointerSetting, injectScreenObservation, unmount } = setup([
       Promise.resolve(),
@@ -347,12 +382,12 @@ describe("useCodexRealtime", () => {
       new AbortController().signal,
     );
     await result.current.notifyScreenPointersEnabled(false);
-    expect(notifyPointerSetting.mock.calls).toEqual([[false]]);
+    expect(notifyPointerSetting).not.toHaveBeenCalled();
     ack.resolve();
     await sharing;
-    // An older image injection can settle after the first OFF notice. The final
-    // main-agent update must restore OFF without injecting another image.
-    expect(notifyPointerSetting.mock.calls).toEqual([[false], [false]]);
+    // Deliver the latest OFF policy after the first image ACK, without
+    // introducing screen metadata before an image has been shared.
+    expect(notifyPointerSetting.mock.calls).toEqual([[false]]);
     expect(injectScreenObservation).toHaveBeenCalledTimes(1);
     await act(async () => result.current.toggle());
     await act(async () => clients[0].emit({ status: "active", billing: "subscription" }));
@@ -371,17 +406,21 @@ describe("useCodexRealtime", () => {
     unmount();
   });
 
-  it("delivers the current policy to a newly selected main owner", async () => {
+  it("waits for a new screen capture before notifying a newly selected main owner", async () => {
     const { result, notifyPointerSetting, changeThread, unmount } = setup([]);
     await result.current.notifyScreenPointersEnabled(false);
+    expect(notifyPointerSetting).not.toHaveBeenCalled();
+    await result.current.shareScreenObservation(sharedFrame, new AbortController().signal);
     expect(notifyPointerSetting).toHaveBeenCalledTimes(1);
     await act(async () => changeThread("thread-2"));
+    expect(notifyPointerSetting).toHaveBeenCalledTimes(1);
+    await result.current.shareScreenObservation(sharedFrame, new AbortController().signal);
     expect(notifyPointerSetting).toHaveBeenCalledTimes(2);
     expect(notifyPointerSetting).toHaveBeenLastCalledWith(false);
     await act(async () => changeThread(null));
     expect(notifyPointerSetting).toHaveBeenCalledTimes(2);
     await act(async () => changeThread("thread-2"));
-    expect(notifyPointerSetting).toHaveBeenCalledTimes(3);
+    expect(notifyPointerSetting).toHaveBeenCalledTimes(2);
     unmount();
   });
 
@@ -391,6 +430,8 @@ describe("useCodexRealtime", () => {
     await result.current.notifyScreenPointersEnabled(false);
     expect(notifyPointerSetting).not.toHaveBeenCalled();
     await act(async () => changeThread("thread-ready"));
+    expect(notifyPointerSetting).not.toHaveBeenCalled();
+    await result.current.shareScreenObservation(sharedFrame, new AbortController().signal);
     expect(notifyPointerSetting).toHaveBeenCalledExactlyOnceWith(false);
     unmount();
   });

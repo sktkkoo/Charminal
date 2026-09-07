@@ -6,11 +6,8 @@ import {
   sessionRealtimeSend,
 } from "../../bindings/tauri-commands";
 import { ScreenContextNotifications } from "./screen-context-notifications";
-import {
-  type ScreenObservationFrame,
-  ScreenObservationTransport,
-  screenPointerSettingText,
-} from "./screen-observation";
+import { type ScreenObservationFrame, ScreenObservationTransport } from "./screen-observation";
+import { screenPointerPreferenceNotice } from "./screen-sharing-prompts";
 
 interface PendingRequest {
   readonly resolve: (value: unknown) => void;
@@ -136,7 +133,7 @@ export class CodexThreadTracker {
             {
               type: "message",
               role: "developer",
-              content: [{ type: "input_text", text: screenPointerSettingText(enabled) }],
+              content: [{ type: "input_text", text: screenPointerPreferenceNotice(enabled) }],
             },
           ],
         });

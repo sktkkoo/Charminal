@@ -250,13 +250,21 @@ export function useCodexRealtime({
     announcedScreenContextRef.current = null;
     context?.signal.removeEventListener("abort", context.onAbort);
     screenNotificationsRef.current.cancelPending();
+    pointerNotificationsRef.current.cancelPending();
+    announcedPointerPolicyRef.current = null;
+    mainPointerPolicyRef.current = null;
   }, []);
 
   const notifyLivePointerPolicy = useCallback((client: CodexRealtimeClientLike, force = false) => {
     const policy = pointerPolicyRef.current;
     const tracker = threadTrackerRef.current;
     const threadId = tracker?.getCurrentThreadId();
+    const context = sharedScreenContextRef.current;
     if (
+      !context ||
+      context.signal.aborted ||
+      context.tracker !== tracker ||
+      context.threadId !== threadId ||
       !policy.known ||
       !tracker ||
       !threadId ||
@@ -274,6 +282,8 @@ export function useCodexRealtime({
       client,
       signal: policy.controller.signal,
       isCurrent: () =>
+        sharedScreenContextRef.current === context &&
+        !context.signal.aborted &&
         pointerPolicyRef.current === policy &&
         clientRef.current === client &&
         client.getStatus() === "active" &&
@@ -343,7 +353,17 @@ export function useCodexRealtime({
     const policy = pointerPolicyRef.current;
     const tracker = threadTrackerRef.current;
     const threadId = tracker?.getCurrentThreadId();
-    if (!policy.known || !tracker?.notifyScreenPointersEnabled || !threadId) return;
+    const context = sharedScreenContextRef.current;
+    if (
+      !context ||
+      context.signal.aborted ||
+      context.tracker !== tracker ||
+      context.threadId !== threadId ||
+      !policy.known ||
+      !tracker?.notifyScreenPointersEnabled ||
+      !threadId
+    )
+      return;
     const previous = mainPointerPolicyRef.current;
     if (
       !force &&
@@ -695,9 +715,6 @@ export function useCodexRealtime({
         throw new Error("Screen sharing stopped.");
       }
       if (result.status === "shared") {
-        // An image already sent before a toggle cannot be retracted. Reassert
-        // the latest policy after its ACK so stale image guidance cannot be last.
-        if (pointerPolicyRef.current !== policy) void notifyMainPointerPolicy(true).catch(() => {});
         // Retain only timestamp, pointer availability, and sharing ownership.
         // Unchanged pixels need no second capture or injection on voice reconnect.
         const previous = sharedScreenContextRef.current;
@@ -717,6 +734,9 @@ export function useCodexRealtime({
         sharedScreenContextRef.current = context;
         announcedScreenContextRef.current = null;
         signal.addEventListener("abort", context.onAbort, { once: true });
+        // Preferences stay local until an image is shared. Reassert after its
+        // ACK if a toggle raced delivery so stale image guidance cannot be last.
+        void notifyMainPointerPolicy(pointerPolicyRef.current !== policy).catch(() => {});
         // Voice metadata ACKs must not extend capture's busy period.
         const client = clientRef.current;
         if (client) notifySharedScreenContext(client);
