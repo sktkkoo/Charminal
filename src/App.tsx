@@ -130,6 +130,7 @@ import {
   VoicePlaybackLeaseSync,
   VoicePlayer,
 } from "./core/voice";
+import { DebugControlsBoundary } from "./debug-controls-boundary";
 import {
   changeStrings,
   getStrings,
@@ -5939,30 +5940,32 @@ function App() {
           />
         }
       />
-      {runtimeLevaStore ? (
-        <LevaPanel
-          store={runtimeLevaStore}
-          hidden={levaHidden}
-          collapsed={false}
-          flat
-          titleBar={{
-            title: "Common",
-            drag: true,
-            filter: true,
-            position: { x: 0, y: 0 },
-          }}
-        />
-      ) : null}
-      {activeSceneLevaStore ? (
-        <LevaPanel
-          key={activeSceneLevaStore.storeId}
-          store={activeSceneLevaStore}
-          hidden={levaHidden}
-          collapsed={false}
-          flat
-          titleBar={{ title: "Scene", drag: true, filter: true, position: { x: -300, y: 0 } }}
-        />
-      ) : null}
+      <DebugControlsBoundary>
+        {runtimeLevaStore ? (
+          <LevaPanel
+            store={runtimeLevaStore}
+            hidden={levaHidden}
+            collapsed={false}
+            flat
+            titleBar={{
+              title: "Common",
+              drag: true,
+              filter: true,
+              position: { x: 0, y: 0 },
+            }}
+          />
+        ) : null}
+        {activeSceneLevaStore ? (
+          <LevaPanel
+            key={activeSceneLevaStore.storeId}
+            store={activeSceneLevaStore}
+            hidden={levaHidden}
+            collapsed={false}
+            flat
+            titleBar={{ title: "Scene", drag: true, filter: true, position: { x: -300, y: 0 } }}
+          />
+        ) : null}
+      </DebugControlsBoundary>
       <div className="app-body">
         <div
           className="shell-column"

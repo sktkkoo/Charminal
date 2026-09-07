@@ -21,6 +21,40 @@ describe("chrome-hidden View Mode window interaction", () => {
     expect(shouldStartViewModeWindowDrag(true, 0, icon)).toBe(false);
   });
 
+  it("leaves debug panel drags and slider gestures inside their no-window-drag boundary", () => {
+    const root = document.createElement("div");
+    const debugPanels = document.createElement("div");
+    debugPanels.setAttribute("data-no-window-drag", "");
+    debugPanels.style.display = "contents";
+    const titleBar = document.createElement("div");
+    const sliderRail = document.createElement("div");
+    const sliderThumb = document.createElement("span");
+    sliderRail.append(sliderThumb);
+    debugPanels.append(titleBar, sliderRail);
+    const canvas = document.createElement("canvas");
+    root.append(debugPanels, canvas);
+    let windowDrags = 0;
+    let debugGestures = 0;
+    root.addEventListener("pointerdown", (event) => {
+      if (shouldStartViewModeWindowDrag(true, (event as MouseEvent).button, event.target)) {
+        event.preventDefault();
+        windowDrags++;
+      }
+    });
+    debugPanels.addEventListener("pointerdown", () => debugGestures++);
+
+    for (const target of [titleBar, sliderRail, sliderThumb]) {
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 });
+      target.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(debugGestures).toBe(3);
+    expect(windowDrags).toBe(0);
+
+    canvas.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+    expect(windowDrags).toBe(1);
+  });
+
   it("uses secondary click to reveal the HUD", () => {
     expect(shouldRevealViewModeHud(true, 2)).toBe(true);
     expect(shouldRevealViewModeHud(true, 0)).toBe(false);
