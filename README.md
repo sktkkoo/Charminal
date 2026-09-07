@@ -310,7 +310,7 @@ What works today:
 
 ## Agent support
 
-Use either [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex) as the Main Agent. Select one in Settings or `~/.yorishiro/config.json`. Both support auto-launch, persona prompt overlay, PTY observation, and Yorishiro MCP access.
+Use either [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or [Codex](https://github.com/openai/codex) as the Main Agent. Codex is the default when no agent is configured. Select one in Settings or `~/.yorishiro/config.json`. Both support auto-launch, persona prompt overlay, PTY observation, and Yorishiro MCP access.
 
 Command syntax differs by agent; see [Yorishiro commands and skills](#yorishiro-commands-and-skills).
 

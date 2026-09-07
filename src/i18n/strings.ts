@@ -799,9 +799,9 @@ export const AGENT_COMMAND_SYNTAX: Record<
 /** Yorishiro が prefill する固定プロンプト中に現れる yori コマンド名。 */
 const YORI_COMMAND_NAMES = ["create", "update", "help", "shortcut", "tutorial"] as const;
 
-/** 未知 agent は Claude 記法に fall back する。 */
+/** 未知 agent は Codex 記法に fall back する。 */
 function yoriCommand(name: string, terminalAgent: string): string {
-  const syntax = AGENT_COMMAND_SYNTAX[terminalAgent] ?? AGENT_COMMAND_SYNTAX.claude;
+  const syntax = AGENT_COMMAND_SYNTAX[terminalAgent] ?? AGENT_COMMAND_SYNTAX.codex;
   return `${syntax.prefix}yori${syntax.separator}${name}`;
 }
 
@@ -813,7 +813,7 @@ function commandPromptForAgent(prompt: string, terminalAgent: string): string {
   );
 }
 
-function updateCommandForAgent(terminalAgent = "claude"): string {
+function updateCommandForAgent(terminalAgent = "codex"): string {
   return yoriCommand("update", terminalAgent);
 }
 
@@ -824,7 +824,7 @@ function updateCommandForAgent(terminalAgent = "claude"): string {
 export function resolveFixedTerminalPrompt(
   key: FixedTerminalPromptKey,
   language: ResolvedLanguage,
-  terminalAgent = "claude",
+  terminalAgent = "codex",
 ): string {
   return commandPromptForAgent(getStrings(language)[FIXED_PROMPT_STRING[key]], terminalAgent);
 }

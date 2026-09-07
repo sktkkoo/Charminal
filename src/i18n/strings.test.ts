@@ -12,21 +12,28 @@ import {
 const FIXED_PROMPT_KEYS = ["help", "tutorial", "shortcut", "create-pack", "pomodoro"] as const;
 
 describe("resolveFixedTerminalPrompt", () => {
-  it("resolves fixed prompts per language", () => {
+  it("defaults to Codex fixed prompts per language", () => {
     expect(FIXED_PROMPT_KEYS.map((key) => [key, resolveFixedTerminalPrompt(key, "en")])).toEqual([
-      ["help", "/yori:help"],
-      ["tutorial", "/yori:tutorial"],
-      ["shortcut", "/yori:shortcut I want to change keyboard shortcuts"],
-      ["create-pack", "/yori:create I want to create a pack"],
-      ["pomodoro", "/yori:help I want to use Pomodoro"],
+      ["help", "$yori-help"],
+      ["tutorial", "$yori-tutorial"],
+      ["shortcut", "$yori-shortcut I want to change keyboard shortcuts"],
+      ["create-pack", "$yori-create I want to create a pack"],
+      ["pomodoro", "$yori-help I want to use Pomodoro"],
     ]);
     expect(FIXED_PROMPT_KEYS.map((key) => [key, resolveFixedTerminalPrompt(key, "ja")])).toEqual([
-      ["help", "/yori:help"],
-      ["tutorial", "/yori:tutorial"],
-      ["shortcut", "/yori:shortcut ショートカットを変更したい"],
-      ["create-pack", "/yori:create pack を作りたい"],
-      ["pomodoro", "/yori:help Pomodoro を使いたい"],
+      ["help", "$yori-help"],
+      ["tutorial", "$yori-tutorial"],
+      ["shortcut", "$yori-shortcut ショートカットを変更したい"],
+      ["create-pack", "$yori-create pack を作りたい"],
+      ["pomodoro", "$yori-help Pomodoro を使いたい"],
     ]);
+  });
+
+  it("preserves Claude command syntax when explicitly selected", () => {
+    expect(resolveFixedTerminalPrompt("help", "en", "claude")).toBe("/yori:help");
+    expect(resolveFixedTerminalPrompt("create-pack", "ja", "claude")).toBe(
+      "/yori:create pack を作りたい",
+    );
   });
 
   it("resolves Codex fixed prompts as $yori skills", () => {
@@ -53,11 +60,11 @@ describe("resolveFixedTerminalPrompt", () => {
     ]);
   });
 
-  it("falls back to Claude command syntax for an unknown agent", () => {
-    // 記法 table に無い agent は Claude 形式（/yori:<name>）に fall back する。
-    expect(resolveFixedTerminalPrompt("help", "en", "future-agent")).toBe("/yori:help");
+  it("falls back to Codex command syntax for an unknown agent", () => {
+    // 記法 table に無い agent は Codex 形式（$yori-<name>）に fall back する。
+    expect(resolveFixedTerminalPrompt("help", "en", "future-agent")).toBe("$yori-help");
     expect(resolveFixedTerminalPrompt("create-pack", "en", "future-agent")).toBe(
-      "/yori:create I want to create a pack",
+      "$yori-create I want to create a pack",
     );
   });
 
@@ -232,6 +239,14 @@ describe("restoreConfirmStrings", () => {
 });
 
 describe("resolvePackRepairPrompt", () => {
+  it("defaults to Codex while preserving an explicit Claude choice", () => {
+    const args = { id: "broken-effect", action: "repair", language: "en" } as const;
+    expect(resolvePackRepairPrompt(args)).toMatch(/^\$yori-update /);
+    expect(resolvePackRepairPrompt({ ...args, terminalAgent: "claude" })).toMatch(
+      /^\/yori:update /,
+    );
+  });
+
   it("uses $yori-update for Codex", () => {
     expect(
       resolvePackRepairPrompt({
