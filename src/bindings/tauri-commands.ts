@@ -23,6 +23,9 @@ import type { SnapshotEntry } from "../sdk/history";
 const call = <T>(cmd: string, args: object): Promise<T> =>
   invoke<T>(cmd, args as unknown as InvokeArgs);
 
+/** Wait for native fullscreen exit before changing the window size. */
+export const exitWindowFullscreen = (): Promise<void> => call("exit_window_fullscreen", {});
+
 export interface ScreenCaptureSource {
   readonly id: number;
   readonly name: string;
