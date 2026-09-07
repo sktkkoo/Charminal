@@ -51,7 +51,7 @@ describe("parseConfig", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -81,7 +81,7 @@ describe("parseConfig", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -111,7 +111,7 @@ describe("parseConfig", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -141,7 +141,7 @@ describe("parseConfig", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -171,7 +171,7 @@ describe("parseConfig", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -201,7 +201,7 @@ describe("parseConfig", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -236,7 +236,7 @@ describe("parseConfig", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -263,9 +263,9 @@ describe("parseConfig", () => {
     expect(config.terminalAgent).toBe("opencode");
   });
 
-  it("defaults unknown terminalAgent to claude", () => {
+  it("defaults unknown terminalAgent to codex", () => {
     const config = parseConfig('{"terminalAgent": "unknown"}');
-    expect(config.terminalAgent).toBe("claude");
+    expect(config.terminalAgent).toBe("codex");
   });
 
   it("reads tabMetadataBadges only when explicitly true", () => {
@@ -295,7 +295,7 @@ describe("serializeConfig", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -325,7 +325,7 @@ describe("serializeConfig", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -386,9 +386,16 @@ describe("serializeConfig", () => {
     expect(parseConfig(serializeConfig(cfg))).toEqual(cfg);
   });
 
-  it("writes terminalAgent when codex is selected", () => {
-    const cfg: YorishiroConfig = { ...EMPTY_CONFIG, terminalAgent: "codex" };
-    expect(JSON.parse(serializeConfig(cfg))).toEqual({ terminalAgent: "codex" });
+  it("preserves an explicit Claude choice through serialization", () => {
+    const cfg = parseConfig('{"terminalAgent":"claude"}');
+    const text = serializeConfig(cfg);
+    expect(JSON.parse(text)).toEqual({ terminalAgent: "claude" });
+    expect(parseConfig(text).terminalAgent).toBe("claude");
+  });
+
+  it("uses Codex when no agent is configured", () => {
+    expect(parseConfig("{}").terminalAgent).toBe("codex");
+    expect(JSON.parse(serializeConfig({ ...EMPTY_CONFIG, terminalAgent: "codex" }))).toEqual({});
   });
 
   it("writes terminalAgent when opencode is selected", () => {
@@ -776,7 +783,7 @@ describe("withDisabledPackAdded / withDisabledPackRemoved", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,
@@ -807,7 +814,7 @@ describe("withDisabledPackAdded / withDisabledPackRemoved", () => {
       activeAmbientUi: ["attention-aura", "pomodoro-ui"],
       tabMetadataBadges: false,
       language: "auto",
-      terminalAgent: "claude",
+      terminalAgent: "codex",
       ambientAudioMuted: false,
       ambientAudioVolume: 1,
       voiceVolume: 1,

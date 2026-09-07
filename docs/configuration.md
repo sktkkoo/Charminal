@@ -29,7 +29,7 @@ Yorishiro は起動時に `~/.yorishiro/config.json` を読み、壊れている
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `defaultProfile` | `string` or `null` | `null` | 起動時 default-session に使う profile id（`shell` / `claude` / `codex` / `opencode` または user `profiles[]` の id）。`null` なら `terminalAgent` を fallback |
-| `terminalAgent` | `"claude"`, `"codex"`, or `"opencode"` | `"claude"` | legacy。`defaultProfile` 未指定時に使う coding agent |
+| `terminalAgent` | `"claude"`, `"codex"`, or `"opencode"` | `"codex"` | legacy。`defaultProfile` 未指定時に使う coding agent |
 | `codexRealtimeVoice` | `string` | `"sol"` | Codex GPT Live の出力 voice（global fallback）。新しい realtime session の開始時に読み込む |
 | `realtimeVoiceByPersona` | `{ [personaId: string]: string }` | `{}` | persona pack id ごとの GPT Live voice override。active persona に entry があれば `codexRealtimeVoice` より優先 |
 | `language` | `"auto"`, `"en"`, or `"ja"` | `"auto"` | UI / bundled persona fallback / global system prompt / Yorishiro command/skill prompts の言語 |

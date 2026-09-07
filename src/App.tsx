@@ -1762,7 +1762,7 @@ function App() {
       // 旧設計は IIFE 2 つで個別に config を読んでいたが、同じ file を 2 度 parse
       // していた。1 回読み + 両 registry に流す。失敗しても次 step は続行
       // （bundled fallback で動く）。
-      let terminalAgent: TerminalAgent = "claude";
+      let terminalAgent: TerminalAgent = "codex";
       let defaultSpec: SpawnSpec | null = null;
       let ambientAudioMuted = false;
       let ambientAudioVolume = 1.0;
@@ -2620,7 +2620,7 @@ function App() {
         data: { error: err instanceof Error ? err.message : String(err) },
       });
       userLayerReadyResolve({
-        terminalAgent: "claude",
+        terminalAgent: "codex",
         defaultSpec: null,
         systemPrompt: null,
         pluginDir: null,
@@ -2688,7 +2688,7 @@ function App() {
     },
     [beginCurtainReload, updateConfig],
   );
-  const [terminalAgent, setTerminalAgent] = useState<TerminalAgent>("claude");
+  const [terminalAgent, setTerminalAgent] = useState<TerminalAgent>("codex");
   const [voiceEntryDialog, setVoiceEntryDialog] = useState<{
     readonly mode: VoiceEntryDialogMode;
     readonly targetAgentId: string | null;

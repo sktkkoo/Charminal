@@ -595,9 +595,11 @@ fn draw(mark: &VisibleAnnotation) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn window_id() -> Option<u32> {
-    macos::window_id()
+    #[cfg(target_os = "macos")]
+    return macos::window_id();
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 #[tauri::command]
@@ -878,6 +880,7 @@ fn start_watchdog(app: &AppHandle, generation: u64) {
 /// Keep existing marks visible while excluding their pinned window from capture.
 /// New show requests wait until capture completes so its filter stays valid.
 pub struct CaptureGuard {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) excluded_window: Option<u32>,
     app: AppHandle,
     share_id: String,

@@ -125,7 +125,7 @@ export const EMPTY_CONFIG: YorishiroConfig = {
   activeAmbientUi: ["attention-aura", "pomodoro-ui"],
   tabMetadataBadges: false,
   language: DEFAULT_LANGUAGE,
-  terminalAgent: "claude",
+  terminalAgent: "codex",
   ambientAudioMuted: false,
   ambientAudioVolume: 1.0,
   voiceVolume: 1.0,
@@ -188,7 +188,7 @@ const toTerminalAgent = (value: unknown): TerminalAgent => {
   if (typeof value === "string" && KNOWN_AGENT_IDS.has(value)) {
     return value;
   }
-  return "claude";
+  return EMPTY_CONFIG.terminalAgent;
 };
 
 const toBoolean = (value: unknown): boolean => {
@@ -388,7 +388,7 @@ export function serializeConfig(cfg: YorishiroConfig): string {
   }
   if (cfg.tabMetadataBadges) out.tabMetadataBadges = true;
   if (cfg.language !== DEFAULT_LANGUAGE) out.language = cfg.language;
-  if (cfg.terminalAgent !== "claude") out.terminalAgent = cfg.terminalAgent;
+  if (cfg.terminalAgent !== EMPTY_CONFIG.terminalAgent) out.terminalAgent = cfg.terminalAgent;
   if (cfg.ambientAudioMuted) out.ambientAudioMuted = true;
   if (cfg.ambientAudioVolume !== 1.0) out.ambientAudioVolume = cfg.ambientAudioVolume;
   if (cfg.voiceVolume !== 1.0) out.voiceVolume = cfg.voiceVolume;
