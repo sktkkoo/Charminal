@@ -86,7 +86,7 @@ pub async fn screen_capture_frame(
     let guard =
         crate::screen_annotation::begin_capture(window.app_handle(), share_id, source_id).await?;
     #[cfg(target_os = "macos")]
-    let mut frame = macos::capture(source_id).await?;
+    let mut frame = macos::capture(source_id, guard.excluded_window).await?;
     #[cfg(not(target_os = "macos"))]
     let mut frame = unsupported_capture().await?;
     let reference = crate::screen_annotation::register_frame(&guard, &frame).await?;
@@ -306,7 +306,10 @@ mod macos {
         }
     }
 
-    pub(super) async fn capture(source_id: u32) -> Result<ScreenCaptureFrame, String> {
+    pub(super) async fn capture(
+        source_id: u32,
+        excluded_window: Option<u32>,
+    ) -> Result<ScreenCaptureFrame, String> {
         ensure_supported()?;
         if !unsafe { CGPreflightScreenCaptureAccess() } {
             return Err(PERMISSION_DENIED.into());
@@ -328,7 +331,7 @@ mod macos {
             _busy: BusyGuard,
         });
         let _cancel = CancelOnDrop(request.clone());
-        autoreleasepool(|_| begin_capture(request, source, dimensions))?;
+        autoreleasepool(|_| begin_capture(request, source, dimensions, excluded_window))?;
         tokio::time::timeout(Duration::from_secs(15), receiver)
             .await
             .map_err(|_| "Screen capture timed out. Stop sharing and try again.".to_string())?
@@ -339,6 +342,7 @@ mod macos {
         request: Arc<CaptureRequest>,
         source: ScreenCaptureSource,
         dimensions: (usize, usize),
+        excluded_window: Option<u32>,
     ) -> Result<(), String> {
         let content_class = sc_class(c"SCShareableContent")?;
         let callback = RcBlock::new(move |content: *mut AnyObject, error: *mut AnyObject| {
@@ -353,7 +357,13 @@ mod macos {
                 // SCShareableContent owns the display objects throughout this
                 // callback. The filter retains the selected display after it.
                 let result = unsafe {
-                    capture_from_content(content, request.clone(), source.clone(), dimensions)
+                    capture_from_content(
+                        content,
+                        request.clone(),
+                        source.clone(),
+                        dimensions,
+                        excluded_window,
+                    )
                 };
                 if let Err(error) = result {
                     request.complete(Err(error));
@@ -372,6 +382,7 @@ mod macos {
         request: Arc<CaptureRequest>,
         source: ScreenCaptureSource,
         dimensions: (usize, usize),
+        excluded_window: Option<u32>,
     ) -> Result<(), String> {
         let displays: *mut AnyObject = msg_send![content, displays];
         if displays.is_null() {
@@ -392,10 +403,10 @@ mod macos {
                 "The selected display is no longer available. Choose a display again.".into(),
             );
         }
-        // The host also hides the panel for the entire capture interval. Exclude
-        // its stable native window ID as defense against capture self-feedback.
+        // Exclude the mark that was visible when capture began. New marks wait
+        // for this capture to finish; the existing mark never needs to blink.
         let mut excluded = Vec::new();
-        if let Some(overlay_id) = crate::screen_annotation::window_id() {
+        if let Some(overlay_id) = excluded_window {
             let windows: *mut AnyObject = msg_send![content, windows];
             if !windows.is_null() {
                 let count: usize = msg_send![windows, count];
@@ -409,6 +420,12 @@ mod macos {
                     }
                 }
             }
+        }
+        if excluded_window.is_some() && excluded.is_empty() {
+            return Err(
+                "Could not exclude the screen pointer from capture. Try again after it expires."
+                    .into(),
+            );
         }
         let excluded_windows = NSArray::from_retained_slice(&excluded);
         let filter: Option<Retained<AnyObject>> = msg_send![

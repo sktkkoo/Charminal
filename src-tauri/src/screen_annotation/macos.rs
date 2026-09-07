@@ -8,10 +8,10 @@ use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSBackingStoreType, NSBezierPath, NSColor, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSLineBreakMode, NSLineCapStyle, NSLineJoinStyle, NSPanel,
-    NSScreen, NSShadow, NSShadowAttributeName, NSStatusWindowLevel, NSStrokeColorAttributeName,
-    NSStrokeWidthAttributeName, NSTextField, NSView, NSWindowAnimationBehavior,
+    NSAttributedStringNSExtendedStringDrawing, NSBackingStoreType, NSBezierPath, NSColor, NSFont,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSLineCapStyle, NSLineJoinStyle, NSPanel,
+    NSScreen, NSShadow, NSShadowAttributeName, NSStatusWindowLevel, NSStringDrawingOptions,
+    NSStrokeColorAttributeName, NSStrokeWidthAttributeName, NSView, NSWindowAnimationBehavior,
     NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
 };
 use objc2_foundation::{
@@ -23,16 +23,16 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static WINDOW_ID: AtomicU32 = AtomicU32::new(0);
 
-// Muted pencil colors derived from the Yorishiro shell. Pale ink with a fine
-// dark edge stays visible on mixed backgrounds without another screen capture.
-const ACCENT: u32 = 0xb8c7aa;
-const CONTRAST: u32 = 0x27332b;
-const FOREGROUND: u32 = 0xdce4d1;
+// Muted green ink with a white edge stays visible on mixed backgrounds
+// without another screen capture.
+const ACCENT: u32 = 0x506747;
+const CONTRAST: u32 = 0xffffff;
+const FOREGROUND: u32 = 0x506747;
 const MARK_WIDTH: f64 = 1.7;
-const CONTRAST_WIDTH: f64 = 2.8;
+const CONTRAST_WIDTH: f64 = 7.0;
 const LABEL_FONT_SIZE: f64 = 18.0;
-const LABEL_PADDING_X: f64 = 3.0;
-const LABEL_PADDING_Y: f64 = 3.0;
+const LABEL_PADDING_X: f64 = 6.0;
+const LABEL_PADDING_Y: f64 = 6.0;
 
 thread_local! {
     // Reusing the panel gives capture a stable ID even while it is ordered out.
@@ -97,6 +97,13 @@ define_class!(
 struct Drawing {
     target: AnnotationTarget,
     size: NSSize,
+    label: Option<LabelDrawing>,
+}
+
+#[derive(Debug)]
+struct LabelDrawing {
+    passes: [Retained<NSAttributedString>; 2],
+    text_rect: NSRect,
 }
 
 // NSView supports drawRect subclassing. Drawing only happens on the main
@@ -125,14 +132,19 @@ define_class!(
             let path = annotation_path(drawing.target, drawing.size);
             path.setLineCapStyle(NSLineCapStyle::Round);
             path.setLineJoinStyle(NSLineJoinStyle::Round);
-            // The two thin strokes read as dark ink on a light canvas and as
-            // pale pencil on dark content. No background sampling or animation.
-            color(CONTRAST, 0.84).setStroke();
+            // A white backing separates the green stroke from dark content.
+            // No background sampling or animation.
+            color(CONTRAST, 1.0).setStroke();
             path.setLineWidth(CONTRAST_WIDTH);
             path.stroke();
             color(ACCENT, 1.0).setStroke();
             path.setLineWidth(MARK_WIDTH);
             path.stroke();
+            if let Some(label) = &drawing.label {
+                for text in &label.passes {
+                    text.drawWithRect_options_context(label.text_rect, label_options(), None);
+                }
+            }
         }
     }
 );
@@ -247,17 +259,19 @@ fn bundled_font() -> Option<Retained<NSFont>> {
 fn label_text(text: &str, mtm: MainThreadMarker) -> [Retained<NSAttributedString>; 2] {
     let font = annotation_font(mtm);
     let ink = color(FOREGROUND, 1.0);
-    let edge = color(CONTRAST, 0.90);
+    let edge = color(CONTRAST, 1.0);
     // Negative stroke width draws both fill and outline; the unit is percent
-    // of the font size. This is about 0.7 pt, not a plate around the note.
-    let stroke = NSNumber::new_f64(-4.0);
+    // of the font size. A 3.24 pt white stroke surrounds the pale letterforms.
+    let stroke = NSNumber::new_f64(-18.0);
+    // Thicken the handwriting slightly while keeping Japanese counters open.
+    let ink_stroke = NSNumber::new_f64(-2.5);
     let shadow = NSShadow::new();
     shadow.setShadowColor(Some(&color(CONTRAST, 0.45)));
     shadow.setShadowOffset(NSSize::new(0.0, -0.5));
-    shadow.setShadowBlurRadius(1.0);
+    shadow.setShadowBlurRadius(1.5);
     let values: [&AnyObject; 5] = [&font, &edge, &edge, &stroke, &shadow];
     // SAFETY: Each AppKit attribute has its documented value type. The
-    // attributed string and native text field retain the values they use.
+    // attributed strings retain the values they use.
     unsafe {
         let attributes = NSDictionary::from_slices(
             &[
@@ -271,13 +285,18 @@ fn label_text(text: &str, mtm: MainThreadMarker) -> [Retained<NSAttributedString
         );
         let string = NSString::from_str(text);
         let outline = NSAttributedString::new_with_attributes(&string, &attributes);
-        let ink_values: [&AnyObject; 2] = [&font, &ink];
+        let ink_values: [&AnyObject; 4] = [&font, &ink, &ink, &ink_stroke];
         let ink_attributes = NSDictionary::from_slices(
-            &[NSFontAttributeName, NSForegroundColorAttributeName],
+            &[
+                NSFontAttributeName,
+                NSForegroundColorAttributeName,
+                NSStrokeColorAttributeName,
+                NSStrokeWidthAttributeName,
+            ],
             &ink_values,
         );
-        // Drawing the fill separately keeps the dark outline outside the fine
-        // pen strokes, instead of letting it cover their light centers.
+        // Drawing the fill separately keeps the white outline outside the fine
+        // pen strokes, instead of letting it cover their pale centers.
         [
             outline,
             NSAttributedString::new_with_attributes(&string, &ink_attributes),
@@ -444,9 +463,7 @@ fn arrow_points(x: f64, y: f64, size: NSSize) -> ArrowPoints {
 
 fn label_frame(target: AnnotationTarget, size: NSSize, text_size: NSSize) -> NSRect {
     let margin = 8.0_f64.min(size.width / 8.0).min(size.height / 8.0);
-    let width = (text_size.width.ceil() + LABEL_PADDING_X * 2.0)
-        .min(300.0)
-        .min(size.width - margin * 2.0);
+    let width = (text_size.width.ceil() + LABEL_PADDING_X * 2.0).min(size.width - margin * 2.0);
     let height = (text_size.height.ceil() + LABEL_PADDING_Y * 2.0).min(size.height - margin * 2.0);
     let (preferred_x, preferred_y) = match target {
         AnnotationTarget::Arrow { x, y } => {
@@ -488,43 +505,50 @@ fn label_frame(target: AnnotationTarget, size: NSSize, text_size: NSSize) -> NSR
     )
 }
 
+fn label_options() -> NSStringDrawingOptions {
+    NSStringDrawingOptions::UsesLineFragmentOrigin | NSStringDrawingOptions::UsesFontLeading
+}
+
 fn create_view(
     mtm: MainThreadMarker,
     target: AnnotationTarget,
     size: NSSize,
     label: Option<&str>,
 ) -> Retained<AnnotationView> {
-    let labels = label.filter(|label| !label.trim().is_empty()).map(|label| {
-        label_text(label, mtm).map(|text| {
-            let label = NSTextField::labelWithString(&NSString::from_str(label), mtm);
-            label.setAttributedStringValue(&text);
-            label.setEditable(false);
-            label.setSelectable(false);
-            label.setDrawsBackground(false);
-            label.setMaximumNumberOfLines(1);
-            label.setUsesSingleLineMode(true);
-            if let Some(cell) = label.cell() {
-                cell.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-            }
-            label.sizeToFit();
-            label
-        })
-    });
-    let label_frame = labels
-        .as_ref()
-        .map(|labels| label_frame(target, size, labels[1].frame().size));
-    let view = AnnotationView::alloc(mtm).set_ivars(Drawing { target, size });
-    // SAFETY: NSView's designated initializer takes NSRect and returns self.
-    let view: Retained<AnnotationView> =
-        unsafe { msg_send![super(view), initWithFrame: NSRect::new(NSPoint::ZERO, size)] };
-    if let (Some(labels), Some(frame)) = (labels, label_frame) {
-        for label in labels {
-            label.setFrame(frame);
-            // addSubview retains both ink passes for the content view's life.
-            view.addSubview(&label);
+    let label = label.filter(|label| !label.trim().is_empty()).map(|label| {
+        let passes = label_text(label, mtm);
+        let margin = 8.0_f64.min(size.width / 8.0).min(size.height / 8.0);
+        let available_width = (size.width - 2.0 * (margin + LABEL_PADDING_X)).max(1.0);
+        // Measure and draw with the same multiline layout options. NSTextField's
+        // single-line cell clips tall handwriting and strokes even if its outer
+        // frame is enlarged. Drawing in the full overlay avoids that cell clip.
+        let bounds = passes[1].boundingRectWithSize_options_context(
+            NSSize::new(available_width, f64::MAX),
+            label_options(),
+            None,
+        );
+        let frame = label_frame(target, size, bounds.size);
+        LabelDrawing {
+            passes,
+            // Keep the measured wrapping width: tightening it to a rounded
+            // glyph width can move the last character onto an extra line.
+            // The label frame reserves real space around the glyphs for the
+            // outline and shadow, rather than adding space inside a text cell.
+            text_rect: rect(
+                frame.origin.x + LABEL_PADDING_X - bounds.origin.x,
+                frame.origin.y + LABEL_PADDING_Y - bounds.origin.y,
+                available_width,
+                bounds.size.height.ceil(),
+            ),
         }
-    }
-    view
+    });
+    let view = AnnotationView::alloc(mtm).set_ivars(Drawing {
+        target,
+        size,
+        label,
+    });
+    // SAFETY: NSView's designated initializer takes NSRect and returns self.
+    unsafe { msg_send![super(view), initWithFrame: NSRect::new(NSPoint::ZERO, size)] }
 }
 
 fn create_panel(mtm: MainThreadMarker, frame: NSRect) -> Retained<AnnotationPanel> {
@@ -559,7 +583,7 @@ fn create_panel(mtm: MainThreadMarker, frame: NSRect) -> Retained<AnnotationPane
     );
     panel.setLevel(NSStatusWindowLevel);
     // Defense in depth for capture APIs honoring this setting. ScreenCaptureKit
-    // also excludes WINDOW_ID; parent suppresses annotations during capture.
+    // also excludes WINDOW_ID; new annotations wait until capture completes.
     panel.setSharingType(NSWindowSharingType::None);
     panel
 }
