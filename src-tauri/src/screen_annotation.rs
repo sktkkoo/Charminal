@@ -595,9 +595,11 @@ fn draw(mark: &VisibleAnnotation) -> Result<(), String> {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(crate) fn window_id() -> Option<u32> {
-    macos::window_id()
+    #[cfg(target_os = "macos")]
+    return macos::window_id();
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 #[tauri::command]
