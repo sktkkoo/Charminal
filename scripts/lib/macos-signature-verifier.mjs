@@ -3,6 +3,7 @@ export const REQUIRED_MACOS_ENTITLEMENTS = [
   "com.apple.security.cs.allow-unsigned-executable-memory",
   "com.apple.security.network.client",
   "com.apple.security.device.audio-input",
+  "com.apple.security.device.camera",
 ];
 
 function hasEnabledEntitlement(output, entitlement) {

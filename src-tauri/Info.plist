@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Yorishiro uses the microphone for Codex voice conversations.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Yorishiro uses the camera to share images with your AI agent when you start camera sharing.</string>
 </dict>
 </plist>
