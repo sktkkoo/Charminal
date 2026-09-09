@@ -27,6 +27,7 @@ export interface ScreenSharingSnapshot {
   readonly pointersEnabled: boolean;
   readonly pointersReady: boolean;
   readonly sources: readonly { readonly id: number; readonly name: string }[];
+  readonly sourceKind?: "screen" | "camera";
   readonly sourceId: number | null;
   readonly intervalSeconds: number;
   readonly hasError: boolean;
@@ -41,6 +42,7 @@ export interface PublishedAuxiliarySnapshot {
 
 export type ScreenSharingAuxiliaryAction =
   | { readonly type: "start" | "stop" | "refresh-sources" | "clear-annotations" | "retry-pointers" }
+  | { readonly type: "select-source-kind"; readonly sourceKind: "screen" | "camera" }
   | { readonly type: "select-source"; readonly sourceId: number }
   | { readonly type: "set-pointers-enabled"; readonly enabled: boolean }
   | { readonly type: "set-interval"; readonly intervalSeconds: number };
@@ -63,6 +65,7 @@ export interface ScreenSharingAuxiliaryModel {
   readonly pointersEnabled: boolean;
   readonly pointersReady: boolean;
   readonly sources: readonly { readonly id: number; readonly name: string }[];
+  readonly sourceKind?: "screen" | "camera";
   readonly sourceId: number | null;
   readonly intervalSeconds: number;
   readonly error?: string;
@@ -74,6 +77,7 @@ export interface ScreenSharingAuxiliaryModel {
   readonly clearAnnotations: () => Promise<void>;
   readonly retryPointers: () => Promise<void>;
   readonly setPointersEnabled: (enabled: boolean) => Promise<void>;
+  readonly setSourceKind?: (kind: "screen" | "camera") => void;
   readonly setSourceId: (id: number) => void;
   readonly setIntervalSeconds: (seconds: number) => void;
 }
@@ -93,6 +97,7 @@ export function createScreenSharingSnapshot(
     pointersEnabled: model.pointersEnabled,
     pointersReady: model.pointersReady,
     sources: model.sources.slice(0, 64).map(({ id, name }) => ({ id, name: name.slice(0, 200) })),
+    sourceKind: model.sourceKind ?? "screen",
     sourceId: model.sourceId,
     intervalSeconds: model.intervalSeconds,
     hasError: Boolean(model.error),
@@ -234,7 +239,7 @@ export class ScreenSharingAuxiliaryHost {
       case "start":
         if (
           !model.available ||
-          !model.pointersReady ||
+          (model.sourceKind !== "camera" && !model.pointersReady) ||
           model.active ||
           model.busy ||
           !model.sources.some((source) => source.id === model.sourceId)
@@ -250,15 +255,27 @@ export class ScreenSharingAuxiliaryHost {
         await model.refreshSources();
         break;
       case "clear-annotations":
+        if (model.sourceKind === "camera") return false;
         await model.clearAnnotations();
         break;
       case "retry-pointers":
+        if (model.sourceKind === "camera") return false;
         if (model.pointersReady || !model.error) return false;
         await model.retryPointers();
         break;
       case "set-pointers-enabled":
+        if (model.sourceKind === "camera") return false;
         if (!model.pointersReady || typeof action.enabled !== "boolean") return false;
         await model.setPointersEnabled(action.enabled);
+        break;
+      case "select-source-kind":
+        if (
+          !model.setSourceKind ||
+          (action.sourceKind !== "screen" && action.sourceKind !== "camera")
+        )
+          return false;
+        model.stop();
+        model.setSourceKind(action.sourceKind);
         break;
       case "select-source":
         if (

@@ -37,6 +37,14 @@ pub struct SharedDisplay {
     name: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SharingSourceKind {
+    #[default]
+    Screen,
+    Camera,
+}
+
 /// Deliberately excludes image data, agent/thread identifiers, arbitrary error text, and credentials.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -49,6 +57,8 @@ pub struct ScreenSharingSnapshot {
     pointers_enabled: bool,
     pointers_ready: bool,
     sources: Vec<SharedDisplay>,
+    #[serde(default)]
+    source_kind: SharingSourceKind,
     source_id: Option<u32>,
     interval_seconds: u8,
     has_error: bool,
@@ -88,6 +98,10 @@ pub enum ScreenSharingAction {
     RetryPointers,
     SetPointersEnabled {
         enabled: bool,
+    },
+    SelectSourceKind {
+        #[serde(rename = "sourceKind")]
+        source_kind: SharingSourceKind,
     },
     SelectSource {
         #[serde(rename = "sourceId")]
@@ -170,7 +184,8 @@ fn validate_action(
     match &request.action {
         ScreenSharingAction::Start
             if !snapshot.available
-                || !snapshot.pointers_ready
+                || (snapshot.source_kind != SharingSourceKind::Camera
+                    && !snapshot.pointers_ready)
                 || snapshot.active
                 || snapshot.busy
                 || !snapshot
@@ -179,6 +194,13 @@ fn validate_action(
                     .any(|source| Some(source.id) == snapshot.source_id) =>
         {
             Err("Screen sharing is not ready to start".into())
+        }
+        ScreenSharingAction::SetPointersEnabled { .. }
+        | ScreenSharingAction::RetryPointers
+        | ScreenSharingAction::ClearAnnotations
+            if snapshot.source_kind == SharingSourceKind::Camera =>
+        {
+            Err("Desktop pointers are not available for camera sharing".into())
         }
         ScreenSharingAction::SetPointersEnabled { .. } if !snapshot.pointers_ready => {
             Err("Screen pointer settings are not ready".into())
@@ -337,6 +359,7 @@ mod tests {
                     id: 12,
                     name: "Display 1".into(),
                 }],
+                source_kind: SharingSourceKind::Screen,
                 source_id: Some(12),
                 interval_seconds: 30,
                 has_error: false,

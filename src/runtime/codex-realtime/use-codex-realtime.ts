@@ -56,6 +56,7 @@ export interface CodexThreadTrackerLike {
 }
 
 interface SharedScreenContext {
+  readonly sourceKind?: "screen" | "camera";
   readonly capturedAt: string;
   readonly pointersEnabled: boolean;
   readonly pointerFrameValid: boolean;
@@ -316,7 +317,10 @@ export function useCodexRealtime({
         return;
       announcedScreenContextRef.current = { client, context, policy };
       const availability: ScreenPointerAvailability = {
-        pointersEnabled: policy.known ? policy.enabled : context.pointersEnabled,
+        sourceKind: context.sourceKind,
+        pointersEnabled:
+          context.sourceKind !== "camera" &&
+          (policy.known ? policy.enabled : context.pointersEnabled),
         pointerFrameValid:
           context.pointersEnabled &&
           context.pointerFrameValid &&
@@ -697,8 +701,12 @@ export function useCodexRealtime({
       const availability: ScreenPointerAvailability = {
         // A capture reply may predate a settings change. The latest accepted
         // preference wins; a disabled or invalid captured reference stays invalid.
-        pointersEnabled: policy.known ? policy.enabled : frame.pointersEnabled !== false,
+        sourceKind: frame.sourceKind,
+        pointersEnabled:
+          frame.sourceKind !== "camera" &&
+          (policy.known ? policy.enabled : frame.pointersEnabled !== false),
         pointerFrameValid:
+          frame.sourceKind !== "camera" &&
           (!policy.known || policy.enabled) &&
           frame.pointerFrameValid !== false &&
           frame.pointersEnabled !== false &&

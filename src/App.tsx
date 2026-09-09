@@ -4226,13 +4226,10 @@ function App() {
     persist: (screenPointersEnabled) => updateConfig({ screenPointersEnabled }),
     notify: notifyScreenPointersEnabled,
   });
-  const screenSharingAvailable =
-    codexVoiceAvailable &&
-    screenThreadId !== null &&
-    /Mac/i.test(navigator.platform) &&
-    screenPointerSettings.ready;
+  const screenSharingAvailable = codexVoiceAvailable && screenThreadId !== null;
   const screenSharing = useScreenSharing({
     available: screenSharingAvailable,
+    screenAvailable: /Mac/i.test(navigator.platform) && screenPointerSettings.ready,
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
     share: shareScreenObservation,
     onTiming: (timing) => {
@@ -4246,8 +4243,10 @@ function App() {
     pointersReady: screenPointerSettings.ready,
     setPointersEnabled: screenPointerSettings.setEnabled,
     retryPointers: screenPointerSettings.retry,
-    error: screenSharing.error ?? screenPointerSettings.error,
-    available: screenSharingAvailable,
+    error:
+      screenSharing.error ??
+      (screenSharing.sourceKind === "screen" ? screenPointerSettings.error : undefined),
+    available: screenSharing.available,
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
     language: appLanguage.resolved,
   });
@@ -5835,7 +5834,7 @@ function App() {
           codexVoiceAvailable ? (
             <ScreenSharingControl
               activeViewModeId={activePresentationViewModeIdValue}
-              available={screenSharingAvailable}
+              available={screenSharing.available}
               active={screenSharing.active}
               busy={screenSharing.busy}
               pointersEnabled={screenPointerSettings.enabled}
@@ -5843,8 +5842,12 @@ function App() {
               intervalSeconds={screenSharing.intervalSeconds}
               sources={screenSharing.sources}
               sourceId={screenSharing.sourceId}
+              sourceKind={screenSharing.sourceKind}
+              onSourceKindChange={screenSharing.setSourceKind}
               error={
-                screenSharing.error ?? screenPointerSettings.error ?? auxiliaryScreenSharing.error
+                screenSharing.error ??
+                (screenSharing.sourceKind === "screen" ? screenPointerSettings.error : undefined) ??
+                auxiliaryScreenSharing.error
               }
               lastObservedAt={screenSharing.lastObservedAt}
               language={appLanguage.resolved}
