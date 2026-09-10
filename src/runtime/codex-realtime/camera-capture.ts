@@ -28,6 +28,7 @@ export async function listCameraSources(): Promise<CameraSource[]> {
 }
 
 export interface CameraCapture {
+  readonly stream: MediaStream;
   capture(): { dataUrl: string; width: number; height: number; capturedAt: number };
   close(): void;
 }
@@ -98,6 +99,7 @@ export async function openCamera(
     });
     signal.throwIfAborted();
     return {
+      stream,
       close,
       capture: () => {
         if (closed || signal.aborted)

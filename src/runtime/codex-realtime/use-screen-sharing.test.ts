@@ -94,6 +94,7 @@ describe("useScreenSharing", () => {
 
   it("shares camera frames without screen capture and stops on source or owner change", async () => {
     const camera = {
+      stream: {} as MediaStream,
       capture: vi.fn(() => ({
         dataUrl: frame.dataUrl,
         width: 640,
@@ -123,9 +124,13 @@ describe("useScreenSharing", () => {
       }),
       expect.any(AbortSignal),
     );
+    expect(result.current.cameraStream).toBe(camera.stream);
+    expect(result.current.lastCapturedAt).toBe(frame.capturedAt);
     const signal = vi.mocked(openCamera).mock.calls[0][1];
     await act(async () => result.current.setSourceKind("screen"));
     expect(signal.aborted).toBe(true);
+    expect(result.current.cameraStream).toBeNull();
+    expect(result.current.lastCapturedAt).toBeUndefined();
     expect(camera.close).toHaveBeenCalledOnce();
     expect(result.current.active).toBe(false);
     await act(async () => result.current.setSourceKind("camera"));

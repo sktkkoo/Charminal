@@ -95,6 +95,7 @@ import {
   yorishiroSettingsManifest,
   yorishiroSettingsPack,
 } from "./bundled-packs";
+import { CameraPreview } from "./camera-preview";
 import CharacterSurface from "./character-surface";
 import { QuickChatInput, QuickVoiceIndicator } from "./components/QuickChatInput";
 import { RestoreConfirmDialog } from "./components/RestoreConfirmDialog";
@@ -5799,6 +5800,15 @@ function App() {
           .catch(() => undefined);
       }}
     >
+      {screenSharing.active && screenSharing.cameraStream ? (
+        <CameraPreview
+          stream={screenSharing.cameraStream}
+          lastCapturedAt={screenSharing.lastCapturedAt}
+          lastSharedAt={screenSharing.lastObservedAt}
+          language={appLanguage.resolved}
+          onStop={screenSharing.stop}
+        />
+      ) : null}
       <TitleBar
         sidebarOpen={sidebarOpen}
         settingsActive={settingsActive}

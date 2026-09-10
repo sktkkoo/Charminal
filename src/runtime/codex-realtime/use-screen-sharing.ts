@@ -91,6 +91,8 @@ export function useScreenSharing({
   const [active, setActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [lastCapturedAt, setLastCapturedAt] = useState<number>();
   const [lastObservedAt, setLastObservedAt] = useState<number>();
   const owner = useRef<SharingLease | null>(null);
   const inFlight = useRef<{ lease: SharingLease; promise: Promise<void> } | null>(null);
@@ -107,6 +109,8 @@ export function useScreenSharing({
     lastCaptureStartedAt.current = null;
     setActive(false);
     setBusy(false);
+    setCameraStream(null);
+    setLastCapturedAt(undefined);
     lease?.camera?.close();
     if (lease?.sourceKind === "screen") {
       // End is token scoped. A delayed reply cannot revoke a subsequent Start.
@@ -199,6 +203,7 @@ export function useScreenSharing({
           return;
         }
         lease.camera = camera;
+        setCameraStream(camera.stream);
         lease.ready = true;
         setActive(true);
         return;
@@ -290,6 +295,7 @@ export function useScreenSharing({
             : await screenCaptureFrame(lease.sourceId, lease.shareId);
           captured = performance.now();
           if (!isCurrent()) return;
+          if (lease.sourceKind === "camera") setLastCapturedAt(frame.capturedAt);
           if (frame.sourceId !== lease.sourceId) {
             throw new Error(
               "The shared display changed. Start sharing the selected display again.",
@@ -406,6 +412,8 @@ export function useScreenSharing({
   return {
     available,
     sourceKind,
+    cameraStream,
+    lastCapturedAt,
     setSourceKind,
     sources,
     sourceId,

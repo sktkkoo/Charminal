@@ -1,0 +1,146 @@
+.camera-preview {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 90;
+  width: min(208px, calc(100vw - 24px));
+  overflow: hidden;
+  border: 1px solid var(--yorishiro-border, #3b403d);
+  border-radius: 10px;
+  background: #18181b;
+  color: #e8ebe7;
+  box-shadow: 0 5px 20px rgb(0 0 0 / 25%);
+  font:
+    11px / 1.4 system-ui,
+    sans-serif;
+  pointer-events: auto;
+}
+
+.camera-preview header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.camera-preview-live {
+  color: #9cc6ad;
+  font-size: 9px;
+  letter-spacing: 0.05em;
+}
+
+.camera-preview header button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  padding: 4px;
+  color: inherit;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.camera-preview header button:hover {
+  background: #3b403d;
+}
+
+.camera-preview-image {
+  position: relative;
+  background: #000;
+}
+
+.camera-preview video {
+  display: block;
+  width: 100%;
+  max-height: 156px;
+  object-fit: contain;
+}
+
+.camera-preview-flash {
+  position: absolute;
+  inset: 0;
+  border: 3px solid #b7e7c9;
+  overflow: hidden;
+  pointer-events: none;
+  animation: camera-preview-captured 0.8s ease-out both;
+}
+
+@keyframes camera-preview-captured {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .camera-preview-flash {
+    display: none;
+  }
+}
+
+.camera-preview-resume {
+  position: absolute;
+  inset: 30% 10%;
+  border: 1px solid #69776d;
+  border-radius: 4px;
+  background: #18181b;
+  color: inherit;
+  cursor: pointer;
+}
+
+.camera-preview footer {
+  padding: 5px 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.camera-preview footer div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.camera-preview-flash::before,
+.camera-preview-flash::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: #151b18;
+  animation: camera-preview-shutter 0.32s ease-in-out both;
+}
+.camera-preview-flash::before {
+  top: 0;
+  transform-origin: top;
+}
+.camera-preview-flash::after {
+  bottom: 0;
+  transform-origin: bottom;
+}
+.camera-preview-flash > span {
+  position: absolute;
+  z-index: 1;
+  bottom: 5px;
+  right: 6px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: #151b18;
+  color: #d6f3df;
+}
+@keyframes camera-preview-shutter {
+  0%,
+  100% {
+    transform: scaleY(0);
+  }
+  35% {
+    transform: scaleY(1);
+  }
+}
+
+.camera-preview footer span {
+  color: #aeb8b0;
+}
