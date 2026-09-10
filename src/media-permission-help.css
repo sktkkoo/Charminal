@@ -1,0 +1,21 @@
+.media-permission-help {
+  white-space: normal;
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.media-permission-help p {
+  margin: 0 0 8px;
+}
+.media-permission-help button {
+  border: 1px solid var(--yorishiro-border, #555);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.media-permission-help button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}

@@ -50,6 +50,19 @@ TeamIdentifier=not set
     );
   });
 
+  it.each([
+    "",
+    "<key>com.apple.security.device.camera</key><false/>",
+  ])("rejects a missing or disabled camera entitlement (%s)", (replacement) => {
+    const output = validReleaseSignature.replace(
+      "<key>com.apple.security.device.camera</key><true/>",
+      replacement,
+    );
+    expect(macosSignatureErrors(output)).toContain(
+      "Missing signed entitlements: com.apple.security.device.camera",
+    );
+  });
+
   it("keeps local ad-hoc verification compatible", () => {
     const output = `
 CodeDirectory v=20500 flags=0x10002(adhoc,runtime)

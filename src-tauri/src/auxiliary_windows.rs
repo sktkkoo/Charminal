@@ -37,6 +37,14 @@ pub struct SharedDisplay {
     name: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum SharingSourceKind {
+    #[default]
+    Screen,
+    Camera,
+}
+
 /// Deliberately excludes image data, agent/thread identifiers, arbitrary error text, and credentials.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -48,12 +56,21 @@ pub struct ScreenSharingSnapshot {
     busy: bool,
     pointers_enabled: bool,
     pointers_ready: bool,
+    #[serde(default = "default_preview_visible")]
+    preview_visible: bool,
     sources: Vec<SharedDisplay>,
+    #[serde(default)]
+    source_kind: SharingSourceKind,
     source_id: Option<u32>,
     interval_seconds: u8,
     has_error: bool,
+    permission_kind: Option<crate::media_permissions::MediaPermissionKind>,
     last_observed_at: Option<u64>,
     language: String,
+}
+
+fn default_preview_visible() -> bool {
+    true
 }
 
 impl ScreenSharingSnapshot {
@@ -88,6 +105,13 @@ pub enum ScreenSharingAction {
     RetryPointers,
     SetPointersEnabled {
         enabled: bool,
+    },
+    SetPreviewVisible {
+        visible: bool,
+    },
+    SelectSourceKind {
+        #[serde(rename = "sourceKind")]
+        source_kind: SharingSourceKind,
     },
     SelectSource {
         #[serde(rename = "sourceId")]
@@ -170,7 +194,8 @@ fn validate_action(
     match &request.action {
         ScreenSharingAction::Start
             if !snapshot.available
-                || !snapshot.pointers_ready
+                || (snapshot.source_kind != SharingSourceKind::Camera
+                    && !snapshot.pointers_ready)
                 || snapshot.active
                 || snapshot.busy
                 || !snapshot
@@ -179,6 +204,13 @@ fn validate_action(
                     .any(|source| Some(source.id) == snapshot.source_id) =>
         {
             Err("Screen sharing is not ready to start".into())
+        }
+        ScreenSharingAction::SetPointersEnabled { .. }
+        | ScreenSharingAction::RetryPointers
+        | ScreenSharingAction::ClearAnnotations
+            if snapshot.source_kind == SharingSourceKind::Camera =>
+        {
+            Err("Desktop pointers are not available for camera sharing".into())
         }
         ScreenSharingAction::SetPointersEnabled { .. } if !snapshot.pointers_ready => {
             Err("Screen pointer settings are not ready".into())
@@ -333,13 +365,16 @@ mod tests {
                 busy: false,
                 pointers_enabled: true,
                 pointers_ready: true,
+                preview_visible: true,
                 sources: vec![SharedDisplay {
                     id: 12,
                     name: "Display 1".into(),
                 }],
+                source_kind: SharingSourceKind::Screen,
                 source_id: Some(12),
                 interval_seconds: 30,
                 has_error: false,
+                permission_kind: None,
                 last_observed_at: None,
                 language: "ja".into(),
             },
@@ -352,6 +387,33 @@ mod tests {
         assert!(require_label(CONTROLS_LABEL, MAIN_LABEL).is_err());
         assert!(require_label(MAIN_LABEL, CONTROLS_LABEL).is_err());
         assert!(require_label("untrusted", CONTROLS_LABEL).is_err());
+    }
+
+    #[test]
+    fn preview_visibility_supports_both_sources_during_capture() {
+        let mut state = published();
+        let request = AuxiliaryActionRequest {
+            version: state.version,
+            pointer_revision: None,
+            action: ScreenSharingAction::SetPreviewVisible { visible: false },
+        };
+        assert!(validate_action(&state, &request).is_ok());
+        state.snapshot.active = true;
+        state.snapshot.busy = true;
+        assert!(validate_action(&state, &request).is_ok());
+        state.snapshot.source_kind = SharingSourceKind::Camera;
+        state.snapshot.active = true;
+        state.snapshot.busy = true;
+        assert!(validate_action(&state, &request).is_ok());
+        let mut json = serde_json::to_value(&state.snapshot).unwrap();
+        json.as_object_mut().unwrap().remove("previewVisible");
+        assert!(
+            serde_json::from_value::<ScreenSharingSnapshot>(json)
+                .unwrap()
+                .preview_visible
+        );
+        state.version += 1;
+        assert!(validate_action(&state, &request).is_err());
     }
 
     #[test]
@@ -407,6 +469,28 @@ mod tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn camera_start_does_not_require_desktop_pointers_and_rejects_marker_actions() {
+        let mut state = published();
+        state.snapshot.source_kind = SharingSourceKind::Camera;
+        state.snapshot.pointers_ready = false;
+        let request = |action| AuxiliaryActionRequest {
+            version: 7,
+            pointer_revision: Some("pointer-owner-revision".into()),
+            action,
+        };
+        assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_ok());
+        for action in [
+            ScreenSharingAction::ClearAnnotations,
+            ScreenSharingAction::RetryPointers,
+            ScreenSharingAction::SetPointersEnabled { enabled: true },
+        ] {
+            assert!(validate_action(&state, &request(action)).is_err());
+        }
+        state.snapshot.available = false;
+        assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_err());
     }
 
     #[test]

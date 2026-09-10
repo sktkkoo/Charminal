@@ -86,7 +86,12 @@ pub async fn screen_capture_frame(
     let guard =
         crate::screen_annotation::begin_capture(window.app_handle(), share_id, source_id).await?;
     #[cfg(target_os = "macos")]
-    let mut frame = macos::capture(source_id, guard.excluded_window).await?;
+    let mut frame = macos::capture(
+        source_id,
+        guard.excluded_window,
+        crate::screen_preview::capture_guard(window.app_handle()).await?,
+    )
+    .await?;
     #[cfg(not(target_os = "macos"))]
     let mut frame = unsupported_capture().await?;
     let reference = crate::screen_annotation::register_frame(&guard, &frame).await?;
@@ -103,6 +108,12 @@ async fn unsupported_capture() -> Result<ScreenCaptureFrame, String> {
 }
 
 const MAX_IMAGE_EDGE: usize = 2560;
+pub(crate) const MAX_JPEG_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(target_os = "macos")]
+fn excluded_capture_window(id: u32, pointer: Option<u32>, preview: Option<u32>) -> bool {
+    Some(id) == pointer || Some(id) == preview
+}
 
 /// Capture and pointer validation must agree on the current backing-pixel size.
 #[cfg(target_os = "macos")]
@@ -171,7 +182,7 @@ mod macos {
     use tokio::sync::oneshot;
 
     const PERMISSION_DENIED: &str = "Screen recording permission is not granted. Enable Yorishiro in System Settings > Privacy & Security > Screen & System Audio Recording (Screen Recording on older macOS), then restart Yorishiro if requested.";
-    const MAX_JPEG_BYTES: usize = 8 * 1024 * 1024;
+    use super::MAX_JPEG_BYTES;
     static CAPTURE_BUSY: AtomicBool = AtomicBool::new(false);
 
     #[link(name = "CoreGraphics", kind = "framework")]
@@ -279,6 +290,8 @@ mod macos {
     }
 
     struct CaptureRequest {
+        // Retain exclusion through the native completion callback, even after timeout.
+        _preview_guard: crate::screen_preview::CaptureGuard,
         cancelled: AtomicBool,
         sender: Mutex<Option<oneshot::Sender<Result<ScreenCaptureFrame, String>>>>,
         // The guard is held by the native callbacks, including after a timeout.
@@ -309,6 +322,7 @@ mod macos {
     pub(super) async fn capture(
         source_id: u32,
         excluded_window: Option<u32>,
+        preview_guard: crate::screen_preview::CaptureGuard,
     ) -> Result<ScreenCaptureFrame, String> {
         ensure_supported()?;
         if !unsafe { CGPreflightScreenCaptureAccess() } {
@@ -325,13 +339,23 @@ mod macos {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .map_err(|_| "A screen capture is already in progress.".to_string())?;
         let (sender, receiver) = oneshot::channel();
+        let excluded_preview = preview_guard.excluded_window;
         let request = Arc::new(CaptureRequest {
+            _preview_guard: preview_guard,
             cancelled: AtomicBool::new(false),
             sender: Mutex::new(Some(sender)),
             _busy: BusyGuard,
         });
         let _cancel = CancelOnDrop(request.clone());
-        autoreleasepool(|_| begin_capture(request, source, dimensions, excluded_window))?;
+        autoreleasepool(|_| {
+            begin_capture(
+                request,
+                source,
+                dimensions,
+                excluded_window,
+                excluded_preview,
+            )
+        })?;
         tokio::time::timeout(Duration::from_secs(15), receiver)
             .await
             .map_err(|_| "Screen capture timed out. Stop sharing and try again.".to_string())?
@@ -343,6 +367,7 @@ mod macos {
         source: ScreenCaptureSource,
         dimensions: (usize, usize),
         excluded_window: Option<u32>,
+        excluded_preview: Option<u32>,
     ) -> Result<(), String> {
         let content_class = sc_class(c"SCShareableContent")?;
         let callback = RcBlock::new(move |content: *mut AnyObject, error: *mut AnyObject| {
@@ -363,6 +388,7 @@ mod macos {
                         source.clone(),
                         dimensions,
                         excluded_window,
+                        excluded_preview,
                     )
                 };
                 if let Err(error) = result {
@@ -383,6 +409,7 @@ mod macos {
         source: ScreenCaptureSource,
         dimensions: (usize, usize),
         excluded_window: Option<u32>,
+        excluded_preview: Option<u32>,
     ) -> Result<(), String> {
         let displays: *mut AnyObject = msg_send![content, displays];
         if displays.is_null() {
@@ -406,26 +433,31 @@ mod macos {
         // Exclude the mark that was visible when capture began. New marks wait
         // for this capture to finish; the existing mark never needs to blink.
         let mut excluded = Vec::new();
-        if let Some(overlay_id) = excluded_window {
-            let windows: *mut AnyObject = msg_send![content, windows];
-            if !windows.is_null() {
-                let count: usize = msg_send![windows, count];
-                for index in 0..count {
-                    let window: *mut AnyObject = msg_send![windows, objectAtIndex: index];
-                    let id: u32 = msg_send![window, windowID];
-                    if id == overlay_id {
-                        if let Some(window) = Retained::retain(window) {
-                            excluded.push(window);
-                        }
+        let mut found_pointer = excluded_window.is_none();
+        let mut found_preview = excluded_preview.is_none();
+        let windows: *mut AnyObject = msg_send![content, windows];
+        if !windows.is_null() {
+            let count: usize = msg_send![windows, count];
+            for index in 0..count {
+                let window: *mut AnyObject = msg_send![windows, objectAtIndex: index];
+                let id: u32 = msg_send![window, windowID];
+                if super::excluded_capture_window(id, excluded_window, excluded_preview) {
+                    if let Some(window) = Retained::retain(window) {
+                        found_pointer |= Some(id) == excluded_window;
+                        found_preview |= Some(id) == excluded_preview;
+                        excluded.push(window);
                     }
                 }
             }
         }
-        if excluded_window.is_some() && excluded.is_empty() {
+        if !found_pointer {
             return Err(
                 "Could not exclude the screen pointer from capture. Try again after it expires."
                     .into(),
             );
+        }
+        if !found_preview {
+            return Err("Could not exclude the screen preview from capture. Try again.".into());
         }
         let excluded_windows = NSArray::from_retained_slice(&excluded);
         let filter: Option<Retained<AnyObject>> = msg_send![

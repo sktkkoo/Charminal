@@ -16,6 +16,7 @@ import {
   type RealtimeStateExpressionControllerOptions,
 } from "../agent-state-expression/controller";
 import type { StateExpressionSchedulerCallbacks } from "../agent-state-expression/scheduler";
+import { mediaPermissionError } from "../media-permissions";
 import {
   appendRealtimeDiagnostic,
   classifyRealtimeFailure,
@@ -685,13 +686,15 @@ export class CodexRealtimeClient implements LipSyncSource {
       }
     });
 
-    const microphone = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        autoGainControl: true,
-        echoCancellation: true,
-        noiseSuppression: true,
-      },
-    });
+    const microphone = await navigator.mediaDevices
+      .getUserMedia({
+        audio: {
+          autoGainControl: true,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      })
+      .catch((error: unknown) => mediaPermissionError(error, "microphone"));
     if (!this.isAttemptOwner(attempt) || this.peer !== peer) {
       for (const track of microphone.getTracks()) track.stop();
       throw new StartAttemptCancelledError();

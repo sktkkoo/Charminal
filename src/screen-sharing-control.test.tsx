@@ -49,6 +49,50 @@ function props(): ScreenSharingControlProps {
   };
 }
 describe("screen sharing control", () => {
+  it("shows camera preview by default and allows hiding it while capture continues", () => {
+    const p = {
+      ...props(),
+      sourceKind: "camera" as const,
+      active: true,
+      busy: true,
+      onPreviewVisibleChange: vi.fn(),
+    };
+    const view = render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "カメラ共有中" }));
+    const toggle = screen.getByRole("switch", { name: "プレビュー" }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(p.onPreviewVisibleChange).toHaveBeenCalledExactlyOnceWith(false);
+    view.rerender(<ScreenSharingControl {...p} previewVisible={false} />);
+    expect(toggle.checked).toBe(false);
+    expect(p.onStop).not.toHaveBeenCalled();
+    expect(p.onStart).not.toHaveBeenCalled();
+    expect(p.onPointersEnabledChange).not.toHaveBeenCalled();
+  });
+  it("offers screen and camera under one button without starting capture", () => {
+    const p = { ...props(), sourceKind: "screen" as const, onSourceKindChange: vi.fn() };
+    const { rerender } = render(<ScreenSharingControl {...p} />);
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "共有" }));
+    expect(screen.getByRole("button", { name: "画面を共有" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "カメラを共有" }));
+    expect(p.onSourceKindChange).toHaveBeenCalledWith("camera");
+    expect(p.onStart).not.toHaveBeenCalled();
+    rerender(
+      <ScreenSharingControl
+        {...p}
+        sourceKind="camera"
+        pointersReady={false}
+        sources={[{ id: 2, name: "USB camera" }]}
+        sourceId={2}
+      />,
+    );
+    expect(screen.getByLabelText("カメラ選択")).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "共有を開始" }));
+    expect(p.onStart).toHaveBeenCalledOnce();
+  });
+
   it("offers retry after initial marker synchronization fails and prevents early sharing", () => {
     const p = { ...props(), pointersReady: false, error: "Could not update marker setting" };
     render(<ScreenSharingControl {...p} />);
@@ -64,7 +108,7 @@ describe("screen sharing control", () => {
     const p = props();
     render(<ScreenSharingControl {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
-    expect(screen.getByText("画像の定期送信ではトークンを多く消費します。")).toBeTruthy();
+    expect(screen.getByText("間隔が短いほどトークン消費が増えます。")).toBeTruthy();
     expect(p.onStart).not.toHaveBeenCalled();
     const interval = screen.getByRole("slider") as HTMLInputElement;
     expect(interval.min).toBe("20");
@@ -150,9 +194,7 @@ describe("screen sharing control", () => {
     trigger.focus();
     fireEvent.keyDown(trigger, { key: "ArrowDown" });
     expect(measuredPanels).toHaveLength(1);
-    expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "画面共有の設定を閉じる" }),
-    );
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "共有の設定を閉じる" }));
     expect(p.onRefreshSources).toHaveBeenCalledOnce();
     expect(p.onStart).not.toHaveBeenCalled();
     expect(p.onOpenAuxiliary).not.toHaveBeenCalled();
@@ -298,7 +340,7 @@ describe("screen sharing control", () => {
     fireEvent.click(trigger);
     await screen.findByRole("alert");
     fireEvent.click(screen.getByRole("button", { name: "画面共有ウィンドウを再試行" }));
-    fireEvent.click(screen.getByRole("button", { name: "画面共有の設定を閉じる" }));
+    fireEvent.click(screen.getByRole("button", { name: "共有の設定を閉じる" }));
     expect(document.activeElement).toBe(trigger);
     await act(async () => rejectRetry(new Error("Still unavailable")));
     expect(screen.queryByRole("dialog")).toBeNull();

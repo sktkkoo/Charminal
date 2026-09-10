@@ -8,6 +8,45 @@
   border: 0;
 }
 
+.sharing-source-menu {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sharing-source-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 12px;
+  border: 1px solid var(--yorishiro-border, #3b403d);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sharing-source-menu button:hover,
+.sharing-source-menu button:focus-visible {
+  background: rgb(142 176 156 / 12%);
+}
+
+.sharing-back {
+  display: block;
+  margin: 6px 0 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--yorishiro-accent, #8eb09c);
+  font: inherit;
+  cursor: pointer;
+}
+
 .screen-sharing-trigger {
   position: relative;
 }
@@ -23,7 +62,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--yorishiro-accent, #8eb09c);
+  background: #ff5f5f;
   box-shadow: 0 0 0 2px #18181b;
 }
 
@@ -53,8 +92,7 @@
 
 .screen-sharing-heading,
 .screen-sharing-source-row,
-.screen-sharing-interval-heading,
-.screen-sharing-range-labels {
+.screen-sharing-interval-heading {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -71,23 +109,23 @@
 }
 
 .screen-sharing-badge {
-  padding: 1px 6px;
-  border: 1px solid var(--yorishiro-border, #3b403d);
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--yorishiro-fg-dim, #a6aba8);
   font-size: 10px;
 }
 
-.screen-sharing-badge[data-active="true"] {
-  border-color: var(--yorishiro-accent-border, #526659);
-  background: var(--yorishiro-accent-soft, #202922);
-  color: var(--yorishiro-accent, #8eb09c);
+.screen-sharing-badge::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
-.screen-sharing-experimental {
-  flex-shrink: 0;
-  color: var(--yorishiro-fg-dim, #a6aba8);
-  font-size: 9px;
+.screen-sharing-badge[data-active="true"]::before {
+  background: #e05b5b;
 }
 
 .screen-sharing-description,
@@ -105,20 +143,52 @@
 }
 
 .screen-sharing-source-row {
+  position: relative;
   margin: 5px 0 14px;
 }
 
+.screen-sharing-source-row::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 46px;
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  color: var(--yorishiro-fg-dim, #a6aba8);
+  transform: translateY(-75%) rotate(45deg);
+  pointer-events: none;
+}
+
 .screen-sharing-source-row select {
+  appearance: none;
+  -webkit-appearance: none;
   flex: 1;
   min-width: 0;
   height: 30px;
-  padding: 3px 8px;
+  padding: 3px 28px 3px 8px;
   border: 1px solid var(--yorishiro-border, #3b403d);
-  border-radius: 5px;
+  border-radius: 3px;
   background: var(--yorishiro-button-bg, #24282b);
-  color: inherit;
+  box-shadow: none;
+  color: var(--yorishiro-button-fg, #aab4ac);
   font: inherit;
   text-overflow: ellipsis;
+}
+
+.screen-sharing-source-row select:hover:not(:disabled) {
+  color: var(--yorishiro-fg, #e8ebe7);
+}
+
+.screen-sharing-source-row select:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.screen-sharing-source-row select:focus-visible {
+  background: var(--yorishiro-accent-soft, #202922);
+  color: var(--yorishiro-fg, #e8ebe7);
 }
 
 .screen-sharing-icon-button {
@@ -145,8 +215,7 @@
   color: var(--yorishiro-fg, #e8ebe7);
 }
 
-.screen-sharing-interval-heading,
-.screen-sharing-range-labels {
+.screen-sharing-interval-heading {
   justify-content: space-between;
 }
 
@@ -204,21 +273,10 @@
   );
 }
 
-.screen-sharing-range-labels {
-  margin-bottom: 12px;
-  color: var(--yorishiro-fg-dim, #a6aba8);
-  font-size: 10px;
-}
-
 .screen-sharing-cost {
-  padding: 8px 10px;
-  border: 1px solid var(--yorishiro-accent-border, #526659);
-  border-radius: 6px;
-  background: var(--yorishiro-accent-soft, #202922);
-  color: var(--yorishiro-fg, #e8ebe7);
+  margin: 2px 0 14px;
 }
 
-.screen-sharing-status,
 .screen-sharing-error {
   display: flex;
   align-items: center;
@@ -307,7 +365,6 @@
 }
 
 .screen-sharing-control button:focus-visible,
-.screen-sharing-panel select:focus-visible,
 .screen-sharing-panel input:focus-visible {
   outline: 2px solid var(--yorishiro-accent, #8eb09c);
   outline-offset: 2px;

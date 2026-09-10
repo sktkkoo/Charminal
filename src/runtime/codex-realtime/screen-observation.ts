@@ -2,6 +2,7 @@ import { screenCapturePrompt } from "./screen-sharing-prompts";
 
 /** A single, explicitly shared screen capture. Image contents must never enter diagnostics. */
 export interface ScreenObservationFrame {
+  readonly sourceKind?: "screen" | "camera";
   /** Opaque native reference to this capture; revoked when its sharing lease ends. */
   readonly frameId: string;
   readonly width: number;
@@ -18,6 +19,7 @@ export interface ScreenObservationFrame {
 }
 
 export interface ScreenPointerAvailability {
+  readonly sourceKind?: "screen" | "camera";
   readonly pointersEnabled: boolean;
   readonly pointerFrameValid: boolean;
 }

@@ -9,9 +9,19 @@ import {
   screenCaptureListSources,
   screenCaptureRequestPermission,
 } from "../../bindings/tauri-commands";
+import { withoutInlineScreenPreview } from "../screen-preview-capture";
+import {
+  type CameraCapture,
+  type CameraSource,
+  listCameraSources,
+  openCamera,
+} from "./camera-capture";
 import type { ScreenObservationFrame, ScreenObservationResult } from "./screen-observation";
 
+export type SharingSourceKind = "screen" | "camera";
+
 interface Options {
+  screenAvailable?: boolean;
   available: boolean;
   /** Changes on main-agent/thread replacement; voice reconnection keeps this lease. */
   ownerKey: string;
@@ -30,7 +40,9 @@ export interface ScreenSharingTiming {
 
 interface SharingLease {
   readonly shareId: string;
-  readonly documentId: Promise<string>;
+  readonly documentId?: Promise<string>;
+  readonly sourceKind: SharingSourceKind;
+  camera?: CameraCapture;
   readonly sourceId: number;
   readonly ownerKey: string;
   readonly controller: AbortController;
@@ -62,8 +74,17 @@ function normalizeIntervalSeconds(value: number): number {
 }
 
 /** Host-owned opt-in sampling; no queued frames, no capture after a stale permission grant. */
-export function useScreenSharing({ available, ownerKey, share, onTiming }: Options) {
-  const [sources, setSources] = useState<ScreenCaptureSource[]>([]);
+export function useScreenSharing({
+  available: baseAvailable,
+  screenAvailable = true,
+  ownerKey,
+  share,
+  onTiming,
+}: Options) {
+  const [sourceKind, setSourceKindState] = useState<SharingSourceKind>("screen");
+  const available = baseAvailable && (sourceKind === "camera" || screenAvailable);
+  const [sources, setSources] = useState<(ScreenCaptureSource | CameraSource)[]>([]);
+  const sourceRefresh = useRef(0);
   const [sourceId, setSourceId] = useState<number | null>(null);
   const [intervalValue, setIntervalSeconds] = useState(30);
   // HMR can retain a value selected before the periodic lower bound changed.
@@ -71,13 +92,21 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
   const [active, setActive] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [screenPreviewFrame, setScreenPreviewFrame] = useState<{
+    imageDataUrl: string;
+    lastCapturedAt: number;
+    lastSharedAt: number;
+  } | null>(null);
+  const [screenShareKey, setScreenShareKey] = useState<string | null>(null);
+  const [lastCapturedAt, setLastCapturedAt] = useState<number>();
   const [lastObservedAt, setLastObservedAt] = useState<number>();
   const owner = useRef<SharingLease | null>(null);
   const inFlight = useRef<{ lease: SharingLease; promise: Promise<void> } | null>(null);
   const lastImage = useRef<{ dataUrl: string; frameId: string } | null>(null);
   const lastCaptureStartedAt = useRef<number | null>(null);
-  const latest = useRef({ available, ownerKey, share, onTiming, intervalSeconds });
-  latest.current = { available, ownerKey, share, onTiming, intervalSeconds };
+  const latest = useRef({ available, ownerKey, share, onTiming, intervalSeconds, sourceKind });
+  latest.current = { available, ownerKey, share, onTiming, intervalSeconds, sourceKind };
 
   const stop = useCallback(() => {
     const lease = owner.current;
@@ -87,7 +116,12 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
     lastCaptureStartedAt.current = null;
     setActive(false);
     setBusy(false);
-    if (lease) {
+    setCameraStream(null);
+    setScreenPreviewFrame(null);
+    setScreenShareKey(null);
+    setLastCapturedAt(undefined);
+    lease?.camera?.close();
+    if (lease?.sourceKind === "screen") {
       // End is token scoped. A delayed reply cannot revoke a subsequent Start.
       void screenAnnotationEnd(lease.shareId).catch(() => {
         if (owner.current === null && latest.current.ownerKey === lease.ownerKey) {
@@ -104,33 +138,49 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
     return stop;
   }, [ownerKey, available, stop]);
 
-  const refreshSources = useCallback(async () => {
-    const key = latest.current.ownerKey;
-    try {
-      const next = await screenCaptureListSources();
-      if (latest.current.ownerKey !== key) return;
-      const sourceLost =
-        owner.current !== null && !next.some((source) => source.id === owner.current?.sourceId);
-      if (sourceLost) stop();
-      setSources(next);
-      setSourceId((current) =>
-        next.some((source) => source.id === current) ? current : (next[0]?.id ?? null),
-      );
-      setError(
-        sourceLost
-          ? "The shared display is no longer available. Select a display and start sharing again."
-          : undefined,
-      );
-    } catch (failure) {
-      if (latest.current.ownerKey === key) setError(String(failure));
-    }
-  }, [stop]);
+  const refreshSources = useCallback(
+    async (kind = latest.current.sourceKind) => {
+      const attempt = ++sourceRefresh.current;
+      const key = latest.current.ownerKey;
+      try {
+        const next =
+          kind === "camera" ? await listCameraSources() : await screenCaptureListSources();
+        if (latest.current.ownerKey !== key || attempt !== sourceRefresh.current) return;
+        const sourceLost =
+          owner.current !== null && !next.some((source) => source.id === owner.current?.sourceId);
+        if (sourceLost) stop();
+        setSources(next);
+        setSourceId((current) =>
+          next.some((source) => source.id === current) ? current : (next[0]?.id ?? null),
+        );
+        setError(
+          sourceLost
+            ? kind === "camera"
+              ? "The shared camera is no longer available. Select a camera and start sharing again."
+              : "The shared display is no longer available. Select a display and start sharing again."
+            : undefined,
+        );
+      } catch (failure) {
+        if (latest.current.ownerKey === key && attempt === sourceRefresh.current)
+          setError(String(failure));
+      }
+    },
+    [stop],
+  );
+
+  useEffect(() => {
+    if (sourceKind !== "camera" || !navigator.mediaDevices?.addEventListener) return;
+    const changed = () => void refreshSources("camera");
+    navigator.mediaDevices.addEventListener("devicechange", changed);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", changed);
+  }, [sourceKind, refreshSources]);
 
   const start = useCallback(async () => {
     if (!latest.current.available || sourceId === null || owner.current) return;
     const lease: SharingLease = {
       shareId: crypto.randomUUID(),
-      documentId: getAnnotationDocument(),
+      sourceKind,
+      documentId: sourceKind === "screen" ? getAnnotationDocument() : undefined,
       sourceId,
       ownerKey: latest.current.ownerKey,
       controller: new AbortController(),
@@ -146,7 +196,29 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
     setBusy(true);
     setLastObservedAt(undefined);
     try {
+      if (lease.sourceKind === "camera") {
+        const source = sources.find((source) => source.id === lease.sourceId);
+        const camera = await openCamera(
+          source && "deviceId" in source ? source.deviceId : undefined,
+          lease.controller.signal,
+          () => {
+            if (!isCurrent()) return;
+            stop();
+            setError("The camera disconnected. Select a camera and start sharing again.");
+          },
+        );
+        if (!isCurrent()) {
+          camera.close();
+          return;
+        }
+        lease.camera = camera;
+        setCameraStream(camera.stream);
+        lease.ready = true;
+        setActive(true);
+        return;
+      }
       const documentId = await lease.documentId;
+      if (!documentId) return;
       if (!isCurrent()) return;
       const granted = await screenCaptureRequestPermission();
       if (!isCurrent()) return;
@@ -168,6 +240,7 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
       await beginning;
       if (!isCurrent()) return;
       lease.ready = true;
+      setScreenShareKey(lease.shareId);
       setActive(true);
     } catch (failure) {
       if (!isCurrent()) return;
@@ -176,7 +249,7 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
     } finally {
       if (owner.current === lease) setBusy(false);
     }
-  }, [sourceId, stop]);
+  }, [sourceId, sourceKind, sources, stop]);
 
   const capture = useCallback(
     function requestCapture(reason: ScreenSharingTiming["reason"]): Promise<void> {
@@ -218,9 +291,24 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
         let captured: number | null = null;
         let outcome: ScreenSharingTiming["outcome"] = "cancelled";
         try {
-          const frame = await screenCaptureFrame(lease.sourceId, lease.shareId);
+          const frame = lease.camera
+            ? {
+                ...lease.camera.capture(),
+                frameId: crypto.randomUUID(),
+                sourceId: lease.sourceId,
+                sourceName:
+                  sources.find((source) => source.id === lease.sourceId)?.name ?? "Camera",
+                pointersEnabled: false,
+                pointerFrameValid: false,
+                pointerEpoch: undefined,
+              }
+            : await withoutInlineScreenPreview(
+                () => screenCaptureFrame(lease.sourceId, lease.shareId),
+                lease.controller.signal,
+              );
           captured = performance.now();
           if (!isCurrent()) return;
+          if (lease.sourceKind === "camera") setLastCapturedAt(frame.capturedAt);
           if (frame.sourceId !== lease.sourceId) {
             throw new Error(
               "The shared display changed. Start sharing the selected display again.",
@@ -237,6 +325,7 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
           }
           const result = await latest.current.share(
             {
+              sourceKind: lease.sourceKind,
               frameId: frame.frameId,
               pointersEnabled: frame.pointersEnabled,
               pointerFrameValid: frame.pointerFrameValid,
@@ -254,6 +343,13 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
           if (result.status === "shared") {
             lastImage.current = { dataUrl: frame.dataUrl, frameId: frame.frameId };
             setLastObservedAt(frame.capturedAt);
+            if (lease.sourceKind === "screen") {
+              setScreenPreviewFrame({
+                imageDataUrl: frame.dataUrl,
+                lastCapturedAt: frame.capturedAt,
+                lastSharedAt: Date.now(),
+              });
+            }
           }
         } catch (failure) {
           if (!isCurrent()) return;
@@ -279,7 +375,7 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
       })();
       return run.promise;
     },
-    [stop],
+    [stop, sources],
   );
 
   const captureNow = useCallback(() => capture("speech"), [capture]);
@@ -305,7 +401,7 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
 
   const clearAnnotations = useCallback(async () => {
     const lease = owner.current;
-    if (!lease) return;
+    if (!lease || lease.sourceKind !== "screen") return;
     try {
       await screenAnnotationClear();
       if (owner.current === lease) setError(undefined);
@@ -314,7 +410,33 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
     }
   }, []);
 
+  const setSourceKind = useCallback(
+    (kind: SharingSourceKind) => {
+      if (kind === latest.current.sourceKind) return;
+      stop();
+      ++sourceRefresh.current;
+      setSources([]);
+      setSourceId(null);
+      setLastObservedAt(undefined);
+      setError(undefined);
+      setSourceKindState(kind);
+      // Update immediately so two events before a React render cannot start the old source.
+      latest.current = { ...latest.current, sourceKind: kind, available: false };
+      void refreshSources(kind);
+    },
+    [stop, refreshSources],
+  );
+
+  const refreshSelectedSources = useCallback(() => refreshSources(), [refreshSources]);
+
   return {
+    available,
+    sourceKind,
+    cameraStream,
+    screenPreviewFrame,
+    screenShareKey,
+    lastCapturedAt,
+    setSourceKind,
     sources,
     sourceId,
     intervalSeconds,
@@ -326,7 +448,7 @@ export function useScreenSharing({ available, ownerKey, share, onTiming }: Optio
     stop,
     captureNow,
     clearAnnotations,
-    refreshSources,
+    refreshSources: refreshSelectedSources,
     setSourceId: (value: number) => {
       if (!owner.current) setSourceId(value);
     },

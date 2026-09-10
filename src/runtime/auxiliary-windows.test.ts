@@ -51,6 +51,42 @@ function transport() {
 }
 
 describe("auxiliary window ownership", () => {
+  it.each([
+    "camera",
+    "screen",
+  ] as const)("toggles %s preview without stopping sharing and rejects stale actions", async (sourceKind) => {
+    const port = transport();
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    const current = {
+      ...model(),
+      sourceKind,
+      active: true,
+      busy: true,
+      previewVisible: true,
+      setPreviewVisible: vi.fn(),
+    };
+    host.update(current);
+    await host.open();
+    const snapshot = port.publish.mock.calls[0][0];
+    const request: RoutedAuxiliaryAction = {
+      revision: snapshot.revision,
+      pointerRevision: snapshot.pointerRevision,
+      action: { type: "set-preview-visible", visible: false },
+    };
+    expect(await host.handleAction(request)).toBe(true);
+    expect(current.setPreviewVisible).toHaveBeenCalledExactlyOnceWith(false);
+    expect(current.start).not.toHaveBeenCalled();
+    expect(current.stop).not.toHaveBeenCalled();
+    expect(current.setPointersEnabled).not.toHaveBeenCalled();
+    host.update({ ...current, previewVisible: false });
+    expect(await host.handleAction(request)).toBe(false);
+    await host.open();
+    expect(port.publish).toHaveBeenLastCalledWith(
+      expect.objectContaining({ previewVisible: false }),
+    );
+    host.dispose();
+  });
+
   it("delivers native-accepted OFF after capture progress replaces the main snapshot", async () => {
     const port = transport();
     const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
@@ -162,6 +198,12 @@ describe("auxiliary window ownership", () => {
   });
 
   it("requires the allowlisted native label and route before mounting controls", () => {
+    expect(resolveWindowView("auxiliary-camera-preview", "?auxiliary=camera-preview")).toBe(
+      "camera-preview",
+    );
+    expect(resolveWindowView("auxiliary-camera-preview", "")).toBeNull();
+    expect(resolveWindowView("untrusted", "?auxiliary=camera-preview")).toBeNull();
+    expect(resolveWindowView(AUXILIARY_CONTROLS_LABEL, "?auxiliary=camera-preview")).toBeNull();
     expect(resolveWindowView("main", "")).toBe("main");
     expect(resolveWindowView("main", "?auxiliary=screen-sharing-controls")).toBe("main");
     expect(resolveWindowView(AUXILIARY_CONTROLS_LABEL, "?auxiliary=screen-sharing-controls")).toBe(

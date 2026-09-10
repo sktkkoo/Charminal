@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "camera-preview",
+  "description": "Allow dragging the borderless local camera and screen previews.",
+  "windows": ["auxiliary-camera-preview", "auxiliary-screen-preview"],
+  "permissions": ["core:window:allow-start-dragging"]
+}
