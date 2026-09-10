@@ -13,6 +13,37 @@ afterEach(() => {
 });
 
 describe("local camera preview", () => {
+  it("offers explicit detach and attach controls without acquiring a second camera", () => {
+    const onStop = vi.fn();
+    const onDetach = vi.fn();
+    const onAttach = vi.fn();
+    const view = render(
+      <CameraPreview
+        stream={{} as MediaStream}
+        onStop={onStop}
+        onDetach={onDetach}
+        language="ja"
+      />,
+    );
+    expect(screen.getByText("停止")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "別ウィンドウで開く" }));
+    expect(onDetach).toHaveBeenCalledOnce();
+    expect(onStop).not.toHaveBeenCalled();
+    view.rerender(
+      <CameraPreview
+        detached
+        imageDataUrl="data:image/jpeg;base64,YQ=="
+        onStop={onStop}
+        onAttach={onAttach}
+        language="ja"
+      />,
+    );
+    expect(view.container.querySelector("video")).toBeNull();
+    expect(screen.getByRole("img").getAttribute("src")).toBe("data:image/jpeg;base64,YQ==");
+    fireEvent.click(screen.getByRole("button", { name: "ヨリシロ内に戻す" }));
+    expect(onAttach).toHaveBeenCalledOnce();
+  });
+
   it("uses the existing stream and leaves capture ownership intact when unmounted", () => {
     const stop = vi.fn();
     const stream = { getTracks: () => [{ stop }] } as unknown as MediaStream;

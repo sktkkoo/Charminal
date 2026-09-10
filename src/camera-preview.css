@@ -51,7 +51,8 @@
   background: #000;
 }
 
-.camera-preview video {
+.camera-preview video,
+.camera-preview img {
   display: block;
   width: 100%;
   max-height: 156px;
@@ -61,9 +62,9 @@
 .camera-preview-flash {
   position: absolute;
   inset: 0;
-  background: rgb(255 255 255 / 45%);
+  background: rgb(255 255 255 / 65%);
   pointer-events: none;
-  animation: camera-preview-captured 0.18s ease-out both;
+  animation: camera-preview-captured 0.3s ease-out both;
 }
 
 @keyframes camera-preview-captured {
@@ -104,4 +105,75 @@
 
 .camera-preview footer span {
   color: #aeb8b0;
+}
+
+.camera-preview header button + button {
+  margin-left: 0;
+}
+.camera-preview--detached {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.camera-preview--detached .camera-preview-image {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.camera-preview--detached img {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+}
+.camera-preview-window {
+  position: fixed;
+  inset: 0;
+  background: #18181b;
+  color: #e8ebe7;
+  font:
+    12px system-ui,
+    sans-serif;
+}
+.camera-preview-window > p {
+  padding: 12px;
+}
+
+.camera-preview-capture-cue {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px #b7e7c9;
+  animation: camera-preview-cue 1.2s ease-out both;
+}
+@keyframes camera-preview-cue {
+  0%,
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.camera-preview header .camera-preview-stop {
+  gap: 4px;
+  padding: 4px 7px;
+  background: #c63845;
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+}
+.camera-preview header .camera-preview-stop:hover {
+  background: #e14855;
+}
+.camera-preview header .camera-preview-stop:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
 }

@@ -1,9 +1,15 @@
-import { Camera, Square } from "lucide-react";
+import { Camera, ExternalLink, PanelBottom, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import "./camera-preview.css";
 
 export interface CameraPreviewProps {
-  readonly stream: MediaStream;
+  readonly stream?: MediaStream;
+  readonly imageDataUrl?: string;
+  readonly detached?: boolean;
+  readonly opening?: boolean;
+  readonly error?: string;
+  readonly onDetach?: () => void;
+  readonly onAttach?: () => void;
   readonly lastCapturedAt?: number;
   readonly lastSharedAt?: number;
   readonly language?: string;
@@ -13,6 +19,12 @@ export interface CameraPreviewProps {
 /** Local-only monitor of the already-owned camera. Unmount never stops the capture owner's tracks. */
 export function CameraPreview({
   stream,
+  imageDataUrl,
+  detached = false,
+  opening = false,
+  error,
+  onDetach,
+  onAttach,
   lastCapturedAt,
   lastSharedAt,
   language = "en",
@@ -23,7 +35,7 @@ export function CameraPreview({
   const japanese = language.startsWith("ja");
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !stream) return;
     let disposed = false;
     video.srcObject = stream;
     setPlaybackBlocked(false);
@@ -39,7 +51,7 @@ export function CameraPreview({
 
   return (
     <section
-      className="camera-preview"
+      className={`camera-preview${detached ? " camera-preview--detached" : ""}`}
       data-no-window-drag
       aria-label={japanese ? "カメラプレビュー" : "Camera preview"}
     >
@@ -47,25 +59,65 @@ export function CameraPreview({
         <Camera size={13} aria-hidden="true" />
         <span>{japanese ? "カメラ" : "Camera"}</span>
         <span className="camera-preview-live">LIVE</span>
+        {onDetach || onAttach ? (
+          <button
+            type="button"
+            className="camera-preview-window-button"
+            disabled={opening}
+            onClick={detached ? onAttach : onDetach}
+            aria-label={
+              detached
+                ? japanese
+                  ? "ヨリシロ内に戻す"
+                  : "Return to Yorishiro"
+                : japanese
+                  ? "別ウィンドウで開く"
+                  : "Open in separate window"
+            }
+            title={
+              detached
+                ? japanese
+                  ? "ヨリシロ内に戻す"
+                  : "Return to Yorishiro"
+                : japanese
+                  ? "別ウィンドウで開く"
+                  : "Open in separate window"
+            }
+          >
+            {detached ? (
+              <PanelBottom size={13} aria-hidden="true" />
+            ) : (
+              <ExternalLink size={13} aria-hidden="true" />
+            )}
+          </button>
+        ) : null}
         <button
           type="button"
+          className="camera-preview-stop"
           onClick={onStop}
           aria-label={japanese ? "カメラ共有を停止" : "Stop camera sharing"}
           title={japanese ? "カメラ共有を停止" : "Stop camera sharing"}
         >
-          <Square size={12} aria-hidden="true" />
+          <Square size={10} fill="currentColor" aria-hidden="true" />
+          <span>{japanese ? "停止" : "Stop"}</span>
         </button>
       </header>
       <div className="camera-preview-image">
         {/* The stream is explicitly video-only; there is no audio to caption. */}
-        <video
-          ref={videoRef}
-          muted
-          playsInline
-          aria-label={japanese ? "共有中のカメラ映像" : "Shared camera view"}
-        />
+        {stream ? (
+          <video
+            ref={videoRef}
+            muted
+            playsInline
+            aria-label={japanese ? "共有中のカメラ映像" : "Shared camera view"}
+          />
+        ) : imageDataUrl ? (
+          <img src={imageDataUrl} alt={japanese ? "共有中のカメラ映像" : "Shared camera view"} />
+        ) : null}
         {lastCapturedAt !== undefined ? (
-          <span key={lastCapturedAt} className="camera-preview-flash" aria-hidden="true" />
+          <span key={lastCapturedAt} className="camera-preview-capture-cue" aria-hidden="true">
+            <span className="camera-preview-flash" />
+          </span>
         ) : null}
         {playbackBlocked ? (
           <button
@@ -83,6 +135,7 @@ export function CameraPreview({
         ) : null}
       </div>
       <footer>
+        {error ? <span role="alert">{error}</span> : null}
         <span>
           {lastCapturedAt === undefined
             ? japanese

@@ -62,7 +62,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--yorishiro-accent, #8eb09c);
+  background: #ff5f5f;
   box-shadow: 0 0 0 2px #18181b;
 }
 
