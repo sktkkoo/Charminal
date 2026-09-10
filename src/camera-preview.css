@@ -161,7 +161,7 @@ html:is([data-window-view="camera-preview"], [data-window-view="screen-preview"]
   position: absolute;
   inset: 0;
   pointer-events: none;
-  box-shadow: inset 0 0 0 2px #b7e7c9;
+  box-shadow: inset 0 0 0 2px #e05b5b;
   animation: camera-preview-cue 1.2s ease-out both;
 }
 @keyframes camera-preview-cue {
