@@ -110,7 +110,7 @@ async fn unsupported_capture() -> Result<ScreenCaptureFrame, String> {
 const MAX_IMAGE_EDGE: usize = 2560;
 pub(crate) const MAX_JPEG_BYTES: usize = 8 * 1024 * 1024;
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn excluded_capture_window(id: u32, pointer: Option<u32>, preview: Option<u32>) -> bool {
     Some(id) == pointer || Some(id) == preview
 }
