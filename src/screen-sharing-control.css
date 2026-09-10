@@ -124,8 +124,8 @@
   background: currentColor;
 }
 
-.screen-sharing-badge[data-active="true"] {
-  color: var(--yorishiro-accent, #8eb09c);
+.screen-sharing-badge[data-active="true"]::before {
+  background: #e05b5b;
 }
 
 .screen-sharing-description,
