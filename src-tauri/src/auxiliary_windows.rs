@@ -433,6 +433,28 @@ mod tests {
     }
 
     #[test]
+    fn camera_start_does_not_require_desktop_pointers_and_rejects_marker_actions() {
+        let mut state = published();
+        state.snapshot.source_kind = SharingSourceKind::Camera;
+        state.snapshot.pointers_ready = false;
+        let request = |action| AuxiliaryActionRequest {
+            version: 7,
+            pointer_revision: Some("pointer-owner-revision".into()),
+            action,
+        };
+        assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_ok());
+        for action in [
+            ScreenSharingAction::ClearAnnotations,
+            ScreenSharingAction::RetryPointers,
+            ScreenSharingAction::SetPointersEnabled { enabled: true },
+        ] {
+            assert!(validate_action(&state, &request(action)).is_err());
+        }
+        state.snapshot.available = false;
+        assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_err());
+    }
+
+    #[test]
     fn validates_source_interval_and_availability() {
         let mut state = published();
         let request = |action| AuxiliaryActionRequest {

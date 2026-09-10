@@ -8,6 +8,45 @@
   border: 0;
 }
 
+.sharing-source-menu {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sharing-source-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 12px;
+  border: 1px solid var(--yorishiro-border, #3b403d);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sharing-source-menu button:hover,
+.sharing-source-menu button:focus-visible {
+  background: rgb(142 176 156 / 12%);
+}
+
+.sharing-back {
+  display: block;
+  margin: 6px 0 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--yorishiro-accent, #8eb09c);
+  font: inherit;
+  cursor: pointer;
+}
+
 .screen-sharing-trigger {
   position: relative;
 }

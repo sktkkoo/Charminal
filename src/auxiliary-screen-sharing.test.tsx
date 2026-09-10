@@ -54,6 +54,51 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("independent screen-sharing controls", () => {
+  it("shows source-selection failures while keeping the sharing menu available", async () => {
+    state = { ...state, snapshot: { ...state.snapshot, sourceKind: "screen" } };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    vi.mocked(requestAuxiliaryAction).mockRejectedValueOnce(new Error("Snapshot changed"));
+    render(<AuxiliaryScreenSharing />);
+    fireEvent.click(await screen.findByRole("button", { name: "Share camera" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Snapshot changed");
+    expect(screen.queryByRole("button", { name: "Start sharing" })).toBeNull();
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Share camera" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
+  it("selects camera through the shared menu and starts independently of screen pointers", async () => {
+    state = { ...state, snapshot: { ...state.snapshot, sourceKind: "screen" } };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    render(<AuxiliaryScreenSharing />);
+    await screen.findByRole("button", { name: "Share camera" });
+    fireEvent.click(screen.getByRole("button", { name: "Share camera" }));
+    await waitFor(() =>
+      expect(requestAuxiliaryAction).toHaveBeenCalledWith(1, {
+        type: "select-source-kind",
+        sourceKind: "camera",
+      }),
+    );
+    await act(async () =>
+      receive({
+        version: 2,
+        snapshot: {
+          ...state.snapshot,
+          sourceKind: "camera",
+          pointersReady: false,
+          sources: [{ id: 9, name: "USB camera" }],
+          sourceId: 9,
+        },
+      }),
+    );
+    expect(screen.getByLabelText("Camera")).toBeTruthy();
+    expect(screen.queryByRole("switch")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
+    await waitFor(() => expect(requestAuxiliaryAction).toHaveBeenCalledWith(2, { type: "start" }));
+  });
+
   it("sends rapid OFF and ON intents before a publication and restores published state on rejection", async () => {
     let rejectLatest!: (error: Error) => void;
     vi.mocked(requestAuxiliaryAction)

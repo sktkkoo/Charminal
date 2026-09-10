@@ -10,6 +10,7 @@ import {
   screenCaptureListSources,
   screenCaptureRequestPermission,
 } from "../../bindings/tauri-commands";
+import { listCameraSources, openCamera } from "./camera-capture";
 import type { ScreenObservationFrame } from "./screen-observation";
 
 let useScreenSharing: typeof import("./use-screen-sharing").useScreenSharing;
@@ -35,6 +36,8 @@ vi.mock("../../bindings/tauri-commands", () => ({
   screenCaptureListSources: vi.fn(),
   screenCaptureRequestPermission: vi.fn(),
 }));
+
+vi.mock("./camera-capture", () => ({ openCamera: vi.fn(), listCameraSources: vi.fn() }));
 
 const frame = {
   frameId: "frame-1",
@@ -88,6 +91,48 @@ describe("useScreenSharing", () => {
     );
     return { ...hook, share };
   }
+
+  it("shares camera frames without screen capture and stops on source or owner change", async () => {
+    const camera = {
+      capture: vi.fn(() => ({
+        dataUrl: frame.dataUrl,
+        width: 640,
+        height: 480,
+        capturedAt: frame.capturedAt,
+      })),
+      close: vi.fn(),
+    };
+    vi.mocked(listCameraSources).mockResolvedValue([
+      { id: 1, name: "Camera", deviceId: "camera-device" },
+    ]);
+    vi.mocked(openCamera).mockResolvedValue(camera);
+    const { result, share, rerender } = setup();
+    await act(async () => result.current.setSourceKind("camera"));
+    expect(openCamera).not.toHaveBeenCalled();
+    await act(async () => result.current.start());
+    await act(async () => result.current.captureNow());
+    expect(screenCaptureRequestPermission).not.toHaveBeenCalled();
+    expect(screenAnnotationBegin).not.toHaveBeenCalled();
+    expect(screenCaptureFrame).not.toHaveBeenCalled();
+    expect(share).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceKind: "camera",
+        pointersEnabled: false,
+        pointerFrameValid: false,
+        width: 640,
+      }),
+      expect.any(AbortSignal),
+    );
+    const signal = vi.mocked(openCamera).mock.calls[0][1];
+    await act(async () => result.current.setSourceKind("screen"));
+    expect(signal.aborted).toBe(true);
+    expect(camera.close).toHaveBeenCalledOnce();
+    expect(result.current.active).toBe(false);
+    await act(async () => result.current.setSourceKind("camera"));
+    await act(async () => result.current.start());
+    rerender({ ownerKey: "replacement-thread", available: true });
+    expect(camera.close).toHaveBeenCalledTimes(2);
+  });
 
   it("lists sources without capture and ignores a permission grant after cancellation", async () => {
     const permission = deferred<boolean>();
@@ -254,6 +299,7 @@ describe("useScreenSharing", () => {
     expect(share).toHaveBeenCalledTimes(1);
     expect(share).toHaveBeenCalledWith(
       {
+        sourceKind: "screen",
         frameId: frame.frameId,
         pointersEnabled: frame.pointersEnabled,
         pointerFrameValid: frame.pointerFrameValid,

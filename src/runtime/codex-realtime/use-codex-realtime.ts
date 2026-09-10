@@ -263,6 +263,7 @@ export function useCodexRealtime({
     const context = sharedScreenContextRef.current;
     if (
       !context ||
+      context.sourceKind === "camera" ||
       context.signal.aborted ||
       context.tracker !== tracker ||
       context.threadId !== threadId ||
@@ -360,6 +361,7 @@ export function useCodexRealtime({
     const context = sharedScreenContextRef.current;
     if (
       !context ||
+      context.sourceKind === "camera" ||
       context.signal.aborted ||
       context.tracker !== tracker ||
       context.threadId !== threadId ||
