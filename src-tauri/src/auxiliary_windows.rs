@@ -191,11 +191,6 @@ fn validate_action(
     }
     let snapshot = &published.snapshot;
     match &request.action {
-        ScreenSharingAction::SetPreviewVisible { .. }
-            if snapshot.source_kind != SharingSourceKind::Camera =>
-        {
-            Err("Camera preview is only available for camera sharing".into())
-        }
         ScreenSharingAction::Start
             if !snapshot.available
                 || (snapshot.source_kind != SharingSourceKind::Camera
@@ -393,14 +388,17 @@ mod tests {
     }
 
     #[test]
-    fn preview_visibility_is_camera_only_and_remains_available_during_capture() {
+    fn preview_visibility_supports_both_sources_during_capture() {
         let mut state = published();
         let request = AuxiliaryActionRequest {
             version: state.version,
             pointer_revision: None,
             action: ScreenSharingAction::SetPreviewVisible { visible: false },
         };
-        assert!(validate_action(&state, &request).is_err());
+        assert!(validate_action(&state, &request).is_ok());
+        state.snapshot.active = true;
+        state.snapshot.busy = true;
+        assert!(validate_action(&state, &request).is_ok());
         state.snapshot.source_kind = SharingSourceKind::Camera;
         state.snapshot.active = true;
         state.snapshot.busy = true;

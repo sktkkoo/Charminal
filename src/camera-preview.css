@@ -127,15 +127,15 @@
   max-height: none;
   object-fit: contain;
 }
-html[data-window-view="camera-preview"],
-html[data-window-view="camera-preview"] body,
-html[data-window-view="camera-preview"] #root {
+html:is([data-window-view="camera-preview"], [data-window-view="screen-preview"]),
+html:is([data-window-view="camera-preview"], [data-window-view="screen-preview"]) body,
+html:is([data-window-view="camera-preview"], [data-window-view="screen-preview"]) #root {
   background: transparent;
   border-radius: 14px;
   overflow: hidden;
 }
 
-html[data-window-view="camera-preview"] body {
+html:is([data-window-view="camera-preview"], [data-window-view="screen-preview"]) body {
   clip-path: inset(0 round 14px);
 }
 
@@ -188,4 +188,8 @@ html[data-window-view="camera-preview"] body {
 .camera-preview header .camera-preview-stop:focus-visible {
   outline: 2px solid #fff;
   outline-offset: 2px;
+}
+
+html[data-screen-capturing] [data-screen-preview-inline] {
+  visibility: hidden;
 }

@@ -92,6 +92,36 @@ describe("useScreenSharing", () => {
     return { ...hook, share };
   }
 
+  it("previews only delivered screenshots and clears them when sharing stops", async () => {
+    const { result, share } = setup();
+    const delivery = deferred<{ status: "shared"; capturedAt: string }>();
+    share.mockReturnValueOnce(delivery.promise);
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.start());
+    expect(result.current.screenShareKey).toBeTruthy();
+    expect(result.current.screenPreviewFrame).toBeNull();
+    await act(async () =>
+      delivery.resolve({ status: "shared", capturedAt: new Date(frame.capturedAt).toISOString() }),
+    );
+    expect(result.current.screenPreviewFrame?.imageDataUrl).toBe(frame.dataUrl);
+    act(() => result.current.stop());
+    expect(result.current.screenPreviewFrame).toBeNull();
+    expect(result.current.screenShareKey).toBeNull();
+  });
+
+  it("does not restore a preview when delivery finishes after stop", async () => {
+    const { result, share } = setup();
+    const delivery = deferred<{ status: "shared"; capturedAt: string }>();
+    share.mockReturnValueOnce(delivery.promise);
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.start());
+    act(() => result.current.stop());
+    await act(async () =>
+      delivery.resolve({ status: "shared", capturedAt: new Date(frame.capturedAt).toISOString() }),
+    );
+    expect(result.current.screenPreviewFrame).toBeNull();
+  });
+
   it("shares camera frames without screen capture and stops on source or owner change", async () => {
     const camera = {
       stream: {} as MediaStream,

@@ -51,12 +51,15 @@ function transport() {
 }
 
 describe("auxiliary window ownership", () => {
-  it("toggles camera preview during capture without stopping sharing and rejects stale actions", async () => {
+  it.each([
+    "camera",
+    "screen",
+  ] as const)("toggles %s preview without stopping sharing and rejects stale actions", async (sourceKind) => {
     const port = transport();
     const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
     const current = {
       ...model(),
-      sourceKind: "camera" as const,
+      sourceKind,
       active: true,
       busy: true,
       previewVisible: true,

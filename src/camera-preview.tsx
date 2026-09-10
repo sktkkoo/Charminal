@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import "./camera-preview.css";
 
 export interface CameraPreviewProps {
+  readonly sourceKind?: "camera" | "screen";
   readonly stream?: MediaStream;
   readonly imageDataUrl?: string;
   readonly detached?: boolean;
@@ -18,6 +19,7 @@ export interface CameraPreviewProps {
 
 /** Local-only monitor of the already-owned camera. Unmount never stops the capture owner's tracks. */
 export function CameraPreview({
+  sourceKind = "camera",
   stream,
   imageDataUrl,
   detached = false,
@@ -51,8 +53,17 @@ export function CameraPreview({
   return (
     <section
       className={`camera-preview${detached ? " camera-preview--detached" : ""}`}
+      data-screen-preview-inline={sourceKind === "screen" && !detached ? "" : undefined}
       data-no-window-drag
-      aria-label={japanese ? "カメラプレビュー" : "Camera preview"}
+      aria-label={
+        sourceKind === "screen"
+          ? japanese
+            ? "画面共有プレビュー"
+            : "Screen sharing preview"
+          : japanese
+            ? "カメラプレビュー"
+            : "Camera preview"
+      }
     >
       <header data-tauri-drag-region={detached ? "" : undefined}>
         {onDetach || onAttach ? (
@@ -91,8 +102,24 @@ export function CameraPreview({
           type="button"
           className="camera-preview-stop"
           onClick={onStop}
-          aria-label={japanese ? "カメラ共有を停止" : "Stop camera sharing"}
-          title={japanese ? "カメラ共有を停止" : "Stop camera sharing"}
+          aria-label={
+            sourceKind === "screen"
+              ? japanese
+                ? "画面共有を停止"
+                : "Stop screen sharing"
+              : japanese
+                ? "カメラ共有を停止"
+                : "Stop camera sharing"
+          }
+          title={
+            sourceKind === "screen"
+              ? japanese
+                ? "画面共有を停止"
+                : "Stop screen sharing"
+              : japanese
+                ? "カメラ共有を停止"
+                : "Stop camera sharing"
+          }
         >
           <Square size={10} fill="currentColor" aria-hidden="true" />
           <span>{japanese ? "停止" : "Stop"}</span>
@@ -110,7 +137,15 @@ export function CameraPreview({
         ) : imageDataUrl ? (
           <img
             src={imageDataUrl}
-            alt={japanese ? "共有中のカメラ映像" : "Shared camera view"}
+            alt={
+              sourceKind === "screen"
+                ? japanese
+                  ? "直近に共有した画面"
+                  : "Last shared screen"
+                : japanese
+                  ? "共有中のカメラ映像"
+                  : "Shared camera view"
+            }
             draggable={false}
             data-tauri-drag-region={detached ? "" : undefined}
           />

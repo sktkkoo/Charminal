@@ -9,6 +9,7 @@ import {
   screenCaptureListSources,
   screenCaptureRequestPermission,
 } from "../../bindings/tauri-commands";
+import { withoutInlineScreenPreview } from "../screen-preview-capture";
 import {
   type CameraCapture,
   type CameraSource,
@@ -92,6 +93,12 @@ export function useScreenSharing({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [screenPreviewFrame, setScreenPreviewFrame] = useState<{
+    imageDataUrl: string;
+    lastCapturedAt: number;
+    lastSharedAt: number;
+  } | null>(null);
+  const [screenShareKey, setScreenShareKey] = useState<string | null>(null);
   const [lastCapturedAt, setLastCapturedAt] = useState<number>();
   const [lastObservedAt, setLastObservedAt] = useState<number>();
   const owner = useRef<SharingLease | null>(null);
@@ -110,6 +117,8 @@ export function useScreenSharing({
     setActive(false);
     setBusy(false);
     setCameraStream(null);
+    setScreenPreviewFrame(null);
+    setScreenShareKey(null);
     setLastCapturedAt(undefined);
     lease?.camera?.close();
     if (lease?.sourceKind === "screen") {
@@ -231,6 +240,7 @@ export function useScreenSharing({
       await beginning;
       if (!isCurrent()) return;
       lease.ready = true;
+      setScreenShareKey(lease.shareId);
       setActive(true);
     } catch (failure) {
       if (!isCurrent()) return;
@@ -292,7 +302,10 @@ export function useScreenSharing({
                 pointerFrameValid: false,
                 pointerEpoch: undefined,
               }
-            : await screenCaptureFrame(lease.sourceId, lease.shareId);
+            : await withoutInlineScreenPreview(
+                () => screenCaptureFrame(lease.sourceId, lease.shareId),
+                lease.controller.signal,
+              );
           captured = performance.now();
           if (!isCurrent()) return;
           if (lease.sourceKind === "camera") setLastCapturedAt(frame.capturedAt);
@@ -330,6 +343,13 @@ export function useScreenSharing({
           if (result.status === "shared") {
             lastImage.current = { dataUrl: frame.dataUrl, frameId: frame.frameId };
             setLastObservedAt(frame.capturedAt);
+            if (lease.sourceKind === "screen") {
+              setScreenPreviewFrame({
+                imageDataUrl: frame.dataUrl,
+                lastCapturedAt: frame.capturedAt,
+                lastSharedAt: Date.now(),
+              });
+            }
           }
         } catch (failure) {
           if (!isCurrent()) return;
@@ -413,6 +433,8 @@ export function useScreenSharing({
     available,
     sourceKind,
     cameraStream,
+    screenPreviewFrame,
+    screenShareKey,
     lastCapturedAt,
     setSourceKind,
     sources,

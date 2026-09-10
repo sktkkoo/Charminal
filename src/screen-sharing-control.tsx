@@ -439,7 +439,7 @@ export function ScreenSharingControl({
               <p className="screen-sharing-cost" id={costId}>
                 {labels.cost}
               </p>
-              {camera && onPreviewVisibleChange ? (
+              {onPreviewVisibleChange ? (
                 <CameraPreviewToggle
                   visible={previewVisible}
                   language={language}

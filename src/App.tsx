@@ -238,6 +238,7 @@ import {
   type ScenePackEntry,
   type ScenePackRegistry,
 } from "./runtime/scene-pack-registry";
+import { useScreenPreviewWindow } from "./runtime/screen-preview-window";
 import {
   getSessionStatusStore,
   hookSignalSeq,
@@ -4253,6 +4254,34 @@ function App() {
       // 保存できない場合も、この起動中の表示切り替えは反映する。
     }
   }, []);
+  const [screenPreviewVisible, setScreenPreviewVisibleState] = useState(() => {
+    try {
+      return localStorage.getItem("yorishiro.screen-preview-visible") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const setScreenPreviewVisible = useCallback((visible: boolean) => {
+    setScreenPreviewVisibleState(visible);
+    try {
+      localStorage.setItem("yorishiro.screen-preview-visible", String(visible));
+    } catch {
+      // Keep the current session preference if persistence is unavailable.
+    }
+  }, []);
+  const screenPreviewWindow = useScreenPreviewWindow({
+    sourceKey:
+      screenPreviewVisible && screenSharing.screenPreviewFrame
+        ? screenSharing.screenShareKey
+        : null,
+    frame: screenSharing.screenPreviewFrame,
+    language: appLanguage.resolved,
+    onStop: screenSharing.stop,
+  });
+  const previewVisible =
+    screenSharing.sourceKind === "camera" ? cameraPreviewVisible : screenPreviewVisible;
+  const setPreviewVisible =
+    screenSharing.sourceKind === "camera" ? setCameraPreviewVisible : setScreenPreviewVisible;
   const cameraPreviewWindow = useCameraPreviewWindow({
     stream:
       screenSharing.active && cameraPreviewVisible ? (screenSharing.cameraStream ?? null) : null,
@@ -4270,18 +4299,27 @@ function App() {
       void detachCameraPreview().catch(() => {});
     }
   }, [compactCameraView, cameraPreviewVisible, screenSharing.cameraStream, detachCameraPreview]);
+  const detachScreenPreview = screenPreviewWindow.detach;
+  const screenPreviewReady = screenSharing.screenPreviewFrame !== null;
+  useEffect(() => {
+    if (compactCameraView && screenPreviewVisible && screenPreviewReady) {
+      void detachScreenPreview().catch(() => {});
+    }
+  }, [compactCameraView, screenPreviewVisible, screenPreviewReady, detachScreenPreview]);
   speechScreenCaptureRef.current = screenSharing.active ? screenSharing.captureNow : null;
   const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
     ...screenSharing,
-    previewVisible: cameraPreviewVisible,
-    setPreviewVisible: setCameraPreviewVisible,
+    previewVisible,
+    setPreviewVisible,
     pointersEnabled: screenPointerSettings.enabled,
     pointersReady: screenPointerSettings.ready,
     setPointersEnabled: screenPointerSettings.setEnabled,
     retryPointers: screenPointerSettings.retry,
     error:
       screenSharing.error ??
-      (screenSharing.sourceKind === "screen" ? screenPointerSettings.error : undefined),
+      (screenSharing.sourceKind === "screen"
+        ? (screenPreviewWindow.error ?? screenPointerSettings.error)
+        : undefined),
     available: screenSharing.available,
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
     language: appLanguage.resolved,
@@ -5850,6 +5888,21 @@ function App() {
           onStop={screenSharing.stop}
         />
       ) : null}
+      {screenSharing.active &&
+      screenPreviewVisible &&
+      screenSharing.screenPreviewFrame &&
+      !screenPreviewWindow.detached ? (
+        <CameraPreview
+          sourceKind="screen"
+          imageDataUrl={screenSharing.screenPreviewFrame.imageDataUrl}
+          opening={screenPreviewWindow.opening}
+          error={screenPreviewWindow.error}
+          onDetach={() => void screenPreviewWindow.detach().catch(() => {})}
+          lastCapturedAt={screenSharing.screenPreviewFrame.lastCapturedAt}
+          language={appLanguage.resolved}
+          onStop={screenSharing.stop}
+        />
+      ) : null}
       <TitleBar
         sidebarOpen={sidebarOpen}
         settingsActive={settingsActive}
@@ -5885,8 +5938,8 @@ function App() {
           codexVoiceAvailable ? (
             <ScreenSharingControl
               activeViewModeId={activePresentationViewModeIdValue}
-              previewVisible={cameraPreviewVisible}
-              onPreviewVisibleChange={setCameraPreviewVisible}
+              previewVisible={previewVisible}
+              onPreviewVisibleChange={setPreviewVisible}
               available={screenSharing.available}
               active={screenSharing.active}
               busy={screenSharing.busy}
@@ -5899,7 +5952,9 @@ function App() {
               onSourceKindChange={screenSharing.setSourceKind}
               error={
                 screenSharing.error ??
-                (screenSharing.sourceKind === "screen" ? screenPointerSettings.error : undefined) ??
+                (screenSharing.sourceKind === "screen"
+                  ? (screenPreviewWindow.error ?? screenPointerSettings.error)
+                  : undefined) ??
                 auxiliaryScreenSharing.error
               }
               lastObservedAt={screenSharing.lastObservedAt}

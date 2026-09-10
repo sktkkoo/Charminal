@@ -263,14 +263,14 @@ export default function AuxiliaryScreenSharing() {
           <p className="screen-sharing-cost" id="sharing-cost">
             {labels.cost}
           </p>
-          {camera ? (
+          {
             <CameraPreviewToggle
-              visible={state.previewVisible ?? true}
+              visible={state.previewVisible ?? camera}
               disabled={requesting}
               language={state.language}
               onChange={(visible) => void request({ type: "set-preview-visible", visible })}
             />
-          ) : null}
+          }
           {!camera ? (
             <ScreenPointerToggle
               enabled={
