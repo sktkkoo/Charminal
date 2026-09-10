@@ -114,7 +114,7 @@ export function CameraPreview({
         ) : imageDataUrl ? (
           <img src={imageDataUrl} alt={japanese ? "共有中のカメラ映像" : "Shared camera view"} />
         ) : null}
-        {lastCapturedAt !== undefined ? (
+        {lastCapturedAt !== undefined && Date.now() - lastCapturedAt < 1500 ? (
           <span key={lastCapturedAt} className="camera-preview-capture-cue" aria-hidden="true">
             <span className="camera-preview-flash" />
           </span>
