@@ -265,7 +265,7 @@ export default function AuxiliaryScreenSharing() {
           </p>
           {
             <CameraPreviewToggle
-              visible={state.previewVisible ?? camera}
+              visible={state.previewVisible ?? true}
               disabled={requesting}
               language={state.language}
               onChange={(visible) => void request({ type: "set-preview-visible", visible })}

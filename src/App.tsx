@@ -4256,9 +4256,9 @@ function App() {
   }, []);
   const [screenPreviewVisible, setScreenPreviewVisibleState] = useState(() => {
     try {
-      return localStorage.getItem("yorishiro.screen-preview-visible") === "true";
+      return localStorage.getItem("yorishiro.screen-preview-visible") !== "false";
     } catch {
-      return false;
+      return true;
     }
   });
   const setScreenPreviewVisible = useCallback((visible: boolean) => {

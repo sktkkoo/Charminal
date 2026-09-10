@@ -110,7 +110,7 @@ export function createScreenSharingSnapshot(
     busy: model.busy,
     pointersEnabled: model.pointersEnabled,
     pointersReady: model.pointersReady,
-    previewVisible: model.previewVisible ?? model.sourceKind === "camera",
+    previewVisible: model.previewVisible ?? true,
     sources: model.sources.slice(0, 64).map(({ id, name }) => ({ id, name: name.slice(0, 200) })),
     sourceKind: model.sourceKind ?? "screen",
     sourceId: model.sourceId,
