@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getMediaPermissionKind, type MediaPermissionKind } from "./media-permissions";
 
 export const AUXILIARY_CONTROLS_LABEL = "auxiliary-screen-sharing-controls";
 export const AUXILIARY_STATE_EVENT = "auxiliary-window-state";
@@ -28,6 +29,7 @@ export function resolveWindowView(label: string, search: string) {
 }
 
 export interface ScreenSharingSnapshot {
+  readonly permissionKind?: MediaPermissionKind;
   readonly previewVisible?: boolean;
   readonly revision: string;
   /** Changes with the main owner or marker setting, never with capture progress. */
@@ -110,6 +112,7 @@ export function createScreenSharingSnapshot(
     busy: model.busy,
     pointersEnabled: model.pointersEnabled,
     pointersReady: model.pointersReady,
+    permissionKind: getMediaPermissionKind(model.error),
     previewVisible: model.previewVisible ?? true,
     sources: model.sources.slice(0, 64).map(({ id, name }) => ({ id, name: name.slice(0, 200) })),
     sourceKind: model.sourceKind ?? "screen",

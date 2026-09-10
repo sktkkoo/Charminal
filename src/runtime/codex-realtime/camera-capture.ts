@@ -1,3 +1,4 @@
+import { mediaPermissionError } from "../media-permissions";
 /** Camera ownership stays in the main WebView; enumerating devices never requests access. */
 export interface CameraSource {
   readonly id: number;
@@ -40,14 +41,16 @@ export async function openCamera(
   onEnded: () => void,
 ): Promise<CameraCapture> {
   signal.throwIfAborted();
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: false,
-    video: {
-      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-    },
-  });
+  const stream = await navigator.mediaDevices
+    .getUserMedia({
+      audio: false,
+      video: {
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    })
+    .catch((error: unknown) => mediaPermissionError(error, "camera"));
   if (!stream.getVideoTracks().some((track) => track.readyState === "live")) {
     for (const track of stream.getTracks()) track.stop();
     throw new Error("The camera did not provide a live video track.");

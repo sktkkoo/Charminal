@@ -1,6 +1,7 @@
 import { RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CameraPreviewToggle } from "./camera-preview-toggle";
+import { MediaPermissionHelp } from "./media-permission-help";
 import {
   isPointerSettingsAction,
   latestAuxiliarySnapshot,
@@ -287,7 +288,9 @@ export default function AuxiliaryScreenSharing() {
           {!state.available ? (
             <p className="screen-sharing-description">{labels.unavailable}</p>
           ) : null}
-          {state.hasError || actionError ? (
+          {state.permissionKind ? (
+            <MediaPermissionHelp kind={state.permissionKind} language={state.language} />
+          ) : state.hasError || actionError ? (
             <p className="screen-sharing-error" role="alert">
               {actionError ?? labels.error}
             </p>

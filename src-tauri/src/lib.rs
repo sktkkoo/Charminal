@@ -5,6 +5,7 @@ mod camera_preview;
 mod history;
 mod journal;
 mod mcp;
+mod media_permissions;
 mod pty;
 mod realtime_bridge;
 mod screen_annotation;
@@ -3889,6 +3890,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            media_permissions::open_media_permission_settings,
             screen_preview::screen_preview_begin,
             screen_preview::screen_preview_open,
             screen_preview::screen_preview_revoke,

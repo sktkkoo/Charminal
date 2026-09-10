@@ -336,6 +336,7 @@ html[data-rounded-view] body {
 
 /* ── Title bar ─────────────────────────────────────── */
 .title-bar {
+  position: relative;
   flex: 0 0 var(--title-bar-height);
   height: var(--title-bar-height);
   display: flex;
@@ -546,6 +547,18 @@ html[data-rounded-view] body {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.title-bar-voice-error[data-permission="true"] {
+  position: absolute;
+  top: 100%;
+  left: 12px;
+  z-index: 100;
+  width: min(360px, calc(100vw - 24px));
+  max-width: none;
+  padding: 12px;
+  background: #18181b;
+  white-space: normal;
 }
 
 @keyframes title-bar-voice-spin {

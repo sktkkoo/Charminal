@@ -64,6 +64,7 @@ pub struct ScreenSharingSnapshot {
     source_id: Option<u32>,
     interval_seconds: u8,
     has_error: bool,
+    permission_kind: Option<crate::media_permissions::MediaPermissionKind>,
     last_observed_at: Option<u64>,
     language: String,
 }
@@ -373,6 +374,7 @@ mod tests {
                 source_id: Some(12),
                 interval_seconds: 30,
                 has_error: false,
+                permission_kind: None,
                 last_observed_at: None,
                 language: "ja".into(),
             },

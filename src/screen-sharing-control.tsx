@@ -1,6 +1,8 @@
 import { Camera, LoaderCircle, MonitorUp, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { CameraPreviewToggle } from "./camera-preview-toggle";
+import { MediaPermissionHelp } from "./media-permission-help";
+import { getMediaPermissionKind } from "./runtime/media-permissions";
 import { ScreenPointerToggle } from "./screen-pointer-toggle";
 import { SharingSourceMenu } from "./sharing-source-menu";
 import { SharingStatus } from "./sharing-status";
@@ -120,6 +122,7 @@ export function ScreenSharingControl({
   onOpenAuxiliary,
   language = "en",
 }: ScreenSharingControlProps) {
+  const permissionKind = getMediaPermissionKind(error);
   const [choosingSource, setChoosingSource] = useState(true);
   const [panelMode, setPanelMode] = useState<PanelMode>("closed");
   const [openingAuxiliary, setOpeningAuxiliary] = useState(false);
@@ -458,7 +461,9 @@ export function ScreenSharingControl({
               {!available ? (
                 <p className="screen-sharing-description">{labels.unavailable}</p>
               ) : null}
-              {error ? (
+              {permissionKind ? (
+                <MediaPermissionHelp kind={permissionKind} language={language} />
+              ) : error ? (
                 <p className="screen-sharing-error" role="alert">
                   {error}
                 </p>

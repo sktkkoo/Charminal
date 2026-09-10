@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
+import { MediaPermissionHelp } from "./media-permission-help";
+import { getMediaPermissionKind } from "./runtime/media-permissions";
 import type { UiPackEntry } from "./runtime/ui-pack-registry";
 
 /**
@@ -40,6 +42,7 @@ export interface TitleBarProps {
   readonly voiceMicrophoneActive?: boolean;
   readonly voiceLabel?: string;
   readonly voiceError?: string;
+  readonly language?: string;
   readonly onToggleVoice?: () => void;
   readonly screenSharingControl?: ReactNode;
   readonly tabs?: ReactNode;
@@ -67,6 +70,7 @@ export default function TitleBar({
   voiceMicrophoneActive = false,
   voiceLabel = "",
   voiceError,
+  language,
   onToggleVoice,
   screenSharingControl,
   tabs,
@@ -74,6 +78,7 @@ export default function TitleBar({
   activeViewModeId = null,
   onSelectViewMode,
 }: TitleBarProps) {
+  const permissionKind = getMediaPermissionKind(voiceError);
   const SidebarIcon = sidebarOpen ? PanelLeftClose : PanelLeftOpen;
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -260,8 +265,17 @@ export default function TitleBar({
         {screenSharingControl}
       </div>
       {voiceError ? (
-        <div className="title-bar-voice-error" role="alert" title={voiceError}>
-          {voiceError}
+        <div
+          className="title-bar-voice-error"
+          data-permission={!!permissionKind}
+          role="alert"
+          title={permissionKind ? undefined : voiceError}
+        >
+          {permissionKind ? (
+            <MediaPermissionHelp kind={permissionKind} language={language} />
+          ) : (
+            voiceError
+          )}
         </div>
       ) : null}
       <div className="title-bar-tabs" data-tauri-drag-region="">

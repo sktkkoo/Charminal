@@ -5904,6 +5904,7 @@ function App() {
         />
       ) : null}
       <TitleBar
+        language={appLanguage.resolved}
         sidebarOpen={sidebarOpen}
         settingsActive={settingsActive}
         sidebarLabel={strings.labelPresence}
