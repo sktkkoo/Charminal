@@ -65,9 +65,7 @@ export function CameraPreview({
           aria-label={japanese ? "共有中のカメラ映像" : "Shared camera view"}
         />
         {lastCapturedAt !== undefined ? (
-          <span key={lastCapturedAt} className="camera-preview-flash" aria-hidden="true">
-            <span>{japanese ? "撮影" : "Captured"}</span>
-          </span>
+          <span key={lastCapturedAt} className="camera-preview-flash" aria-hidden="true" />
         ) : null}
         {playbackBlocked ? (
           <button

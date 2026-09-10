@@ -61,10 +61,9 @@
 .camera-preview-flash {
   position: absolute;
   inset: 0;
-  border: 3px solid #b7e7c9;
-  overflow: hidden;
+  background: rgb(255 255 255 / 45%);
   pointer-events: none;
-  animation: camera-preview-captured 0.8s ease-out both;
+  animation: camera-preview-captured 0.18s ease-out both;
 }
 
 @keyframes camera-preview-captured {
@@ -101,44 +100,6 @@
   display: flex;
   justify-content: space-between;
   gap: 8px;
-}
-
-.camera-preview-flash::before,
-.camera-preview-flash::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 50%;
-  background: #151b18;
-  animation: camera-preview-shutter 0.32s ease-in-out both;
-}
-.camera-preview-flash::before {
-  top: 0;
-  transform-origin: top;
-}
-.camera-preview-flash::after {
-  bottom: 0;
-  transform-origin: bottom;
-}
-.camera-preview-flash > span {
-  position: absolute;
-  z-index: 1;
-  bottom: 5px;
-  right: 6px;
-  padding: 2px 5px;
-  border-radius: 3px;
-  background: #151b18;
-  color: #d6f3df;
-}
-@keyframes camera-preview-shutter {
-  0%,
-  100% {
-    transform: scaleY(0);
-  }
-  35% {
-    transform: scaleY(1);
-  }
 }
 
 .camera-preview footer span {
