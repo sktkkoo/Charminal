@@ -56,6 +56,8 @@ pub struct ScreenSharingSnapshot {
     busy: bool,
     pointers_enabled: bool,
     pointers_ready: bool,
+    #[serde(default = "default_preview_visible")]
+    preview_visible: bool,
     sources: Vec<SharedDisplay>,
     #[serde(default)]
     source_kind: SharingSourceKind,
@@ -64,6 +66,10 @@ pub struct ScreenSharingSnapshot {
     has_error: bool,
     last_observed_at: Option<u64>,
     language: String,
+}
+
+fn default_preview_visible() -> bool {
+    true
 }
 
 impl ScreenSharingSnapshot {
@@ -98,6 +104,9 @@ pub enum ScreenSharingAction {
     RetryPointers,
     SetPointersEnabled {
         enabled: bool,
+    },
+    SetPreviewVisible {
+        visible: bool,
     },
     SelectSourceKind {
         #[serde(rename = "sourceKind")]
@@ -182,6 +191,11 @@ fn validate_action(
     }
     let snapshot = &published.snapshot;
     match &request.action {
+        ScreenSharingAction::SetPreviewVisible { .. }
+            if snapshot.source_kind != SharingSourceKind::Camera =>
+        {
+            Err("Camera preview is only available for camera sharing".into())
+        }
         ScreenSharingAction::Start
             if !snapshot.available
                 || (snapshot.source_kind != SharingSourceKind::Camera
@@ -355,6 +369,7 @@ mod tests {
                 busy: false,
                 pointers_enabled: true,
                 pointers_ready: true,
+                preview_visible: true,
                 sources: vec![SharedDisplay {
                     id: 12,
                     name: "Display 1".into(),
@@ -375,6 +390,30 @@ mod tests {
         assert!(require_label(CONTROLS_LABEL, MAIN_LABEL).is_err());
         assert!(require_label(MAIN_LABEL, CONTROLS_LABEL).is_err());
         assert!(require_label("untrusted", CONTROLS_LABEL).is_err());
+    }
+
+    #[test]
+    fn preview_visibility_is_camera_only_and_remains_available_during_capture() {
+        let mut state = published();
+        let request = AuxiliaryActionRequest {
+            version: state.version,
+            pointer_revision: None,
+            action: ScreenSharingAction::SetPreviewVisible { visible: false },
+        };
+        assert!(validate_action(&state, &request).is_err());
+        state.snapshot.source_kind = SharingSourceKind::Camera;
+        state.snapshot.active = true;
+        state.snapshot.busy = true;
+        assert!(validate_action(&state, &request).is_ok());
+        let mut json = serde_json::to_value(&state.snapshot).unwrap();
+        json.as_object_mut().unwrap().remove("previewVisible");
+        assert!(
+            serde_json::from_value::<ScreenSharingSnapshot>(json)
+                .unwrap()
+                .preview_visible
+        );
+        state.version += 1;
+        assert!(validate_action(&state, &request).is_err());
     }
 
     #[test]

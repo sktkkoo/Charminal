@@ -62,20 +62,17 @@ describe("local camera preview", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
-  it("restarts the flash only for a new capture and reports sharing only after delivery", () => {
+  it("restarts the flash only for a new capture", () => {
     const props = { stream: {} as MediaStream, onStop: vi.fn(), language: "ja" };
     const view = render(<CameraPreview {...props} />);
     expect(view.container.querySelector(".camera-preview-flash")).toBeNull();
     view.rerender(<CameraPreview {...props} lastCapturedAt={1000} />);
     const shutter = view.container.querySelector(".camera-preview-flash");
     expect(shutter).toBeTruthy();
-    expect(screen.getByText("静止画を撮影しました")).toBeTruthy();
     view.rerender(<CameraPreview {...props} lastCapturedAt={1000} lastSharedAt={1000} />);
     expect(view.container.querySelector(".camera-preview-flash")).toBe(shutter);
-    expect(screen.getByText("静止画を共有しました")).toBeTruthy();
     view.rerender(<CameraPreview {...props} lastCapturedAt={2000} lastSharedAt={1000} />);
     expect(view.container.querySelector(".camera-preview-flash")).not.toBe(shutter);
-    expect(screen.queryByText("静止画を共有しました")).toBeNull();
   });
   it("does not replay an old capture when a preview is reopened", () => {
     vi.setSystemTime(10000);

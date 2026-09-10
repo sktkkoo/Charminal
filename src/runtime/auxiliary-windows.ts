@@ -9,6 +9,11 @@ export const AUXILIARY_ACTION_EVENT = "auxiliary-window-action";
 export function resolveWindowView(label: string, search: string) {
   if (label === "main") return "main";
   if (
+    label === "auxiliary-camera-preview" &&
+    new URLSearchParams(search).get("auxiliary") === "camera-preview"
+  )
+    return "camera-preview";
+  if (
     label === AUXILIARY_CONTROLS_LABEL &&
     new URLSearchParams(search).get("auxiliary") === "screen-sharing-controls"
   ) {
@@ -18,6 +23,7 @@ export function resolveWindowView(label: string, search: string) {
 }
 
 export interface ScreenSharingSnapshot {
+  readonly previewVisible?: boolean;
   readonly revision: string;
   /** Changes with the main owner or marker setting, never with capture progress. */
   readonly pointerRevision: string;
@@ -41,6 +47,7 @@ export interface PublishedAuxiliarySnapshot {
 }
 
 export type ScreenSharingAuxiliaryAction =
+  | { readonly type: "set-preview-visible"; readonly visible: boolean }
   | { readonly type: "start" | "stop" | "refresh-sources" | "clear-annotations" | "retry-pointers" }
   | { readonly type: "select-source-kind"; readonly sourceKind: "screen" | "camera" }
   | { readonly type: "select-source"; readonly sourceId: number }
@@ -58,6 +65,8 @@ export function isPointerSettingsAction(action: ScreenSharingAuxiliaryAction): b
 }
 
 export interface ScreenSharingAuxiliaryModel {
+  readonly previewVisible?: boolean;
+  readonly setPreviewVisible?: (visible: boolean) => void;
   readonly ownerKey: string;
   readonly available: boolean;
   readonly active: boolean;
@@ -96,6 +105,7 @@ export function createScreenSharingSnapshot(
     busy: model.busy,
     pointersEnabled: model.pointersEnabled,
     pointersReady: model.pointersReady,
+    previewVisible: model.previewVisible ?? true,
     sources: model.sources.slice(0, 64).map(({ id, name }) => ({ id, name: name.slice(0, 200) })),
     sourceKind: model.sourceKind ?? "screen",
     sourceId: model.sourceId,
@@ -236,6 +246,15 @@ export class ScreenSharingAuxiliaryHost {
     )
       return false;
     switch (action.type) {
+      case "set-preview-visible":
+        if (
+          model.sourceKind !== "camera" ||
+          !model.setPreviewVisible ||
+          typeof action.visible !== "boolean"
+        )
+          return false;
+        model.setPreviewVisible(action.visible);
+        break;
       case "start":
         if (
           !model.available ||

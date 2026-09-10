@@ -167,6 +167,7 @@ import { registerBundledAttentionAura } from "./runtime/bundled-attention-aura";
 import { registerBundledMusicShelf } from "./runtime/bundled-music-shelf";
 import { registerBundledPomodoro } from "./runtime/bundled-pomodoro";
 import { registerBundledPomodoroUi } from "./runtime/bundled-pomodoro-ui";
+import { useCameraPreviewWindow } from "./runtime/camera-preview-window";
 import { appendCodexRealtimePersonaDiagnostic } from "./runtime/codex-realtime/persona-diagnostics";
 import { useCodexRealtime } from "./runtime/codex-realtime/use-codex-realtime";
 import { useScreenPointerSettings } from "./runtime/codex-realtime/use-screen-pointer-settings";
@@ -4237,9 +4238,43 @@ function App() {
       devLog.write({ subsystem: "ScreenSharing", phase: "capture-context", data: timing });
     },
   });
+  const [cameraPreviewVisible, setCameraPreviewVisibleState] = useState(() => {
+    try {
+      return localStorage.getItem("yorishiro.camera-preview-visible") !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const setCameraPreviewVisible = useCallback((visible: boolean) => {
+    setCameraPreviewVisibleState(visible);
+    try {
+      localStorage.setItem("yorishiro.camera-preview-visible", String(visible));
+    } catch {
+      // 保存できない場合も、この起動中の表示切り替えは反映する。
+    }
+  }, []);
+  const cameraPreviewWindow = useCameraPreviewWindow({
+    stream:
+      screenSharing.active && cameraPreviewVisible ? (screenSharing.cameraStream ?? null) : null,
+    lastCapturedAt: screenSharing.lastCapturedAt,
+    lastSharedAt: screenSharing.lastObservedAt,
+    language: appLanguage.resolved,
+    onStop: screenSharing.stop,
+  });
+  const compactCameraView =
+    activePresentationViewModeIdValue === "portrait" ||
+    activePresentationViewModeIdValue === "companion";
+  const detachCameraPreview = cameraPreviewWindow.detach;
+  useEffect(() => {
+    if (compactCameraView && cameraPreviewVisible && screenSharing.cameraStream) {
+      void detachCameraPreview().catch(() => {});
+    }
+  }, [compactCameraView, cameraPreviewVisible, screenSharing.cameraStream, detachCameraPreview]);
   speechScreenCaptureRef.current = screenSharing.active ? screenSharing.captureNow : null;
   const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
     ...screenSharing,
+    previewVisible: cameraPreviewVisible,
+    setPreviewVisible: setCameraPreviewVisible,
     pointersEnabled: screenPointerSettings.enabled,
     pointersReady: screenPointerSettings.ready,
     setPointersEnabled: screenPointerSettings.setEnabled,
@@ -5800,9 +5835,15 @@ function App() {
           .catch(() => undefined);
       }}
     >
-      {screenSharing.active && screenSharing.cameraStream ? (
+      {screenSharing.active &&
+      cameraPreviewVisible &&
+      screenSharing.cameraStream &&
+      !cameraPreviewWindow.detached ? (
         <CameraPreview
           stream={screenSharing.cameraStream}
+          opening={cameraPreviewWindow.opening}
+          error={cameraPreviewWindow.error}
+          onDetach={() => void cameraPreviewWindow.detach().catch(() => {})}
           lastCapturedAt={screenSharing.lastCapturedAt}
           lastSharedAt={screenSharing.lastObservedAt}
           language={appLanguage.resolved}
@@ -5844,6 +5885,8 @@ function App() {
           codexVoiceAvailable ? (
             <ScreenSharingControl
               activeViewModeId={activePresentationViewModeIdValue}
+              previewVisible={cameraPreviewVisible}
+              onPreviewVisibleChange={setCameraPreviewVisible}
               available={screenSharing.available}
               active={screenSharing.active}
               busy={screenSharing.busy}

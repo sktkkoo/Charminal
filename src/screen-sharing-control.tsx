@@ -1,10 +1,13 @@
 import { Camera, LoaderCircle, MonitorUp, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { CameraPreviewToggle } from "./camera-preview-toggle";
 import { ScreenPointerToggle } from "./screen-pointer-toggle";
 import { SharingSourceMenu } from "./sharing-source-menu";
 import "./screen-sharing-control.css";
 
 export interface ScreenSharingControlProps {
+  readonly previewVisible?: boolean;
+  readonly onPreviewVisibleChange?: (visible: boolean) => void;
   readonly sourceKind?: "screen" | "camera";
   readonly onSourceKindChange?: (kind: "screen" | "camera") => void;
   readonly activeViewModeId: string | null;
@@ -101,6 +104,8 @@ function panelPosition(trigger: HTMLButtonElement | null, compactError = false) 
 
 /** Controlled screen-sharing settings. Opening the panel never starts capture. */
 export function ScreenSharingControl({
+  previewVisible = true,
+  onPreviewVisibleChange,
   sourceKind = "screen",
   onSourceKindChange,
   activeViewModeId,
@@ -455,6 +460,13 @@ export function ScreenSharingControl({
               <p className="screen-sharing-cost" id={costId}>
                 {labels.cost}
               </p>
+              {camera && onPreviewVisibleChange ? (
+                <CameraPreviewToggle
+                  visible={previewVisible}
+                  language={language}
+                  onChange={onPreviewVisibleChange}
+                />
+              ) : null}
               {!camera ? (
                 <ScreenPointerToggle
                   enabled={pointersEnabled}

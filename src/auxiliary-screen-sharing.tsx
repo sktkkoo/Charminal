@@ -1,5 +1,6 @@
 import { Camera, LoaderCircle, MonitorUp, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { CameraPreviewToggle } from "./camera-preview-toggle";
 import {
   isPointerSettingsAction,
   latestAuxiliarySnapshot,
@@ -287,6 +288,14 @@ export default function AuxiliaryScreenSharing() {
           <p className="screen-sharing-cost" id="sharing-cost">
             {labels.cost}
           </p>
+          {camera ? (
+            <CameraPreviewToggle
+              visible={state.previewVisible ?? true}
+              disabled={requesting}
+              language={state.language}
+              onChange={(visible) => void request({ type: "set-preview-visible", visible })}
+            />
+          ) : null}
           {!camera ? (
             <ScreenPointerToggle
               enabled={

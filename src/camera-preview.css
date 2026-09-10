@@ -23,12 +23,6 @@
   padding: 6px 8px;
 }
 
-.camera-preview-live {
-  color: #9cc6ad;
-  font-size: 9px;
-  letter-spacing: 0.05em;
-}
-
 .camera-preview header button {
   display: flex;
   align-items: center;
@@ -131,15 +125,33 @@
   width: 100%;
   height: 100%;
   max-height: none;
+  object-fit: contain;
 }
+html[data-window-view="camera-preview"],
+html[data-window-view="camera-preview"] body,
+html[data-window-view="camera-preview"] #root {
+  background: transparent;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+html[data-window-view="camera-preview"] body {
+  clip-path: inset(0 round 14px);
+}
+
 .camera-preview-window {
   position: fixed;
   inset: 0;
+  overflow: hidden;
+  border-radius: 14px;
   background: #18181b;
   color: #e8ebe7;
   font:
     12px system-ui,
     sans-serif;
+}
+.camera-preview-window .camera-preview--detached {
+  border-radius: inherit;
 }
 .camera-preview-window > p {
   padding: 12px;

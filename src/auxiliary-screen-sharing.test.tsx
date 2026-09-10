@@ -54,6 +54,33 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("independent screen-sharing controls", () => {
+  it("requests camera preview visibility while sharing remains active", async () => {
+    state = {
+      ...state,
+      snapshot: { ...state.snapshot, sourceKind: "camera", active: true, busy: true },
+    };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    render(<AuxiliaryScreenSharing />);
+    const toggle = (await screen.findByRole("switch", {
+      name: "Preview",
+    })) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(requestAuxiliaryAction).toHaveBeenCalledExactlyOnceWith(state.version, {
+        type: "set-preview-visible",
+        visible: false,
+      }),
+    );
+    act(() =>
+      receive({
+        ...state,
+        version: state.version + 1,
+        snapshot: { ...state.snapshot, previewVisible: false },
+      }),
+    );
+    expect(toggle.checked).toBe(false);
+  });
   it("shows source-selection failures while keeping the sharing menu available", async () => {
     state = { ...state, snapshot: { ...state.snapshot, sourceKind: "screen" } };
     vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
@@ -94,7 +121,7 @@ describe("independent screen-sharing controls", () => {
       }),
     );
     expect(screen.getByLabelText("Camera")).toBeTruthy();
-    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Agent pointing" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
     await waitFor(() => expect(requestAuxiliaryAction).toHaveBeenCalledWith(2, { type: "start" }));
   });

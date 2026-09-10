@@ -1,4 +1,4 @@
-import { Camera, ExternalLink, PanelBottom, Square } from "lucide-react";
+import { ExternalLink, PanelBottom, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import "./camera-preview.css";
 
@@ -26,7 +26,6 @@ export function CameraPreview({
   onDetach,
   onAttach,
   lastCapturedAt,
-  lastSharedAt,
   language = "en",
   onStop,
 }: CameraPreviewProps) {
@@ -55,10 +54,7 @@ export function CameraPreview({
       data-no-window-drag
       aria-label={japanese ? "カメラプレビュー" : "Camera preview"}
     >
-      <header>
-        <Camera size={13} aria-hidden="true" />
-        <span>{japanese ? "カメラ" : "Camera"}</span>
-        <span className="camera-preview-live">LIVE</span>
+      <header data-tauri-drag-region={detached ? "" : undefined}>
         {onDetach || onAttach ? (
           <button
             type="button"
@@ -112,7 +108,12 @@ export function CameraPreview({
             aria-label={japanese ? "共有中のカメラ映像" : "Shared camera view"}
           />
         ) : imageDataUrl ? (
-          <img src={imageDataUrl} alt={japanese ? "共有中のカメラ映像" : "Shared camera view"} />
+          <img
+            src={imageDataUrl}
+            alt={japanese ? "共有中のカメラ映像" : "Shared camera view"}
+            draggable={false}
+            data-tauri-drag-region={detached ? "" : undefined}
+          />
         ) : null}
         {lastCapturedAt !== undefined && Date.now() - lastCapturedAt < 1500 ? (
           <span key={lastCapturedAt} className="camera-preview-capture-cue" aria-hidden="true">
@@ -134,22 +135,11 @@ export function CameraPreview({
           </button>
         ) : null}
       </div>
-      <footer>
-        {error ? <span role="alert">{error}</span> : null}
-        <span>
-          {lastCapturedAt === undefined
-            ? japanese
-              ? "撮影待ち"
-              : "Waiting for capture"
-            : lastSharedAt !== undefined && lastSharedAt >= lastCapturedAt
-              ? japanese
-                ? "静止画を共有しました"
-                : "Snapshot shared"
-              : japanese
-                ? "静止画を撮影しました"
-                : "Snapshot captured"}
-        </span>
-      </footer>
+      {error ? (
+        <footer>
+          <span role="alert">{error}</span>
+        </footer>
+      ) : null}
     </section>
   );
 }

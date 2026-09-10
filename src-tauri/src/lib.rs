@@ -1,6 +1,7 @@
 pub mod attach;
 mod auxiliary_windows;
 mod bundled_examples_gen;
+mod camera_preview;
 mod history;
 mod journal;
 mod mcp;
@@ -3862,21 +3863,33 @@ pub fn run() {
         .manage(mcp::McpServerStatus::default())
         .manage(screen_annotation::ScreenAnnotationState::default())
         .manage(auxiliary_windows::AuxiliaryWindowsState::default())
+        .manage(camera_preview::CameraPreviewState::default())
         .on_page_load(|webview, payload| {
             if webview.label() == "main"
                 && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
             {
                 screen_annotation::document_reloaded(webview.app_handle());
                 auxiliary_windows::close_owned_windows(webview.app_handle());
+                camera_preview::close_owned_windows(webview.app_handle());
             }
         })
         .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                camera_preview::window_destroyed(window.app_handle(), window.label());
+            }
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 screen_annotation::shutdown(window.app_handle());
                 auxiliary_windows::close_owned_windows(window.app_handle());
+                camera_preview::close_owned_windows(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
+            camera_preview::camera_preview_begin,
+            camera_preview::camera_preview_open,
+            camera_preview::camera_preview_revoke,
+            camera_preview::camera_preview_publish,
+            camera_preview::camera_preview_snapshot,
+            camera_preview::camera_preview_request_action,
             auxiliary_windows::auxiliary_window_open,
             auxiliary_windows::auxiliary_window_publish,
             auxiliary_windows::auxiliary_window_snapshot,

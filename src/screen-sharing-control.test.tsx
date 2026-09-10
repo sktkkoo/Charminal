@@ -49,6 +49,26 @@ function props(): ScreenSharingControlProps {
   };
 }
 describe("screen sharing control", () => {
+  it("shows camera preview by default and allows hiding it while capture continues", () => {
+    const p = {
+      ...props(),
+      sourceKind: "camera" as const,
+      active: true,
+      busy: true,
+      onPreviewVisibleChange: vi.fn(),
+    };
+    const view = render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "カメラ共有中" }));
+    const toggle = screen.getByRole("switch", { name: "プレビュー" }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(p.onPreviewVisibleChange).toHaveBeenCalledExactlyOnceWith(false);
+    view.rerender(<ScreenSharingControl {...p} previewVisible={false} />);
+    expect(toggle.checked).toBe(false);
+    expect(p.onStop).not.toHaveBeenCalled();
+    expect(p.onStart).not.toHaveBeenCalled();
+    expect(p.onPointersEnabledChange).not.toHaveBeenCalled();
+  });
   it("offers screen and camera under one button without starting capture", () => {
     const p = { ...props(), sourceKind: "screen" as const, onSourceKindChange: vi.fn() };
     const { rerender } = render(<ScreenSharingControl {...p} />);
