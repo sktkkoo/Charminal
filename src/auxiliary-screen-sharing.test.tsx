@@ -202,7 +202,7 @@ describe("independent screen-sharing controls", () => {
   it("keeps keyboard focus during passive updates and commits a dragged interval once", async () => {
     render(<AuxiliaryScreenSharing />);
     const interval = (await screen.findByRole("slider", {
-      name: "Periodic interval",
+      name: "Update interval",
     })) as HTMLInputElement;
     expect(interval.min).toBe("20");
     expect(interval.max).toBe("60");
@@ -256,7 +256,7 @@ describe("independent screen-sharing controls", () => {
     const toggle = (await screen.findByRole("switch", {
       name: "Agent pointing",
     })) as HTMLInputElement;
-    const interval = screen.getByRole("slider", { name: "Periodic interval" });
+    const interval = screen.getByRole("slider", { name: "Update interval" });
     fireEvent.change(interval, { target: { value: "20" } });
     fireEvent.pointerUp(interval);
     expect(toggle.disabled).toBe(false);

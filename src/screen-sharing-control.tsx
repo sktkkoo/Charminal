@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { CameraPreviewToggle } from "./camera-preview-toggle";
 import { ScreenPointerToggle } from "./screen-pointer-toggle";
 import { SharingSourceMenu } from "./sharing-source-menu";
+import { SharingStatus } from "./sharing-status";
 import "./screen-sharing-control.css";
 
 export interface ScreenSharingControlProps {
@@ -43,15 +44,10 @@ const strings = {
     chooseDisplay: "Choose a display",
     noDisplays: "No displays available",
     refresh: "Refresh displays",
-    interval: "Periodic interval",
-    seconds: (value: number) => `${value} seconds`,
-    cost: "Sending images periodically uses many tokens.",
+    interval: "Update interval",
+    seconds: (value: number) => `Every ${value}s`,
+    cost: "Shorter intervals use more tokens.",
     unavailable: "Select an agent that supports screen sharing to start.",
-    on: "Sharing",
-    off: "Off",
-    busy: "Sharing image…",
-    waiting: "Waiting for the first image…",
-    lastViewed: "Last shared",
     cancel: "Cancel",
     start: "Start sharing",
     stop: "Stop sharing",
@@ -66,15 +62,10 @@ const strings = {
     chooseDisplay: "画面を選択",
     noDisplays: "共有できる画面がありません",
     refresh: "画面一覧を更新",
-    interval: "定期更新の間隔",
-    seconds: (value: number) => `${value}秒`,
-    cost: "画像の定期送信ではトークンを多く消費します。",
+    interval: "更新間隔",
+    seconds: (value: number) => `${value}秒ごと`,
+    cost: "間隔が短いほどトークン消費が増えます。",
     unavailable: "画面共有に対応するエージェントを選択してください。",
-    on: "共有中",
-    off: "停止中",
-    busy: "画像を共有中…",
-    waiting: "最初の画像の共有を待っています…",
-    lastViewed: "最終共有",
     cancel: "キャンセル",
     start: "共有を開始",
     stop: "共有を停止",
@@ -166,14 +157,6 @@ export function ScreenSharingControl({
   const measuring = panelMode === "measuring";
   const hasSelectedSource = sources.some((source) => source.id === sourceId);
   const canStart = available && (camera || pointersReady) && hasSelectedSource && !busy;
-  const lastViewed =
-    lastObservedAt !== undefined && Number.isFinite(lastObservedAt)
-      ? new Date(lastObservedAt).toLocaleTimeString(isJapanese ? "ja-JP" : "en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        })
-      : null;
 
   const closePanel = useCallback(() => {
     measurementRef.current = null;
@@ -365,10 +348,12 @@ export function ScreenSharingControl({
         >
           <div className="screen-sharing-heading">
             <h2 id={titleId}>{chooser ? sharingTitle : labels.title}</h2>
-            <span className="screen-sharing-badge" data-active={active}>
-              {active ? labels.on : labels.off}
-            </span>
-            <span className="screen-sharing-experimental">Experimental</span>
+            <SharingStatus
+              active={active}
+              busy={busy}
+              lastObservedAt={lastObservedAt}
+              language={language}
+            />
             <button
               ref={closeRef}
               type="button"
@@ -401,12 +386,10 @@ export function ScreenSharingControl({
                   {isJapanese ? "← 共有元を変更" : "← Change sharing source"}
                 </button>
               ) : null}
-              <label className="screen-sharing-label" htmlFor={displayId}>
-                {labels.display}
-              </label>
               <div className="screen-sharing-source-row">
                 <select
                   id={displayId}
+                  aria-label={labels.display}
                   value={hasSelectedSource ? (sourceId ?? "") : ""}
                   disabled={active || busy || !available || sources.length === 0}
                   onChange={(event) => {
@@ -453,10 +436,6 @@ export function ScreenSharingControl({
                 aria-describedby={costId}
                 onChange={(event) => onIntervalChange(Number(event.currentTarget.value))}
               />
-              <div className="screen-sharing-range-labels" aria-hidden="true">
-                <span>{labels.seconds(20)}</span>
-                <span>{labels.seconds(60)}</span>
-              </div>
               <p className="screen-sharing-cost" id={costId}>
                 {labels.cost}
               </p>
@@ -483,25 +462,6 @@ export function ScreenSharingControl({
                 <p className="screen-sharing-error" role="alert">
                   {error}
                 </p>
-              ) : active || busy ? (
-                <div className="screen-sharing-status" role="status" aria-live="polite">
-                  {busy ? (
-                    <>
-                      <LoaderCircle
-                        size={13}
-                        className="screen-sharing-spinner"
-                        aria-hidden="true"
-                      />
-                      <span>{labels.busy}</span>
-                    </>
-                  ) : lastViewed ? (
-                    <span>
-                      {labels.lastViewed}: {lastViewed}
-                    </span>
-                  ) : (
-                    <span>{labels.waiting}</span>
-                  )}
-                </div>
               ) : null}
               <button
                 type="button"

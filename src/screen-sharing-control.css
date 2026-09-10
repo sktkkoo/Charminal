@@ -92,8 +92,7 @@
 
 .screen-sharing-heading,
 .screen-sharing-source-row,
-.screen-sharing-interval-heading,
-.screen-sharing-range-labels {
+.screen-sharing-interval-heading {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -110,23 +109,23 @@
 }
 
 .screen-sharing-badge {
-  padding: 1px 6px;
-  border: 1px solid var(--yorishiro-border, #3b403d);
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--yorishiro-fg-dim, #a6aba8);
   font-size: 10px;
 }
 
-.screen-sharing-badge[data-active="true"] {
-  border-color: var(--yorishiro-accent-border, #526659);
-  background: var(--yorishiro-accent-soft, #202922);
-  color: var(--yorishiro-accent, #8eb09c);
+.screen-sharing-badge::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
-.screen-sharing-experimental {
-  flex-shrink: 0;
-  color: var(--yorishiro-fg-dim, #a6aba8);
-  font-size: 9px;
+.screen-sharing-badge[data-active="true"] {
+  color: var(--yorishiro-accent, #8eb09c);
 }
 
 .screen-sharing-description,
@@ -216,8 +215,7 @@
   color: var(--yorishiro-fg, #e8ebe7);
 }
 
-.screen-sharing-interval-heading,
-.screen-sharing-range-labels {
+.screen-sharing-interval-heading {
   justify-content: space-between;
 }
 
@@ -275,21 +273,10 @@
   );
 }
 
-.screen-sharing-range-labels {
-  margin-bottom: 12px;
-  color: var(--yorishiro-fg-dim, #a6aba8);
-  font-size: 10px;
-}
-
 .screen-sharing-cost {
-  padding: 8px 10px;
-  border: 1px solid var(--yorishiro-accent-border, #526659);
-  border-radius: 6px;
-  background: var(--yorishiro-accent-soft, #202922);
-  color: var(--yorishiro-fg, #e8ebe7);
+  margin: 2px 0 14px;
 }
 
-.screen-sharing-status,
 .screen-sharing-error {
   display: flex;
   align-items: center;

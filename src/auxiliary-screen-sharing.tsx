@@ -1,4 +1,4 @@
-import { Camera, LoaderCircle, MonitorUp, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CameraPreviewToggle } from "./camera-preview-toggle";
 import {
@@ -12,6 +12,7 @@ import {
 } from "./runtime/auxiliary-windows";
 import { ScreenPointerToggle } from "./screen-pointer-toggle";
 import { SharingSourceMenu } from "./sharing-source-menu";
+import { SharingStatus } from "./sharing-status";
 import "./screen-sharing-control.css";
 import "./auxiliary-screen-sharing.css";
 
@@ -21,15 +22,10 @@ const text = {
     display: "Display",
     noDisplays: "No displays available",
     refresh: "Refresh displays",
-    interval: "Periodic interval",
-    seconds: (value: number) => `${value} seconds`,
-    cost: "Sending images periodically uses many tokens.",
+    interval: "Update interval",
+    seconds: (value: number) => `Every ${value}s`,
+    cost: "Shorter intervals use more tokens.",
     unavailable: "Choose an agent that supports screen sharing in the main window.",
-    on: "Sharing",
-    off: "Off",
-    busy: "Sharing image…",
-    waiting: "Waiting for the first image…",
-    lastViewed: "Last shared",
     cancel: "Cancel",
     start: "Start sharing",
     stop: "Stop sharing",
@@ -41,15 +37,10 @@ const text = {
     display: "画面選択",
     noDisplays: "共有できる画面がありません",
     refresh: "画面一覧を更新",
-    interval: "定期更新の間隔",
-    seconds: (value: number) => `${value}秒`,
-    cost: "画像の定期送信ではトークンを多く消費します。",
+    interval: "更新間隔",
+    seconds: (value: number) => `${value}秒ごと`,
+    cost: "間隔が短いほどトークン消費が増えます。",
     unavailable: "メインウィンドウで画面共有に対応するエージェントを選択してください。",
-    on: "共有中",
-    off: "停止中",
-    busy: "画像を共有中…",
-    waiting: "最初の画像の共有を待っています…",
-    lastViewed: "最終共有",
     cancel: "キャンセル",
     start: "共有を開始",
     stop: "共有を停止",
@@ -164,7 +155,6 @@ export default function AuxiliaryScreenSharing() {
       <main className="screen-sharing-panel auxiliary-sharing">
         <header className="screen-sharing-heading">
           <h1>{chooser ? (japanese ? "共有" : "Sharing") : labels.title}</h1>
-          <span className="screen-sharing-experimental">Experimental</span>
         </header>
         <p role="status">{labels.pending}</p>
         {actionError ? <p role="alert">{actionError}</p> : null}
@@ -179,12 +169,6 @@ export default function AuxiliaryScreenSharing() {
     hasSelectedSource &&
     !state.busy &&
     !requesting;
-  const lastViewed =
-    state.lastObservedAt === null
-      ? null
-      : new Date(state.lastObservedAt).toLocaleTimeString(
-          state.language === "ja" ? "ja-JP" : "en-US",
-        );
   const commitInterval = (value: string) => {
     const intervalSeconds = Number(value);
     if (intervalSeconds !== state.intervalSeconds) {
@@ -195,16 +179,13 @@ export default function AuxiliaryScreenSharing() {
   return (
     <main className="screen-sharing-panel auxiliary-sharing">
       <header className="screen-sharing-heading">
-        {camera ? (
-          <Camera size={18} aria-hidden="true" />
-        ) : (
-          <MonitorUp size={18} aria-hidden="true" />
-        )}
         <h1>{chooser ? (japanese ? "共有" : "Sharing") : labels.title}</h1>
-        <span className="screen-sharing-experimental">Experimental</span>
-        <span className="screen-sharing-badge" data-active={state.active}>
-          {state.active ? labels.on : labels.off}
-        </span>
+        <SharingStatus
+          active={state.active}
+          busy={state.busy}
+          lastObservedAt={state.lastObservedAt ?? undefined}
+          language={state.language}
+        />
       </header>
       {chooser && (state.hasError || actionError) ? (
         <p className="screen-sharing-error" role="alert">
@@ -227,12 +208,10 @@ export default function AuxiliaryScreenSharing() {
               {japanese ? "← 共有元を変更" : "← Change sharing source"}
             </button>
           ) : null}
-          <label className="screen-sharing-label" htmlFor="shared-display">
-            {labels.display}
-          </label>
           <div className="screen-sharing-source-row">
             <select
               id="shared-display"
+              aria-label={labels.display}
               value={hasSelectedSource ? (state.sourceId ?? "") : ""}
               disabled={state.active || state.busy || !state.available || requesting}
               onChange={(event) =>
@@ -281,10 +260,6 @@ export default function AuxiliaryScreenSharing() {
             onKeyUp={(event) => commitInterval(event.currentTarget.value)}
             onBlur={(event) => commitInterval(event.currentTarget.value)}
           />
-          <div className="screen-sharing-range-labels" aria-hidden="true">
-            <span>{labels.seconds(20)}</span>
-            <span>{labels.seconds(60)}</span>
-          </div>
           <p className="screen-sharing-cost" id="sharing-cost">
             {labels.cost}
           </p>
@@ -317,20 +292,7 @@ export default function AuxiliaryScreenSharing() {
               {actionError ?? labels.error}
             </p>
           ) : null}
-          {state.active || state.busy ? (
-            <p className="screen-sharing-status" role="status" aria-live="polite">
-              {state.busy ? (
-                <>
-                  <LoaderCircle size={13} className="screen-sharing-spinner" aria-hidden="true" />
-                  {labels.busy}
-                </>
-              ) : lastViewed ? (
-                `${labels.lastViewed}: ${lastViewed}`
-              ) : (
-                labels.waiting
-              )}
-            </p>
-          ) : null}
+
           <button
             type="button"
             className="screen-sharing-action"

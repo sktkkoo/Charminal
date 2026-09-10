@@ -108,7 +108,7 @@ describe("screen sharing control", () => {
     const p = props();
     render(<ScreenSharingControl {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
-    expect(screen.getByText("画像の定期送信ではトークンを多く消費します。")).toBeTruthy();
+    expect(screen.getByText("間隔が短いほどトークン消費が増えます。")).toBeTruthy();
     expect(p.onStart).not.toHaveBeenCalled();
     const interval = screen.getByRole("slider") as HTMLInputElement;
     expect(interval.min).toBe("20");
