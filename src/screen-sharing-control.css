@@ -144,20 +144,52 @@
 }
 
 .screen-sharing-source-row {
+  position: relative;
   margin: 5px 0 14px;
 }
 
+.screen-sharing-source-row::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 46px;
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  color: var(--yorishiro-fg-dim, #a6aba8);
+  transform: translateY(-75%) rotate(45deg);
+  pointer-events: none;
+}
+
 .screen-sharing-source-row select {
+  appearance: none;
+  -webkit-appearance: none;
   flex: 1;
   min-width: 0;
   height: 30px;
-  padding: 3px 8px;
+  padding: 3px 28px 3px 8px;
   border: 1px solid var(--yorishiro-border, #3b403d);
-  border-radius: 5px;
+  border-radius: 3px;
   background: var(--yorishiro-button-bg, #24282b);
-  color: inherit;
+  box-shadow: none;
+  color: var(--yorishiro-button-fg, #aab4ac);
   font: inherit;
   text-overflow: ellipsis;
+}
+
+.screen-sharing-source-row select:hover:not(:disabled) {
+  color: var(--yorishiro-fg, #e8ebe7);
+}
+
+.screen-sharing-source-row select:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.screen-sharing-source-row select:focus-visible {
+  background: var(--yorishiro-accent-soft, #202922);
+  color: var(--yorishiro-fg, #e8ebe7);
 }
 
 .screen-sharing-icon-button {
@@ -346,7 +378,6 @@
 }
 
 .screen-sharing-control button:focus-visible,
-.screen-sharing-panel select:focus-visible,
 .screen-sharing-panel input:focus-visible {
   outline: 2px solid var(--yorishiro-accent, #8eb09c);
   outline-offset: 2px;
