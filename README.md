@@ -81,8 +81,8 @@ Switch from the View Mode menu in the title bar, or press `Option+Command+0` thr
 | Mode | Preview | Description |
 |---|---|---|
 | **Terminal** | <img src="docs/assets/view-mode-terminal.png" alt="Terminal view mode" width="320" /> | The full workspace, with the terminal and resident side by side |
-| **Portrait** | <img src="docs/assets/view-mode-portrait.png" alt="Portrait view mode" width="320" /> | A narrow, always-on-top resident window beside your external terminal |
-| **Call** | <img src="docs/assets/view-mode-call.png" alt="Call view mode" width="320" /> | A compact, face-centered window for conversation |
+| **Portrait** | <img src="docs/assets/view-mode-portrait.png" alt="Portrait view mode" width="320" /> | A narrow, always-on-top resident window |
+| **Call** | <img src="docs/assets/view-mode-call.png" alt="Call view mode" width="320" /> | A compact window for conversation |
 | **Theater** | <img src="docs/assets/view-mode-theater.png" alt="Theater view mode" width="320" /> | A full stage with the terminal and app chrome hidden |
 | **Immersive** | <img src="docs/assets/view-mode-immersive.png" alt="Immersive view mode" width="320" /> | A transparent terminal layered over the resident and scene |
 

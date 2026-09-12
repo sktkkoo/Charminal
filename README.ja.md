@@ -82,8 +82,8 @@ npm run tauri dev
 | モード | プレビュー | 説明 |
 |---|---|---|
 | **Terminal** | <img src="docs/assets/view-mode-terminal.png" alt="Terminalビューモード" width="320" /> | ターミナルと住人を並べる標準ワークスペース |
-| **Portrait** | <img src="docs/assets/view-mode-portrait.png" alt="Portraitビューモード" width="320" /> | 外部ターミナルの隣に置く、細長い常時手前の住人ウィンドウ |
-| **Call** | <img src="docs/assets/view-mode-call.png" alt="Callビューモード" width="320" /> | 会話向けの、顔を中心にしたコンパクトウィンドウ |
+| **Portrait** | <img src="docs/assets/view-mode-portrait.png" alt="Portraitビューモード" width="320" /> | 細長い常時手前の住人ウィンドウ |
+| **Call** | <img src="docs/assets/view-mode-call.png" alt="Callビューモード" width="320" /> | 会話向けのコンパクトウィンドウ |
 | **Theater** | <img src="docs/assets/view-mode-theater.png" alt="Theaterビューモード" width="320" /> | ターミナルやタイトルバーを隠し、住人とシーンを全面表示 |
 | **Immersive** | <img src="docs/assets/view-mode-immersive.png" alt="Immersiveビューモード" width="320" /> | 住人とシーンの上に透明なターミナルを重ねる表示 |
 
