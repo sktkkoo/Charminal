@@ -39,7 +39,9 @@
     "doc:rust": "cargo doc --manifest-path src-tauri/Cargo.toml --no-deps --document-private-items",
     "doc:open": "open docs/api/typescript/index.html",
     "doc:rust:open": "open src-tauri/target/doc/yorishiro_lib/index.html",
-    "prepare": "lefthook install"
+    "prepare": "lefthook install",
+    "dev:room-signaling": "node server/room-signaling.mjs",
+    "test:room-signaling": "node --test server/room-signaling.integration.mjs"
   },
   "dependencies": {
     "@pixiv/three-vrm": "^3.5.1",
@@ -61,7 +63,8 @@
     "lucide-react": "^1.14.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "three": "^0.183.2"
+    "three": "^0.183.2",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.11",
