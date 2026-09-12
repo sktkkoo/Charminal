@@ -116,19 +116,10 @@ export class NativeCallAgent {
     this.channel = resources.channel;
     this.events = resources.events;
     this.events.onmessage = (event) => this.handleEvent(event);
-    this.channel.onmessage = (event) => {
-      if (this.closed || typeof event.data !== "string" || event.data.length > 65536) return;
-      try {
-        const value = JSON.parse(event.data);
-        if (
-          /handoff|delegat|function_call/i.test(`${value?.type ?? ""} ${value?.item?.type ?? ""}`)
-        ) {
-          this.fail(new Error("通話用AIでは作業やツールを実行できません。"));
-        }
-      } catch {
-        // Provider events are data only; malformed messages are ignored.
-      }
-    };
+    // Provider data-channel events never invoke client capabilities. Native owns
+    // tool refusal and isolated backing-turn cancellation; a function/handoff
+    // status notification alone must not disconnect this audio connection.
+    this.channel.onmessage = null;
     this.pc.ontrack = (event) => {
       if (this.closed || event.track.kind !== "audio") {
         event.track.stop();

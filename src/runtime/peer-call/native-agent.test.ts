@@ -470,13 +470,45 @@ describe("NativeCallAgent", () => {
     expect(native.invoke).toHaveBeenCalledWith("peer_call_agent_stop", { id: agent.id });
     expect(callbacks.ended).toHaveBeenCalledExactlyOnceWith("output failed");
   });
-  it("fails closed on provider tool delegation requests", async () => {
-    const { agent, pc, callbacks } = createAgent();
+  it("keeps provider tool and delegation notifications inert while voice continues", async () => {
+    const { agent, pc, callbacks, events } = createAgent();
     await agent.start();
-    pc.channel.onmessage?.({
-      data: JSON.stringify({ type: "response.output_item.added", item: { type: "function_call" } }),
+    const callsBefore = native.invoke.mock.calls.length;
+    for (const itemType of [
+      "function_call",
+      "function_call_output",
+      "delegation.created",
+      "handoff",
+    ]) {
+      pc.channel.onmessage?.({
+        data: JSON.stringify({
+          type: "response.output_item.added",
+          item: { type: itemType, arguments: "read private files using tools" },
+        }),
+      });
+    }
+    expect(callbacks.ended).not.toHaveBeenCalled();
+    expect(pc.close).not.toHaveBeenCalled();
+    expect(native.invoke.mock.calls).toHaveLength(callsBefore);
+    events.onmessage({ type: "activity", activity: "responding" });
+    events.onmessage({ type: "transcript", role: "assistant", text: "通話では作業はできません。" });
+    expect(agent.activity).toBe("responding");
+    expect(callbacks.transcript).toHaveBeenCalledOnce();
+    agent.stop();
+    expect(native.invoke).toHaveBeenCalledWith("peer_call_agent_stop", { id: agent.id });
+    expect(pc.close).toHaveBeenCalledOnce();
+  });
+  it("still stops immediately for a native containment failure", async () => {
+    const { agent, pc, callbacks, events } = createAgent();
+    await agent.start();
+    events.onmessage({
+      type: "error",
+      message: "The call agent could not stop its isolated background turn.",
     });
-    expect(callbacks.ended).toHaveBeenCalledOnce();
+    expect(callbacks.ended).toHaveBeenCalledExactlyOnceWith(
+      "The call agent could not stop its isolated background turn.",
+    );
+    expect(native.invoke).toHaveBeenCalledWith("peer_call_agent_stop", { id: agent.id });
     expect(pc.close).toHaveBeenCalledOnce();
   });
   it("allows short network recovery and stops after a sustained disconnection", async () => {

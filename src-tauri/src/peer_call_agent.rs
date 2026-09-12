@@ -23,6 +23,10 @@ const MAX_SDP: usize = 64 * 1024;
 const MAX_LINE: usize = 1024 * 1024;
 const MAX_AGENTS: usize = 2;
 const LIFETIME: Duration = Duration::from_secs(30 * 60);
+const BACKING_TURN_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTAINMENT_ERROR: &str = "The call agent could not stop its isolated background turn.";
+const TOOL_REFUSAL: &str = "Tools and background work are unavailable in this voice-only call. No tool was run by this client.";
+const REFUSAL_CONTEXT: &str = "The background turn has ended. No tool result is available. This call supports conversation only: do not execute or delegate the request, retry tools, or claim that an action ran. If relevant, briefly explain that call mode cannot perform actions, then continue listening and conversing.";
 // Installed Codex 0.154.0 ThreadRealtimeStartParams.RealtimeVoice schema spans versions.
 // Preserve explicit schema-valid choices; V3 reports unsupported configured voices below.
 const CALL_VOICES: &[&str] = &[
@@ -388,6 +392,154 @@ fn signal_owned(pid: u32) {
     let _ = pid;
 }
 
+/// Refuse capabilities without closing Live. Codex 0.154 can create a backing turn
+/// even with clientManagedHandoffs enabled; that flag only suppresses forwarding.
+/// Never await an interrupt from inside Rpc::handle: its acknowledgement and the
+/// terminal turn notification arrive interleaved with the ongoing voice stream.
+#[derive(Default)]
+struct VoiceOnlyGuard {
+    stopping: HashMap<String, Instant>,
+    completed: VecDeque<String>,
+    last_notice: Option<Instant>,
+}
+
+impl VoiceOnlyGuard {
+    fn deadline(&self) -> Option<Instant> {
+        self.stopping.values().copied().min()
+    }
+
+    fn check_deadline(&self, now: Instant) -> Result<(), String> {
+        if self.deadline().is_some_and(|deadline| now >= deadline) {
+            return Err(CONTAINMENT_ERROR.into());
+        }
+        Ok(())
+    }
+
+    fn handle(
+        &mut self,
+        value: &Value,
+        thread_id: Option<&str>,
+        next_id: &mut u64,
+        now: Instant,
+    ) -> Result<Vec<Value>, String> {
+        let Some(method) = value["method"].as_str() else {
+            // An interrupt acknowledgement alone does not prove the turn stopped.
+            // Its error can also race with an already completed turn; wait for the
+            // exact turn/completed notification, under the same bounded deadline.
+            return Ok(vec![]);
+        };
+        let mut writes = Vec::new();
+        let request = value.get("id").is_some();
+        if request {
+            writes.push(refuse_server_request(value));
+        }
+        let params = &value["params"];
+        let Some(thread) = thread_id.filter(|thread| params["threadId"].as_str() == Some(thread))
+        else {
+            // Even an unowned/unknown request is refused, but it can never select
+            // a thread to interrupt or cause context to enter this voice session.
+            return Ok(writes);
+        };
+        if !request && method == "turn/completed" {
+            if matches!(
+                params["turn"]["status"].as_str(),
+                Some("completed" | "interrupted" | "failed")
+            ) {
+                if let Some(turn) = protocol_id(&params["turn"]["id"]) {
+                    let was_stopping = self.stopping.remove(turn).is_some();
+                    if !self.completed.iter().any(|done| done == turn) {
+                        self.completed.push_back(turn.into());
+                        if self.completed.len() > 64 {
+                            self.completed.pop_front();
+                        }
+                    }
+                    if was_stopping
+                        && self.stopping.is_empty()
+                        && self
+                            .last_notice
+                            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(5))
+                    {
+                        self.last_notice = Some(now);
+                        writes.push(control_request(
+                            next_id,
+                            "thread/realtime/appendText",
+                            json!({"threadId":thread,"role":"developer","text":REFUSAL_CONTEXT}),
+                        ));
+                    }
+                }
+            }
+            return Ok(writes);
+        }
+        let turn = if !request && method == "turn/started" {
+            Some(protocol_id(&params["turn"]["id"]).ok_or(CONTAINMENT_ERROR)?)
+        } else if request {
+            protocol_id(&params["turnId"])
+        } else {
+            // A function-call, delegation or handoff *notification* is data, not a
+            // request to execute it. The backing turn and server requests above
+            // are the enforcement boundary, never a substring of an event type.
+            None
+        };
+        if let Some(turn) = turn {
+            if !self.stopping.contains_key(turn) && !self.completed.iter().any(|done| done == turn)
+            {
+                // One thread normally has one active turn. Bound unexpected races
+                // without retaining any tool arguments, prompts or output.
+                if self.stopping.len() >= 8 {
+                    return Err(CONTAINMENT_ERROR.into());
+                }
+                self.stopping
+                    .insert(turn.into(), now + BACKING_TURN_STOP_TIMEOUT);
+                writes.push(control_request(
+                    next_id,
+                    "turn/interrupt",
+                    json!({"threadId":thread,"turnId":turn}),
+                ));
+            }
+        }
+        Ok(writes)
+    }
+}
+
+fn protocol_id(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
+}
+
+fn control_request(next_id: &mut u64, method: &str, params: Value) -> Value {
+    let id = *next_id;
+    *next_id += 1;
+    json!({"id":id,"method":method,"params":params})
+}
+
+/// Schema-valid negative answers from installed Codex 0.154 ServerRequest. Nothing
+/// is executed, no approval is cached, and unknown client capabilities stay absent.
+fn refuse_server_request(value: &Value) -> Value {
+    let id = if value["id"].is_i64() || value["id"].is_u64() || protocol_id(&value["id"]).is_some()
+    {
+        value["id"].clone()
+    } else {
+        Value::Null
+    };
+    let result = match value["method"].as_str().unwrap_or("") {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            json!({"decision":"cancel"})
+        }
+        "execCommandApproval" | "applyPatchApproval" => json!({"decision":"abort"}),
+        "item/permissions/requestApproval" => json!({"permissions":{},"scope":"turn"}),
+        "item/tool/requestUserInput" => json!({"answers":{}}),
+        "mcpServer/elicitation/request" => json!({"action":"cancel","content":null}),
+        "item/tool/call" => {
+            json!({"success":false,"contentItems":[{"type":"inputText","text":TOOL_REFUSAL}]})
+        }
+        _ => {
+            return json!({"id":id,"error":{"code":-32601,"message":"This client capability is unavailable in voice-only calls"}})
+        }
+    };
+    json!({"id":id,"result":result})
+}
+
 struct Rpc {
     child: Child,
     stdin: ChildStdin,
@@ -399,6 +551,7 @@ struct Rpc {
     thread_id: Option<String>,
     answer: Option<String>,
     activity: Option<&'static str>,
+    voice_only: VoiceOnlyGuard,
     events: Channel<AgentEvent>,
 }
 impl Drop for Rpc {
@@ -583,6 +736,7 @@ impl Rpc {
             thread_id: None,
             answer: None,
             activity: None,
+            voice_only: VoiceOnlyGuard::default(),
             events,
         })
     }
@@ -596,10 +750,15 @@ impl Rpc {
             .map_err(|_| "Call agent process closed".into())
     }
     async fn next(&mut self) -> Result<Value, String> {
-        self.messages
-            .recv()
-            .await
-            .ok_or_else(|| "Call agent process closed".to_string())?
+        self.voice_only.check_deadline(Instant::now())?;
+        let message = if let Some(deadline) = self.voice_only.deadline() {
+            tokio::time::timeout_at(deadline.into(), self.messages.recv())
+                .await
+                .map_err(|_| CONTAINMENT_ERROR.to_string())?
+        } else {
+            self.messages.recv().await
+        };
+        message.ok_or_else(|| "Call agent process closed".to_string())?
     }
     fn emit_activity(&mut self, activity: &'static str) -> Result<(), String> {
         if self.activity == Some(activity) {
@@ -612,12 +771,19 @@ impl Rpc {
         Ok(())
     }
     async fn handle(&mut self, value: Value) -> Result<(), String> {
+        for response in self.voice_only.handle(
+            &value,
+            self.thread_id.as_deref(),
+            &mut self.next_id,
+            Instant::now(),
+        )? {
+            self.write(response).await?;
+        }
         let Some(method) = value["method"].as_str() else {
             return Ok(());
         };
         if value.get("id").is_some() {
-            self.write(json!({"id":value["id"],"error":{"code":-32601,"message":"Call agents cannot run tools"}})).await?;
-            return Err("Call agents cannot run tools or delegate work".into());
+            return Ok(());
         }
         if let Some(message) = scoped_voice_provider_error(&value, self.thread_id.as_deref()) {
             return Err(message.into());
@@ -627,19 +793,6 @@ impl Rpc {
             return Ok(());
         }
         let item_type = params["item"]["type"].as_str().unwrap_or("");
-        let raw_type = params["item"]["rawJson"]
-            .as_str()
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-            .and_then(|raw| raw["type"].as_str().map(str::to_owned))
-            .unwrap_or_default();
-        let action = format!("{method} {item_type} {raw_type}").to_ascii_lowercase();
-        if method == "turn/started"
-            || ["handoff", "delegat", "function_call"]
-                .iter()
-                .any(|s| action.contains(s))
-        {
-            return Err("Call agents cannot run tools or delegate work".into());
-        }
         if item_type == "input_audio_buffer.speech_started" {
             self.emit_activity("listening")?;
         }
@@ -711,6 +864,7 @@ impl Rpc {
             .await
     }
     async fn close(&mut self) {
+        self.voice_only.stopping.clear();
         if let Some(thread) = self.thread_id.clone() {
             let _ = tokio::time::timeout(
                 Duration::from_millis(500),
@@ -1092,6 +1246,287 @@ async fn initialize_isolated_agent(rpc: &mut Rpc, directory: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn turn_event(method: &str, thread: &str, turn: &str, status: &str) -> Value {
+        json!({"method":method,"params":{"threadId":thread,"turn":{"id":turn,"items":[],"status":status}}})
+    }
+
+    #[test]
+    fn backing_turn_is_interrupted_without_stopping_live_or_forwarding_work() {
+        let mut guard = VoiceOnlyGuard::default();
+        let now = Instant::now();
+        let mut next_id = 12;
+        let started = turn_event("turn/started", "owned", "turn-1", "inProgress");
+        let writes = guard
+            .handle(&started, Some("owned"), &mut next_id, now)
+            .unwrap();
+        assert_eq!(
+            writes,
+            vec![
+                json!({"id":12,"method":"turn/interrupt","params":{"threadId":"owned","turnId":"turn-1"}})
+            ]
+        );
+        assert_eq!(next_id, 13);
+        assert!(guard
+            .handle(&started, Some("owned"), &mut next_id, now)
+            .unwrap()
+            .is_empty());
+        // Status/transcript/output and RPC acknowledgements can interleave with
+        // cancellation. None execute tools, close Live, or prove containment.
+        for event in [
+            json!({"id":12,"result":{}}),
+            json!({"method":"thread/realtime/transcript/done","params":{"threadId":"owned","role":"user","text":"continue the conversation"}}),
+            json!({"method":"thread/realtime/outputAudio/delta","params":{"threadId":"owned","audio":"audio-data"}}),
+            json!({"method":"thread/realtime/itemAdded","params":{"threadId":"owned","item":{"type":"function_call_output","rawJson":"{\"type\":\"delegation.completed\"}"}}}),
+        ] {
+            assert!(guard
+                .handle(&event, Some("owned"), &mut next_id, now)
+                .unwrap()
+                .is_empty());
+        }
+        assert!(guard.deadline().is_some());
+        let mut completed = turn_event("turn/completed", "owned", "turn-1", "interrupted");
+        completed["params"]["turn"]["items"] =
+            json!([{"type":"agentMessage","text":"PRIVATE_BACKING_OUTPUT"}]);
+        let writes = guard
+            .handle(&completed, Some("owned"), &mut next_id, now)
+            .unwrap();
+        assert_eq!(
+            writes,
+            vec![
+                json!({"id":13,"method":"thread/realtime/appendText","params":{"threadId":"owned","role":"developer","text":REFUSAL_CONTEXT}})
+            ]
+        );
+        assert!(!writes[0].to_string().contains("PRIVATE_BACKING_OUTPUT"));
+        assert!(guard.deadline().is_none());
+        assert!(guard
+            .handle(&completed, Some("owned"), &mut next_id, now)
+            .unwrap()
+            .is_empty());
+        // A delayed error response or duplicate start must not kill a turn which
+        // was already confirmed finished (the normal cancel/completion race).
+        assert!(guard
+            .handle(
+                &json!({"id":12,"error":{"message":"turn is no longer active"}}),
+                Some("owned"),
+                &mut next_id,
+                now
+            )
+            .unwrap()
+            .is_empty());
+        assert!(guard
+            .handle(&started, Some("owned"), &mut next_id, now)
+            .unwrap()
+            .is_empty());
+        assert!(guard
+            .check_deadline(now + BACKING_TURN_STOP_TIMEOUT)
+            .is_ok());
+    }
+
+    #[test]
+    fn server_requests_get_schema_valid_denials_without_grants_or_payload_echo() {
+        let cases = [
+            (
+                "item/commandExecution/requestApproval",
+                json!({"decision":"cancel"}),
+            ),
+            (
+                "item/fileChange/requestApproval",
+                json!({"decision":"cancel"}),
+            ),
+            ("execCommandApproval", json!({"decision":"abort"})),
+            ("applyPatchApproval", json!({"decision":"abort"})),
+            (
+                "item/permissions/requestApproval",
+                json!({"permissions":{},"scope":"turn"}),
+            ),
+            ("item/tool/requestUserInput", json!({"answers":{}})),
+            (
+                "mcpServer/elicitation/request",
+                json!({"action":"cancel","content":null}),
+            ),
+            (
+                "item/tool/call",
+                json!({"success":false,"contentItems":[{"type":"inputText","text":TOOL_REFUSAL}]}),
+            ),
+        ];
+        for (method, expected) in cases {
+            let mut event = json!({"id":"request-7","method":method,"params":{"threadId":"owned","turnId":"turn-1","callId":"call-7","tool":"unavailable-tool","itemId":"item-7","startedAtMs":0,"arguments":{"text":"PRIVATE /Users/private/work sk-secret"},"command":"PRIVATE","reason":"PRIVATE"}});
+            let legacy = matches!(method, "execCommandApproval" | "applyPatchApproval");
+            if legacy {
+                // Legacy approvals address conversationId, and have no turnId.
+                // Their schema's abort decision refuses work without selecting
+                // any unrelated thread to interrupt.
+                event["params"] = json!({"conversationId":"owned","callId":"call-7","command":["PRIVATE"],"cwd":"/PRIVATE","parsedCmd":[],"reason":"PRIVATE"});
+            }
+            let mut guard = VoiceOnlyGuard::default();
+            let writes = guard
+                .handle(&event, Some("owned"), &mut 10, Instant::now())
+                .unwrap();
+            assert_eq!(writes[0], json!({"id":"request-7","result":expected}));
+            if legacy {
+                assert_eq!(writes.len(), 1);
+            } else {
+                assert_eq!(writes[1]["method"], "turn/interrupt");
+                assert_eq!(
+                    writes[1]["params"],
+                    json!({"threadId":"owned","turnId":"turn-1"})
+                );
+            }
+            assert!(!serde_json::to_string(&writes).unwrap().contains("PRIVATE"));
+        }
+        let unknown = refuse_server_request(
+            &json!({"id":24,"method":"account/chatgptAuthTokens/refresh","params":{"reason":"secret"}}),
+        );
+        assert_eq!(unknown["id"], 24);
+        assert_eq!(unknown["error"]["code"], -32601);
+        assert!(!unknown.to_string().contains("secret"));
+        assert_eq!(
+            refuse_server_request(&json!({"id":{"private":"secret"},"method":"unknown"}))["id"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn only_owned_turn_completion_releases_containment_and_sends_bounded_context() {
+        let mut guard = VoiceOnlyGuard::default();
+        let now = Instant::now();
+        let mut next_id = 10;
+        for owner in [None, Some("other")] {
+            assert!(guard
+                .handle(
+                    &turn_event("turn/started", "owned", "turn-1", "inProgress"),
+                    owner,
+                    &mut next_id,
+                    now
+                )
+                .unwrap()
+                .is_empty());
+        }
+        let unowned = json!({"id":8,"method":"item/tool/call","params":{"threadId":"other","turnId":"turn-private"}});
+        assert_eq!(
+            guard
+                .handle(&unowned, Some("owned"), &mut next_id, now)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(guard.deadline().is_none());
+        guard
+            .handle(
+                &turn_event("turn/started", "owned", "turn-1", "inProgress"),
+                Some("owned"),
+                &mut next_id,
+                now,
+            )
+            .unwrap();
+        for event in [
+            turn_event("turn/completed", "other", "turn-1", "interrupted"),
+            turn_event("turn/completed", "owned", "other-turn", "interrupted"),
+            turn_event("turn/completed", "owned", "turn-1", "inProgress"),
+            json!({"id":10,"error":{"message":"cancel failed with private data"}}),
+        ] {
+            assert!(guard
+                .handle(&event, Some("owned"), &mut next_id, now)
+                .unwrap()
+                .is_empty());
+        }
+        assert_eq!(
+            guard.check_deadline(now + BACKING_TURN_STOP_TIMEOUT),
+            Err(CONTAINMENT_ERROR.into())
+        );
+        assert!(guard
+            .check_deadline(now + BACKING_TURN_STOP_TIMEOUT - Duration::from_millis(1))
+            .is_ok());
+        // Either a natural completion or a failed turn also confirms it ended.
+        assert_eq!(
+            guard
+                .handle(
+                    &turn_event("turn/completed", "owned", "turn-1", "completed"),
+                    Some("owned"),
+                    &mut next_id,
+                    now
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        guard
+            .handle(
+                &turn_event("turn/started", "owned", "turn-2", "inProgress"),
+                Some("owned"),
+                &mut next_id,
+                now,
+            )
+            .unwrap();
+        assert!(guard
+            .handle(
+                &turn_event("turn/completed", "owned", "turn-2", "failed"),
+                Some("owned"),
+                &mut next_id,
+                now
+            )
+            .unwrap()
+            .is_empty());
+        assert!(guard.deadline().is_none());
+        // Rapid retries produce one fixed notice, not one utterance per request.
+        assert_eq!(guard.last_notice, Some(now));
+    }
+
+    #[test]
+    fn cancellation_state_is_bounded_and_malformed_owned_turns_fail_closed() {
+        let now = Instant::now();
+        let mut guard = VoiceOnlyGuard::default();
+        for i in 0..8 {
+            guard
+                .handle(
+                    &turn_event("turn/started", "owned", &format!("turn-{i}"), "inProgress"),
+                    Some("owned"),
+                    &mut 1,
+                    now,
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            guard.handle(
+                &turn_event("turn/started", "owned", "overflow", "inProgress"),
+                Some("owned"),
+                &mut 1,
+                now
+            ),
+            Err(CONTAINMENT_ERROR.into())
+        );
+        for id in ["", &"x".repeat(257), "turn\nsecret"] {
+            assert_eq!(
+                VoiceOnlyGuard::default().handle(
+                    &turn_event("turn/started", "owned", id, "inProgress"),
+                    Some("owned"),
+                    &mut 1,
+                    now
+                ),
+                Err(CONTAINMENT_ERROR.into())
+            );
+        }
+        let mut guard = VoiceOnlyGuard::default();
+        for i in 0..80 {
+            guard
+                .handle(
+                    &turn_event(
+                        "turn/completed",
+                        "owned",
+                        &format!("turn-{i}"),
+                        "interrupted",
+                    ),
+                    Some("owned"),
+                    &mut 1,
+                    now,
+                )
+                .unwrap();
+        }
+        assert_eq!(guard.completed.len(), 64);
+        assert!(guard.deadline().is_none());
+    }
+
     #[test]
     fn realtime_provider_error_uses_the_installed_notification_schema_and_exact_thread() {
         let event = json!({"method":"thread/realtime/error","params":{"threadId":"owned-call","message":"HTTP 429 Too Many Requests"}});
