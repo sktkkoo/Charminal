@@ -146,14 +146,14 @@ Set `codexRealtimeVoice` in `~/.yorishiro/config.json` to choose the GPT Live ou
 
 ### Screen sharing / Camera sharing (Codex)
 
-Use the sharing icon in the title bar to send screen or camera stills to the current Codex conversation. Screen sharing on macOS supports entire-display, window, and region-selection modes. In region-selection mode, you can move and resize the shared area. For camera sharing, select a camera and start sharing.
+Use the sharing icon in the title bar to send screen or camera stills to the current Codex conversation. Screen sharing on macOS supports entire-display, window, and area-selection modes. In area-selection mode, you can move and resize the shared area. For camera sharing, select a camera and start sharing.
 
 Set the update interval to **10–180 seconds**; shorter intervals use more tokens. Use **Stop sharing** to stop sending images.
 
-**Agent pointing is experimental.** During entire-display sharing, ask the AI to point out a location, and it will mark it with an arrow or outline. We recommend Astra or a higher-capability model for agent pointing. It is unavailable for window sharing, region-selection mode, and camera sharing.
+**Agent pointing is experimental.** During entire-display sharing, ask the AI to point out a location, and it will mark it with an arrow or outline. We recommend Astra or a higher-capability model for agent pointing. It is unavailable for window sharing, area-selection mode, and camera sharing.
 
 <p align="center">
-  <img src="docs/assets/screen-sharing-controls.png" alt="Screen sharing settings with display, window, and region-selection tabs, update interval, and preview toggle" width="480" />
+  <img src="docs/assets/screen-sharing-controls-en.png" alt="Screen sharing settings with display, window, and area-selection tabs, update interval, and preview toggle" width="480" />
 </p>
 
 ### Custom avatars
@@ -161,7 +161,7 @@ Set the update interval to **10–180 seconds**; shorter intervals use more toke
 Import and switch VRM avatars from Settings. The chooser shows each model's thumbnail, declared name, author, VRM version, and usage permissions before you switch. Persona packs can also provide an `avatar.vrm` that is applied when you switch persona.
 
 <p align="center">
-  <img src="docs/assets/vrm-avatar-chooser.png" alt="Yorishiro VRM avatar chooser with thumbnails, model metadata, and usage permissions" width="960" />
+  <img src="docs/assets/vrm-avatar-chooser-en.png" alt="Yorishiro VRM avatar chooser with thumbnails, model metadata, and usage permissions" width="960" />
 </p>
 
 ### Language
@@ -304,7 +304,7 @@ What works today:
 - Fireworks celebrate a successful `git push` by the inhabitant (bundled Yori persona)
 - Light Alert: a light comes on when the agent waits for your input or approval
 - Terminal links: Cmd+click a visible HTTP/HTTPS URL to open it in the default browser
-- Screen sharing / Camera sharing: still images for the current Codex conversation at 10–180 second intervals; macOS supports display, window, and region-selection modes, with experimental agent pointing for entire displays
+- Screen sharing / Camera sharing: still images for the current Codex conversation at 10–180 second intervals; macOS supports display, window, and area-selection modes, with experimental agent pointing for entire displays
 - Context sharing: Voice Summary and Terminal Reference Markers (Cmd+Shift+click / Option+Shift+drag)
 - Journal: long-term memory across sessions, with recall at session start
 - Restore: automatic checkpoints for packs / init.js / settings, with reversible rollback

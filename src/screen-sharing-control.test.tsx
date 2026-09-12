@@ -93,9 +93,9 @@ describe("screen sharing control", () => {
     expect(screen.getByRole("tab", { name: "Window" }).getAttribute("aria-selected")).toBe("false");
     expect(p.onScreenSourceKindChange).not.toHaveBeenCalled();
     fireEvent.keyDown(screen.getByRole("tab", { name: "Window" }), { key: "End" });
-    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Region selection" }));
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Area" }));
     expect(p.onScreenSourceKindChange).not.toHaveBeenCalled();
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Region selection" }), { key: "Home" });
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Area" }), { key: "Home" });
     expect(document.activeElement).toBe(display);
     expect(p.onScreenSourceKindChange).not.toHaveBeenCalled();
     expect(screen.getByRole("tabpanel", { name: "Display" })).toBeTruthy();
@@ -133,9 +133,7 @@ describe("screen sharing control", () => {
     render(<ScreenSharingControl {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "Screen sharing" }));
     expect((screen.getByRole("tab", { name: "Window" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(
-      (screen.getByRole("tab", { name: "Region selection" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect((screen.getByRole("tab", { name: "Area" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("tab", { name: "Window" }).getAttribute("title")).toBe(
       "Not available in the running app yet",
     );
