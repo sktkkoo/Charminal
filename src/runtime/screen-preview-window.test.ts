@@ -135,3 +135,15 @@ it("still relay publishes the latest image after an in-flight publish without qu
   await vi.advanceTimersByTimeAsync(500);
   expect(publish).toHaveBeenCalledTimes(2);
 });
+
+it("keeps the detached window while a resized crop waits for a fresh frame", async () => {
+  const f = fixture();
+  await f.host.detach();
+  f.host.update({ ...f.model, frame: null });
+  f.host.update({ ...f.model, frame: { imageDataUrl: "data:image/jpeg;base64,BBBB" } });
+  expect(f.transport.open).toHaveBeenCalledOnce();
+  expect(f.transport.revoke).not.toHaveBeenCalled();
+  expect(f.cleanup).not.toHaveBeenCalled();
+  expect(f.changed).toHaveBeenLastCalledWith({ detached: true, opening: false });
+  f.host.dispose();
+});

@@ -254,6 +254,7 @@ describe("useScreenSharing", () => {
     expect(result.current.active).toBe(true);
     expect(result.current.busy).toBe(false);
     expect(result.current.screenShareKey).not.toBe(frameOwner);
+    expect(result.current.screenPreviewKey).toBe(frameOwner);
     expect(screenAnnotationEnd).toHaveBeenCalledWith(frameOwner);
     expect(screenAnnotationBegin).toHaveBeenLastCalledWith(
       result.current.screenShareKey,
@@ -725,6 +726,7 @@ describe("useScreenSharing", () => {
     act(() => result.current.stop());
     expect(result.current.screenPreviewFrame).toBeNull();
     expect(result.current.screenShareKey).toBeNull();
+    expect(result.current.screenPreviewKey).toBeNull();
   });
 
   it("does not restore a preview when delivery finishes after stop", async () => {

@@ -336,6 +336,7 @@ import {
 } from "./runtime/ui-pack-transition/stage-transition";
 import { getUiStateStore } from "./runtime/ui-state-store";
 import { useAuxiliaryScreenSharing } from "./runtime/use-auxiliary-screen-sharing";
+import { useInitialPreviewDestination } from "./runtime/use-initial-preview-destination";
 import { useViewModeCamera } from "./runtime/use-view-mode-camera";
 import {
   loadUserLayer,
@@ -4270,10 +4271,7 @@ function App() {
     }
   }, []);
   const screenPreviewWindow = useScreenPreviewWindow({
-    sourceKey:
-      screenPreviewVisible && screenSharing.screenPreviewFrame
-        ? screenSharing.screenShareKey
-        : null,
+    sourceKey: screenPreviewVisible ? screenSharing.screenPreviewKey : null,
     frame: screenSharing.screenPreviewFrame,
     language: appLanguage.resolved,
     onStop: screenSharing.stop,
@@ -4293,19 +4291,18 @@ function App() {
   const compactCameraView =
     activePresentationViewModeIdValue === "portrait" ||
     activePresentationViewModeIdValue === "companion";
-  const detachCameraPreview = cameraPreviewWindow.detach;
-  useEffect(() => {
-    if (compactCameraView && cameraPreviewVisible && screenSharing.cameraStream) {
-      void detachCameraPreview().catch(() => {});
-    }
-  }, [compactCameraView, cameraPreviewVisible, screenSharing.cameraStream, detachCameraPreview]);
-  const detachScreenPreview = screenPreviewWindow.detach;
-  const screenPreviewReady = screenSharing.screenPreviewFrame !== null;
-  useEffect(() => {
-    if (compactCameraView && screenPreviewVisible && screenPreviewReady) {
-      void detachScreenPreview().catch(() => {});
-    }
-  }, [compactCameraView, screenPreviewVisible, screenPreviewReady, detachScreenPreview]);
+  useInitialPreviewDestination({
+    sessionKey: screenSharing.cameraStream,
+    ready: cameraPreviewVisible && screenSharing.cameraStream !== null,
+    initiallyDetached: compactCameraView,
+    detach: cameraPreviewWindow.detach,
+  });
+  useInitialPreviewDestination({
+    sessionKey: screenSharing.screenPreviewKey,
+    ready: screenPreviewVisible && screenSharing.screenPreviewFrame !== null,
+    initiallyDetached: compactCameraView,
+    detach: screenPreviewWindow.detach,
+  });
   speechScreenCaptureRef.current = screenSharing.active ? screenSharing.captureNow : null;
   const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
     ...screenSharing,

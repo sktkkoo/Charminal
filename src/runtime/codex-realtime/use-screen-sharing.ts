@@ -149,6 +149,7 @@ export function useScreenSharing({
     lastSharedAt: number;
   } | null>(null);
   const [screenShareKey, setScreenShareKey] = useState<string | null>(null);
+  const [screenPreviewKey, setScreenPreviewKey] = useState<string | null>(null);
   const [lastCapturedAt, setLastCapturedAt] = useState<number>();
   const [lastObservedAt, setLastObservedAt] = useState<number>();
   const owner = useRef<SharingLease | null>(null);
@@ -193,6 +194,7 @@ export function useScreenSharing({
     setCameraStream(null);
     setScreenPreviewFrame(null);
     setScreenShareKey(null);
+    setScreenPreviewKey(null);
     setLastCapturedAt(undefined);
     lease?.camera?.close();
     if (lease?.frameId) void screenCaptureRegionFrameClose(lease.frameId).catch(() => {});
@@ -405,6 +407,7 @@ export function useScreenSharing({
       if (!isCurrent()) return;
       lease.ready = !lease.adjustingRegion;
       setScreenShareKey(lease.shareId);
+      setScreenPreviewKey(lease.shareId);
       setActive(true);
     } catch (failure) {
       if (!isCurrent()) return;
@@ -814,6 +817,7 @@ export function useScreenSharing({
     cameraStream,
     screenPreviewFrame,
     screenShareKey,
+    screenPreviewKey,
     lastCapturedAt,
     setSourceKind,
     sources,
