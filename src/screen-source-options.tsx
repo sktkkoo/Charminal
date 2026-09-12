@@ -83,7 +83,7 @@ export function ScreenSourceOptions({
                   : "Window"
                 : ja
                   ? "範囲選択"
-                  : "Region selection"}
+                  : "Area"}
           </button>
         ))}
       </div>
