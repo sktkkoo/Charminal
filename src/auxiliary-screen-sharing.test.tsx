@@ -101,7 +101,7 @@ describe("independent screen-sharing controls", () => {
     state = { ...state, snapshot: { ...state.snapshot, screenSourceKind: "region", active: true } };
     vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
     render(<AuxiliaryScreenSharing />);
-    await screen.findByRole("tab", { name: "Region" });
+    await screen.findByRole("tab", { name: "Region selection" });
     expect(screen.queryByRole("combobox")).toBeNull();
     expect(screen.queryByRole("button", { name: "Select region" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reselect region" })).toBeNull();

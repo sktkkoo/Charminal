@@ -150,7 +150,7 @@ Use the sharing icon in the title bar to send screen or camera stills to the cur
 
 Set the update interval to **10–180 seconds**; shorter intervals use more tokens. Use **Stop sharing** to stop sending images.
 
-**Agent pointing is experimental.** During entire-display sharing, the AI points out locations for you with arrows or outlines. It is unavailable for window sharing, region-selection mode, and camera sharing.
+**Agent pointing is experimental.** During entire-display sharing, ask the AI to point out a location, and it will mark it with an arrow or outline. We recommend Astra or a higher-capability model for agent pointing. It is unavailable for window sharing, region-selection mode, and camera sharing.
 
 <p align="center">
   <img src="docs/assets/screen-sharing-controls.png" alt="Screen sharing settings with display, window, and region-selection tabs, update interval, and preview toggle" width="480" />
