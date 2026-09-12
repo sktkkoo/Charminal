@@ -53,13 +53,30 @@ html[data-window-view="call-resident"] #root {
   padding: 6px 8px;
 }
 .remote-call-resident-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   cursor: grab;
   min-width: 0;
+}
+.remote-call-resident-identity {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  text-align: left;
+}
+.remote-call-resident-identity strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
 }
-.remote-call-resident-name span {
+.remote-call-resident-identity small {
+  color: #c0c9d8;
+  font-size: 9px;
+}
+.remote-call-resident-dot {
+  flex-shrink: 0;
   color: #87d9b1;
   font-size: 8px;
 }

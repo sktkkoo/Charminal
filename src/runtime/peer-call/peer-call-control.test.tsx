@@ -346,7 +346,8 @@ describe("native room call experience", () => {
     );
     const room = await connectedRoom();
     const strip = screen.getByRole("complementary", { name: "通話中" });
-    expect(within(strip).getByText("より · GPT")).toBeTruthy();
+    expect(within(strip).getByText("より")).toBeTruthy();
+    expect(within(strip).getByText("GPT")).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByTestId("call-stage")).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
@@ -363,7 +364,8 @@ describe("native room call experience", () => {
       );
       expect(screen.queryByRole("dialog")).toBeNull();
       expect(screen.queryByTestId("call-stage")).toBeNull();
-      expect(screen.getByText("より · GPT")).toBeTruthy();
+      expect(within(strip).getByText("より")).toBeTruthy();
+      expect(within(strip).getByText("GPT")).toBeTruthy();
     }
     expect(test.rooms).toHaveLength(1);
     expect(room.leave).not.toHaveBeenCalled();

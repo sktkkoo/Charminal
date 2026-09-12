@@ -382,9 +382,15 @@ export function PeerCallControl({
             data-no-window-drag
           >
             <span className="peer-call-session-status" role="status">
-              <strong>
-                {localName} · {remoteName}
-              </strong>
+              <strong title={localName}>{localName}</strong>
+              <small
+                className="peer-call-session-partner"
+                title={t(`${remoteName}と通話中`, `In call with ${remoteName}`)}
+              >
+                {!ja && <span>In call with</span>}
+                <span className="peer-call-session-partner-name">{remoteName}</span>
+                {ja && <span>と通話中</span>}
+              </small>
               <small>{status}</small>
             </span>
             {onShowResident && layout !== "theater" && (

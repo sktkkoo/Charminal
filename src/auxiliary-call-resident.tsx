@@ -123,12 +123,22 @@ export default function AuxiliaryCallResident() {
         <button
           type="button"
           className="remote-call-resident-name"
-          aria-label={japanese ? "ウィンドウを移動" : "Move window"}
+          aria-label={
+            japanese
+              ? `${frame?.label ?? "Yorishiro"}・通話相手 — ウィンドウを移動`
+              : `${frame?.label ?? "Yorishiro"}, call participant — Move window`
+          }
           onPointerDown={(event) => {
             if (event.button === 0) void getCurrentWindow().startDragging();
           }}
         >
-          <span aria-hidden="true">●</span> {frame?.label ?? "Yorishiro"}
+          <span className="remote-call-resident-dot" aria-hidden="true">
+            ●
+          </span>
+          <span className="remote-call-resident-identity">
+            <strong title={frame?.label ?? "Yorishiro"}>{frame?.label ?? "Yorishiro"}</strong>
+            <small>{japanese ? "通話相手" : "Call participant"}</small>
+          </span>
         </button>
         <button
           type="button"
