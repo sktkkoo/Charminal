@@ -1,14 +1,25 @@
-import { Camera, LoaderCircle, MonitorUp, RefreshCw, X } from "lucide-react";
+import { Camera, LoaderCircle, MonitorUp, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import type { ScreenCaptureRegion, ScreenSourceKind } from "./bindings/tauri-commands";
 import { CameraPreviewToggle } from "./camera-preview-toggle";
 import { MediaPermissionHelp } from "./media-permission-help";
 import { getMediaPermissionKind } from "./runtime/media-permissions";
+import {
+  formatSharingInterval,
+  MAX_SHARING_INTERVAL_SECONDS,
+  MIN_SHARING_INTERVAL_SECONDS,
+} from "./runtime/sharing-interval";
 import { ScreenPointerToggle } from "./screen-pointer-toggle";
+import { ScreenSourceOptions } from "./screen-source-options";
 import { SharingSourceMenu } from "./sharing-source-menu";
 import { SharingStatus } from "./sharing-status";
 import "./screen-sharing-control.css";
 
 export interface ScreenSharingControlProps {
+  readonly screenSourceKind?: ScreenSourceKind;
+  readonly screenSelectionSupported?: boolean;
+  readonly region?: ScreenCaptureRegion | null;
+  readonly onScreenSourceKindChange?: (kind: ScreenSourceKind) => void;
   readonly previewVisible?: boolean;
   readonly onPreviewVisibleChange?: (visible: boolean) => void;
   readonly sourceKind?: "screen" | "camera";
@@ -47,10 +58,11 @@ const strings = {
     noDisplays: "No displays available",
     refresh: "Refresh displays",
     interval: "Update interval",
-    seconds: (value: number) => `Every ${value}s`,
-    cost: "Shorter intervals use more tokens.",
+    hint: "Shorter intervals use more tokens.",
+    seconds: (value: number) => formatSharingInterval(value, "en"),
     unavailable: "Select an agent that supports screen sharing to start.",
     cancel: "Cancel",
+    selecting: "Selecting region…",
     start: "Start sharing",
     stop: "Stop sharing",
   },
@@ -65,10 +77,11 @@ const strings = {
     noDisplays: "共有できる画面がありません",
     refresh: "画面一覧を更新",
     interval: "更新間隔",
-    seconds: (value: number) => `${value}秒ごと`,
-    cost: "間隔が短いほどトークン消費が増えます。",
+    hint: "間隔が短いほどトークン消費が増えます。",
+    seconds: (value: number) => formatSharingInterval(value, "ja"),
     unavailable: "画面共有に対応するエージェントを選択してください。",
     cancel: "キャンセル",
+    selecting: "範囲を選択中…",
     start: "共有を開始",
     stop: "共有を停止",
   },
@@ -100,6 +113,10 @@ export function ScreenSharingControl({
   previewVisible = true,
   onPreviewVisibleChange,
   sourceKind = "screen",
+  screenSourceKind = "display",
+  screenSelectionSupported = true,
+  region,
+  onScreenSourceKindChange,
   onSourceKindChange,
   activeViewModeId,
   available,
@@ -138,7 +155,6 @@ export function ScreenSharingControl({
   const titleId = useId();
   const displayId = useId();
   const intervalId = useId();
-  const costId = useId();
   const isJapanese = language.startsWith("ja");
   const baseLabels = strings[isJapanese ? "ja" : "en"];
   const camera = sourceKind === "camera";
@@ -153,13 +169,25 @@ export function ScreenSharingControl({
         noDisplays: isJapanese ? "共有できるカメラがありません" : "No cameras available",
         refresh: isJapanese ? "カメラ一覧を更新" : "Refresh cameras",
       }
-    : baseLabels;
+    : screenSourceKind === "window"
+      ? {
+          ...baseLabels,
+          display: isJapanese ? "ウィンドウ選択" : "Window",
+          chooseDisplay: isJapanese ? "ウィンドウを選択" : "Choose a window",
+          noDisplays: isJapanese ? "共有できるウィンドウがありません" : "No windows available",
+          refresh: isJapanese ? "ウィンドウ一覧を更新" : "Refresh windows",
+        }
+      : baseLabels;
   const sharingTitle = onSourceKindChange ? (isJapanese ? "共有" : "Sharing") : labels.title;
   const displayError = auxiliaryError ?? error;
   const open = panelMode === "inline" || panelMode === "auxiliary-error";
   const measuring = panelMode === "measuring";
   const hasSelectedSource = sources.some((source) => source.id === sourceId);
-  const canStart = available && (camera || pointersReady) && hasSelectedSource && !busy;
+  const canStart =
+    available &&
+    (camera || screenSourceKind !== "display" || pointersReady) &&
+    (screenSourceKind === "region" && !camera ? screenSelectionSupported : hasSelectedSource) &&
+    !busy;
 
   const closePanel = useCallback(() => {
     measurementRef.current = null;
@@ -257,6 +285,39 @@ export function ScreenSharingControl({
     };
   }, [closePanel, open, panelMode]);
 
+  const sourceControls = (
+    <div className="screen-sharing-source-row">
+      <select
+        id={displayId}
+        aria-label={labels.display}
+        value={hasSelectedSource ? (sourceId ?? "") : ""}
+        disabled={active || busy || !available}
+        onPointerDown={() => {
+          onRefreshSources();
+        }}
+        onKeyDown={(event) => {
+          if (["Enter", " ", "ArrowDown", "ArrowUp", "F4"].includes(event.key)) {
+            onRefreshSources();
+          }
+        }}
+        onChange={(event) => {
+          if (event.currentTarget.value !== "") {
+            onSourceChange(Number(event.currentTarget.value));
+          }
+        }}
+      >
+        <option value="" disabled>
+          {sources.length > 0 ? labels.chooseDisplay : labels.noDisplays}
+        </option>
+        {sources.map((source) => (
+          <option key={source.id} value={source.id}>
+            {source.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
   return (
     <fieldset
       className="screen-sharing-control"
@@ -313,6 +374,7 @@ export function ScreenSharingControl({
               type="button"
               className="screen-sharing-icon-button"
               aria-label={labels.close}
+              title={labels.close}
               onClick={() => {
                 closePanel();
                 triggerRef.current?.focus();
@@ -350,6 +412,27 @@ export function ScreenSharingControl({
           inert={measuring || undefined}
         >
           <div className="screen-sharing-heading">
+            {!chooser && onSourceKindChange && !active && !busy ? (
+              <button
+                type="button"
+                className="sharing-back"
+                aria-label={isJapanese ? "戻る" : "Back"}
+                title={isJapanese ? "戻る" : "Back"}
+                onClick={() => {
+                  const panel = panelRef.current;
+                  setChoosingSource(true);
+                  requestAnimationFrame(() =>
+                    panel
+                      ?.querySelector<HTMLButtonElement>(
+                        ".sharing-source-menu button:not(:disabled)",
+                      )
+                      ?.focus(),
+                  );
+                }}
+              >
+                <Undo2 size={16} aria-hidden="true" />
+              </button>
+            ) : null}
             <h2 id={titleId}>{chooser ? sharingTitle : labels.title}</h2>
             <SharingStatus
               active={active}
@@ -362,6 +445,7 @@ export function ScreenSharingControl({
               type="button"
               className="screen-sharing-icon-button"
               aria-label={labels.close}
+              title={labels.close}
               onClick={() => {
                 closePanel();
                 triggerRef.current?.focus();
@@ -380,47 +464,21 @@ export function ScreenSharingControl({
             />
           ) : (
             <>
-              {onSourceKindChange && !active && !busy ? (
-                <button
-                  type="button"
-                  className="sharing-back"
-                  onClick={() => setChoosingSource(true)}
-                >
-                  {isJapanese ? "← 共有元を変更" : "← Change sharing source"}
-                </button>
-              ) : null}
-              <div className="screen-sharing-source-row">
-                <select
-                  id={displayId}
-                  aria-label={labels.display}
-                  value={hasSelectedSource ? (sourceId ?? "") : ""}
-                  disabled={active || busy || !available || sources.length === 0}
-                  onChange={(event) => {
-                    if (event.currentTarget.value !== "") {
-                      onSourceChange(Number(event.currentTarget.value));
-                    }
-                  }}
-                >
-                  <option value="" disabled>
-                    {sources.length > 0 ? labels.chooseDisplay : labels.noDisplays}
-                  </option>
-                  {sources.map((source) => (
-                    <option key={source.id} value={source.id}>
-                      {source.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="screen-sharing-icon-button"
-                  aria-label={labels.refresh}
-                  title={labels.refresh}
+              {!camera && onScreenSourceKindChange ? (
+                <ScreenSourceOptions
+                  kind={screenSourceKind}
+                  screenSelectionSupported={screenSelectionSupported}
+                  region={region}
                   disabled={active || busy || !available}
-                  onClick={onRefreshSources}
+                  language={language}
+                  onKindChange={onScreenSourceKindChange}
                 >
-                  <RefreshCw size={14} aria-hidden="true" />
-                </button>
-              </div>
+                  {screenSourceKind === "region" ? null : sourceControls}
+                </ScreenSourceOptions>
+              ) : (
+                sourceControls
+              )}
+
               <div className="screen-sharing-interval-heading">
                 <label className="screen-sharing-label" htmlFor={intervalId}>
                   {labels.interval}
@@ -431,16 +489,15 @@ export function ScreenSharingControl({
                 id={intervalId}
                 className="screen-sharing-slider"
                 type="range"
-                min={20}
-                max={60}
+                min={MIN_SHARING_INTERVAL_SECONDS}
+                max={MAX_SHARING_INTERVAL_SECONDS}
                 step={1}
                 value={intervalSeconds}
                 aria-valuetext={labels.seconds(intervalSeconds)}
-                aria-describedby={costId}
                 onChange={(event) => onIntervalChange(Number(event.currentTarget.value))}
               />
-              <p className="screen-sharing-cost" id={costId}>
-                {labels.cost}
+              <p className="screen-sharing-description screen-sharing-interval-hint">
+                {labels.hint}
               </p>
               {onPreviewVisibleChange ? (
                 <CameraPreviewToggle
@@ -449,7 +506,7 @@ export function ScreenSharingControl({
                   onChange={onPreviewVisibleChange}
                 />
               ) : null}
-              {!camera ? (
+              {!camera && screenSourceKind === "display" ? (
                 <ScreenPointerToggle
                   enabled={pointersEnabled}
                   ready={pointersReady}
@@ -458,6 +515,7 @@ export function ScreenSharingControl({
                   onRetry={error ? onRetryPointers : undefined}
                 />
               ) : null}
+
               {!available ? (
                 <p className="screen-sharing-description">{labels.unavailable}</p>
               ) : null}
@@ -472,11 +530,19 @@ export function ScreenSharingControl({
                 type="button"
                 className="screen-sharing-action"
                 data-active={active}
-                disabled={!active && !busy && !canStart}
-                aria-describedby={!active ? costId : undefined}
+                disabled={
+                  (!active && busy && !camera && screenSourceKind === "region") ||
+                  (!active && !busy && !canStart)
+                }
                 onClick={active || busy ? onStop : onStart}
               >
-                {active ? labels.stop : busy ? labels.cancel : labels.start}
+                {active
+                  ? labels.stop
+                  : busy
+                    ? !camera && screenSourceKind === "region"
+                      ? labels.selecting
+                      : labels.cancel
+                    : labels.start}
               </button>
             </>
           )}

@@ -5,6 +5,7 @@ import {
   readScreenPreview,
   requestScreenPreviewAction,
   type ScreenPreviewFrame,
+  showScreenPreview,
 } from "./runtime/screen-preview-window";
 
 /** Local preview consumer only. The main window retains camera and conversation ownership. */
@@ -13,6 +14,7 @@ export default function AuxiliaryScreenPreview() {
   const [error, setError] = useState<string>();
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
+  const shownLease = useRef<string | undefined>(undefined);
   const japanese = (frame?.language ?? navigator.language).startsWith("ja");
   useEffect(() => {
     let disposed = false;
@@ -69,7 +71,22 @@ export default function AuxiliaryScreenPreview() {
   };
 
   return (
-    <main className="camera-preview-window">
+    <main
+      className="camera-preview-window"
+      onLoadCapture={(event) => {
+        if (
+          !(event.target instanceof HTMLImageElement) ||
+          !frame ||
+          shownLease.current === frame.leaseId
+        )
+          return;
+        const leaseId = frame.leaseId;
+        shownLease.current = leaseId;
+        void showScreenPreview(leaseId).catch(() => {
+          shownLease.current = undefined;
+        });
+      }}
+    >
       {frame ? (
         <CameraPreview
           detached
@@ -83,11 +100,7 @@ export default function AuxiliaryScreenPreview() {
           onAttach={() => void request("attach")}
           onStop={() => void request("stop")}
         />
-      ) : (
-        <p role="status">
-          {error ?? (japanese ? "共有画像を待っています…" : "Waiting for shared image…")}
-        </p>
-      )}
+      ) : null}
     </main>
   );
 }

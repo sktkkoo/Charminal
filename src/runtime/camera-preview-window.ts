@@ -2,6 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import {
+  type PreviewTransport as HostTransport,
+  PreviewHost,
+  type PreviewStatus,
+} from "./preview-host";
+
 export const PREVIEW_WINDOW_LABEL = "auxiliary-camera-preview";
 export const PREVIEW_STATE_EVENT = "camera-preview-state";
 const PREVIEW_ACTION_EVENT = "camera-preview-action";
@@ -34,24 +40,15 @@ export function requestCameraPreviewAction(
   return invoke("camera_preview_request_action", { leaseId, action });
 }
 export interface CameraPreviewModel {
+  visible?: boolean;
+  initiallyDetached?: boolean;
   stream: MediaStream | null;
   lastCapturedAt?: number;
   lastSharedAt?: number;
   language: string;
   onStop: () => void;
 }
-interface PreviewStatus {
-  detached: boolean;
-  opening: boolean;
-  error?: string;
-}
-interface PreviewTransport {
-  begin: () => Promise<string>;
-  open: (leaseId: string) => Promise<void>;
-  revoke: (leaseId: string) => Promise<void>;
-  publish: (frame: CameraPreviewFrame) => Promise<void>;
-  listen: (callback: (action: PreviewAction) => void) => Promise<() => void>;
-}
+type PreviewTransport = HostTransport<CameraPreviewFrame>;
 const nativeTransport: PreviewTransport = {
   begin: () => invoke("camera_preview_begin"),
   open: (leaseId) => invoke("camera_preview_open", { leaseId }),
@@ -124,141 +121,41 @@ export function startCameraPreviewRelay(
   };
 }
 
-// Also serializes owners across React remounts, including StrictMode cleanup.
-let lifecycle: Promise<void> = Promise.resolve();
-interface Attempt {
-  stream: MediaStream;
-  leaseId?: string;
-  cancelled: boolean;
-  cleanup?: () => void;
-}
-export class CameraPreviewHost {
-  private attempt: Attempt | null = null;
-  private disposed = false;
-  private model: CameraPreviewModel;
-  private unlisten?: () => void;
-  private listening?: Promise<void>;
+// Serialize owners across React remounts, independently for each native preview window.
+const lifecycle = { pending: Promise.resolve() as Promise<void> };
+export class CameraPreviewHost extends PreviewHost<
+  CameraPreviewModel,
+  MediaStream,
+  CameraPreviewFrame
+> {
   constructor(
     model: CameraPreviewModel,
-    private readonly changed: (state: PreviewStatus) => void,
-    private readonly transport: PreviewTransport = nativeTransport,
-    private readonly relay = startCameraPreviewRelay,
+    changed: (state: PreviewStatus) => void,
+    transport: PreviewTransport = nativeTransport,
+    relay = startCameraPreviewRelay,
   ) {
-    this.model = model;
-  }
-
-  update(model: CameraPreviewModel): void {
-    const previous = this.model.stream;
-    this.model = model;
-    if (previous !== model.stream) void this.attach().catch(() => {});
-  }
-  private current(attempt: Attempt): boolean {
-    return (
-      !this.disposed &&
-      !attempt.cancelled &&
-      this.attempt === attempt &&
-      this.model.stream === attempt.stream
-    );
-  }
-  private async ensureListening(): Promise<void> {
-    if (this.unlisten) return;
-    if (!this.listening) {
-      this.listening = this.transport
-        .listen((request) => {
-          const attempt = this.attempt;
-          if (!attempt || !this.current(attempt) || request.leaseId !== attempt.leaseId) return;
-          if (request.action !== "attach" && request.action !== "stop") return;
-          const stop = request.action === "stop";
-          void this.attach().catch(() => {});
-          if (stop) this.model.onStop();
-        })
-        .then((unlisten) => {
-          if (this.disposed) unlisten();
-          else this.unlisten = unlisten;
-        })
-        .catch((error: unknown) => {
-          this.listening = undefined;
-          throw error;
-        });
-    }
-    await this.listening;
-  }
-  detach(): Promise<void> {
-    if (this.disposed || !this.model.stream || this.attempt) return Promise.resolve();
-    const attempt: Attempt = { stream: this.model.stream, cancelled: false };
-    this.attempt = attempt;
-    this.changed({ detached: false, opening: true });
-    const operation = lifecycle
-      .catch(() => {})
-      .then(async () => {
-        try {
-          if (!this.current(attempt)) return;
-          await this.ensureListening();
-          if (!this.current(attempt)) return;
-          attempt.leaseId = await this.transport.begin();
-          if (!this.current(attempt)) {
-            await this.transport.revoke(attempt.leaseId);
-            return;
-          }
-          await this.transport.open(attempt.leaseId);
-          if (!this.current(attempt)) {
-            await this.transport.revoke(attempt.leaseId);
-            return;
-          }
-          attempt.cleanup = this.relay(
-            attempt.stream,
+    super(
+      model,
+      changed,
+      transport,
+      {
+        source: (model) => model.stream,
+        ready: () => true,
+        relay: (source, model, leaseId, publish, fail) =>
+          relay(
+            source,
             () => ({
-              leaseId: attempt.leaseId as string,
-              language: this.model.language.startsWith("ja") ? "ja" : "en",
-              lastCapturedAt: finiteTimestamp(this.model.lastCapturedAt),
-              lastSharedAt: finiteTimestamp(this.model.lastSharedAt),
+              leaseId,
+              language: model().language.startsWith("ja") ? "ja" : "en",
+              lastCapturedAt: finiteTimestamp(model().lastCapturedAt),
+              lastSharedAt: finiteTimestamp(model().lastSharedAt),
             }),
-            (frame) => (this.current(attempt) ? this.transport.publish(frame) : Promise.resolve()),
-            (error) => {
-              if (this.current(attempt))
-                void this.attach()
-                  .finally(() => {
-                    if (!this.disposed && !this.attempt)
-                      this.changed({ detached: false, opening: false, error: String(error) });
-                  })
-                  .catch(() => {});
-            },
-          );
-          this.changed({ detached: true, opening: false });
-        } catch (error) {
-          const wasCurrent = this.current(attempt);
-          attempt.cancelled = true;
-          attempt.cleanup?.();
-          if (this.attempt === attempt) this.attempt = null;
-          if (attempt.leaseId) await this.transport.revoke(attempt.leaseId).catch(() => {});
-          if (wasCurrent) {
-            this.changed({ detached: false, opening: false, error: String(error) });
-            throw error;
-          }
-        }
-      });
-    lifecycle = operation.catch(() => {});
-    return operation;
-  }
-  attach(): Promise<void> {
-    const attempt = this.attempt;
-    this.attempt = null;
-    if (attempt) {
-      attempt.cancelled = true;
-      attempt.cleanup?.();
-    }
-    if (!this.disposed) this.changed({ detached: false, opening: false });
-    // Revoke immediately even if native open is still pending; native serializes it with creation.
-    const revoke = attempt?.leaseId ? this.transport.revoke(attempt.leaseId) : Promise.resolve();
-    const operation = Promise.all([lifecycle, revoke]).then(() => {});
-    lifecycle = operation.catch(() => {});
-    return operation;
-  }
-  dispose(): void {
-    this.disposed = true;
-    void this.attach().catch(() => {});
-    this.unlisten?.();
-    this.unlisten = undefined;
+            publish,
+            fail,
+          ),
+      },
+      lifecycle,
+    );
   }
 }
 function finiteTimestamp(value: number | undefined): number | undefined {
@@ -292,5 +189,10 @@ export function useCameraPreviewWindow(model: CameraPreviewModel) {
   const attach = useCallback(async () => {
     await host.current?.attach();
   }, []);
-  return { ...status, detach, attach };
+  return {
+    ...status,
+    inlineVisible: host.current?.isInline(model) ?? !model.initiallyDetached,
+    detach,
+    attach,
+  };
 }

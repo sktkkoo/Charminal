@@ -45,6 +45,15 @@ pub enum SharingSourceKind {
     Camera,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ScreenSourceKind {
+    #[default]
+    Display,
+    Window,
+    Region,
+}
+
 /// Deliberately excludes image data, agent/thread identifiers, arbitrary error text, and credentials.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -61,8 +70,12 @@ pub struct ScreenSharingSnapshot {
     sources: Vec<SharedDisplay>,
     #[serde(default)]
     source_kind: SharingSourceKind,
+    #[serde(default)]
+    screen_source_kind: ScreenSourceKind,
+    #[serde(default)]
+    region: Option<crate::screen_capture::ScreenCaptureRegion>,
     source_id: Option<u32>,
-    interval_seconds: u8,
+    interval_seconds: u16,
     has_error: bool,
     permission_kind: Option<crate::media_permissions::MediaPermissionKind>,
     last_observed_at: Option<u64>,
@@ -82,11 +95,14 @@ impl ScreenSharingSnapshot {
         {
             return Err("Invalid auxiliary state revision".into());
         }
-        if !(20..=60).contains(&self.interval_seconds) {
-            return Err("Viewing interval must be between 20 and 60 seconds".into());
+        if !(10..=180).contains(&self.interval_seconds) {
+            return Err("Viewing interval must be between 10 and 180 seconds".into());
         }
         if self.sources.len() > 64 || self.sources.iter().any(|source| source.name.len() > 800) {
             return Err("Invalid display list".into());
+        }
+        if let Some(region) = self.region {
+            region.validate_display(region.display_width, region.display_height)?;
         }
         if self.language != "en" && self.language != "ja" {
             return Err("Unsupported auxiliary language".into());
@@ -113,13 +129,18 @@ pub enum ScreenSharingAction {
         #[serde(rename = "sourceKind")]
         source_kind: SharingSourceKind,
     },
+    SelectScreenSourceKind {
+        #[serde(rename = "screenSourceKind")]
+        screen_source_kind: ScreenSourceKind,
+    },
+    SelectRegion,
     SelectSource {
         #[serde(rename = "sourceId")]
         source_id: u32,
     },
     SetInterval {
         #[serde(rename = "intervalSeconds")]
-        interval_seconds: u8,
+        interval_seconds: u16,
     },
 }
 
@@ -195,20 +216,24 @@ fn validate_action(
         ScreenSharingAction::Start
             if !snapshot.available
                 || (snapshot.source_kind != SharingSourceKind::Camera
+                    && snapshot.screen_source_kind == ScreenSourceKind::Display
                     && !snapshot.pointers_ready)
                 || snapshot.active
                 || snapshot.busy
-                || !snapshot
-                    .sources
-                    .iter()
-                    .any(|source| Some(source.id) == snapshot.source_id) =>
+                || ((snapshot.source_kind == SharingSourceKind::Camera
+                    || snapshot.screen_source_kind != ScreenSourceKind::Region)
+                    && !snapshot
+                        .sources
+                        .iter()
+                        .any(|source| Some(source.id) == snapshot.source_id)) =>
         {
             Err("Screen sharing is not ready to start".into())
         }
         ScreenSharingAction::SetPointersEnabled { .. }
         | ScreenSharingAction::RetryPointers
         | ScreenSharingAction::ClearAnnotations
-            if snapshot.source_kind == SharingSourceKind::Camera =>
+            if snapshot.source_kind == SharingSourceKind::Camera
+                || snapshot.screen_source_kind != ScreenSourceKind::Display =>
         {
             Err("Desktop pointers are not available for camera sharing".into())
         }
@@ -217,6 +242,20 @@ fn validate_action(
         }
         ScreenSharingAction::RetryPointers if snapshot.pointers_ready || !snapshot.has_error => {
             Err("Screen pointer settings do not need initialization".into())
+        }
+        ScreenSharingAction::SelectRegion
+            if snapshot.source_kind == SharingSourceKind::Camera
+                || snapshot.screen_source_kind != ScreenSourceKind::Region
+                || snapshot.active
+                || snapshot.busy
+                || snapshot.source_id.is_none() =>
+        {
+            Err("Select an available display before choosing a region".into())
+        }
+        ScreenSharingAction::SelectScreenSourceKind { .. }
+            if snapshot.source_kind == SharingSourceKind::Camera || snapshot.busy =>
+        {
+            Err("Screen source selection is not ready".into())
         }
         ScreenSharingAction::SelectSource { source_id }
             if snapshot.active
@@ -232,9 +271,9 @@ fn validate_action(
             Err("Stop sharing before refreshing displays".into())
         }
         ScreenSharingAction::SetInterval { interval_seconds }
-            if !(20..=60).contains(interval_seconds) =>
+            if !(10..=180).contains(interval_seconds) =>
         {
-            Err("Viewing interval must be between 20 and 60 seconds".into())
+            Err("Viewing interval must be between 10 and 180 seconds".into())
         }
         _ => Ok(()),
     }
@@ -263,6 +302,7 @@ pub async fn auxiliary_window_open(
         .resizable(true)
         .always_on_top(true)
         .focused(true)
+        .accept_first_mouse(true)
         .skip_taskbar(true)
         .disable_drag_drop_handler()
         .on_navigation(move |url| is_allowed_navigation(url, &main_url, &query))
@@ -371,6 +411,8 @@ mod tests {
                     name: "Display 1".into(),
                 }],
                 source_kind: SharingSourceKind::Screen,
+                screen_source_kind: ScreenSourceKind::Display,
+                region: None,
                 source_id: Some(12),
                 interval_seconds: 30,
                 has_error: false,
@@ -379,6 +421,74 @@ mod tests {
                 language: "ja".into(),
             },
         }
+    }
+
+    #[test]
+    fn restricted_sources_require_selection_and_reject_desktop_pointers() {
+        let mut state = published();
+        let request = |action| AuxiliaryActionRequest {
+            version: 7,
+            pointer_revision: Some("pointer-owner-revision".into()),
+            action,
+        };
+        state.snapshot.pointers_ready = false;
+        state.snapshot.screen_source_kind = ScreenSourceKind::Window;
+        assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_ok());
+        assert!(validate_action(&state, &request(ScreenSharingAction::ClearAnnotations)).is_err());
+        state.snapshot.screen_source_kind = ScreenSourceKind::Region;
+        assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_ok());
+        assert!(validate_action(&state, &request(ScreenSharingAction::SelectRegion)).is_ok());
+        state.snapshot.region = Some(crate::screen_capture::ScreenCaptureRegion {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            display_width: 1440.0,
+            display_height: 900.0,
+        });
+        assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_ok());
+    }
+
+    #[test]
+    fn region_start_opens_picker_without_a_preselected_display_or_rectangle() {
+        let mut state = published();
+        state.snapshot.screen_source_kind = ScreenSourceKind::Region;
+        state.snapshot.source_id = None;
+        state.snapshot.sources.clear();
+        state.snapshot.pointers_ready = false;
+        let request = AuxiliaryActionRequest {
+            version: 7,
+            pointer_revision: None,
+            action: ScreenSharingAction::Start,
+        };
+        assert!(validate_action(&state, &request).is_ok());
+        state.snapshot.busy = true;
+        assert!(validate_action(&state, &request).is_err());
+        state.snapshot.busy = false;
+        state.snapshot.active = true;
+        assert!(validate_action(&state, &request).is_err());
+        state.snapshot.active = false;
+        state.snapshot.available = false;
+        assert!(validate_action(&state, &request).is_err());
+        state.snapshot.available = true;
+        state.snapshot.screen_source_kind = ScreenSourceKind::Window;
+        assert!(validate_action(&state, &request).is_err());
+    }
+
+    #[test]
+    fn three_minute_interval_round_trips_through_native_payloads() {
+        let mut snapshot = published().snapshot;
+        snapshot.interval_seconds = 180;
+        let json = serde_json::to_value(&snapshot).unwrap();
+        let decoded: ScreenSharingSnapshot = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.interval_seconds, 180);
+        assert!(decoded.validate().is_ok());
+        let request: AuxiliaryActionRequest = serde_json::from_value(serde_json::json!({
+            "version": 7,
+            "action": { "type": "set-interval", "intervalSeconds": 180 }
+        }))
+        .unwrap();
+        assert!(validate_action(&published(), &request).is_ok());
     }
 
     #[test]
@@ -509,7 +619,7 @@ mod tests {
             &request(ScreenSharingAction::SelectSource { source_id: 99 })
         )
         .is_err());
-        for interval_seconds in [5, 19, 61] {
+        for interval_seconds in [0, 9, 181, 300, u16::MAX] {
             assert!(validate_action(
                 &state,
                 &request(ScreenSharingAction::SetInterval { interval_seconds })
@@ -518,7 +628,7 @@ mod tests {
             state.snapshot.interval_seconds = interval_seconds;
             assert!(state.snapshot.validate().is_err());
         }
-        for interval_seconds in [20, 30, 60] {
+        for interval_seconds in [10, 20, 30, 60, 179, 180] {
             assert!(validate_action(
                 &state,
                 &request(ScreenSharingAction::SetInterval { interval_seconds })

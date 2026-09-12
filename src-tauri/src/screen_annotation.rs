@@ -191,6 +191,7 @@ struct SharingLease {
     geometry: DisplayGeometry,
     frames: VecDeque<FrameAnchor>,
     capturing: bool,
+    selection: crate::screen_capture::ScreenCaptureSelection,
 }
 
 #[derive(Clone)]
@@ -298,6 +299,7 @@ impl AnnotationState {
             geometry,
             frames: VecDeque::new(),
             capturing: false,
+            selection: Default::default(),
         });
     }
 
@@ -378,7 +380,7 @@ impl AnnotationState {
     ) -> Result<String, String> {
         let current_epoch = self.pointer_epoch;
         let lease = self.lease(id, geometry)?;
-        if capture_epoch != current_epoch {
+        if capture_epoch != current_epoch || !lease.selection.supports_pointers() {
             // Sharing continues through a pointer toggle. Deliver the pixels,
             // but do not mint pointer authority from a pre-toggle capture.
             return Ok(uuid::Uuid::new_v4().to_string());
@@ -643,6 +645,7 @@ pub async fn screen_annotation_set_enabled(
 /// Page reload destroys the JS owner without destroying the native main window.
 /// Rotate its authority synchronously so an old, queued begin cannot re-grant it.
 pub fn document_reloaded(app: &AppHandle) {
+    crate::screen_capture::region_frame_document_reloaded(app);
     if let Some(managed) = app.try_state::<ScreenAnnotationState>() {
         if let Ok(mut state) = managed.0.lock() {
             state.reload();
@@ -667,19 +670,25 @@ pub async fn screen_annotation_begin(
     share_id: String,
     source_id: u32,
     document_id: String,
+    selection: Option<crate::screen_capture::ScreenCaptureSelection>,
 ) -> Result<(), String> {
     require_host(&window)?;
+    let selection = selection.unwrap_or_default();
+    selection.validate()?;
     if uuid::Uuid::parse_str(&share_id).is_err() {
         return Err("Invalid screen sharing lease.".into());
     }
     on_main(window.app_handle(), move |app| {
-        let geometry = display_geometry(source_id)?;
+        let geometry = selection_geometry(source_id, &selection)?;
         let managed = app.state::<ScreenAnnotationState>();
         let mut state = managed
             .0
             .lock()
             .map_err(|_| "Screen pointer state is unavailable.")?;
         state.begin_for_document(&document_id, share_id, geometry)?;
+        if let Some(lease) = state.lease.as_mut() {
+            lease.selection = selection;
+        }
         hide();
         Ok(())
     })
@@ -728,6 +737,7 @@ pub async fn clear(app: &AppHandle) -> Result<(), String> {
 
 /// Called from the application's main-thread window/exit event handlers.
 pub fn shutdown(app: &AppHandle) {
+    crate::screen_capture::shutdown_region_frame();
     let managed = app.state::<ScreenAnnotationState>();
     if let Ok(mut state) = managed.0.lock() {
         state.lease = None;
@@ -877,9 +887,36 @@ fn start_watchdog(app: &AppHandle, generation: u64) {
     });
 }
 
+/// Restricted captures carry no desktop pointer geometry. Window IDs are an
+/// independent namespace; never pass them through a display lookup or fallback.
+fn selection_geometry(
+    source_id: u32,
+    selection: &crate::screen_capture::ScreenCaptureSelection,
+) -> Result<DisplayGeometry, String> {
+    match selection {
+        crate::screen_capture::ScreenCaptureSelection::Window => Ok(DisplayGeometry {
+            source_id,
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+            pixel_width: 1,
+            pixel_height: 1,
+            main_height: 1.0,
+        }),
+        crate::screen_capture::ScreenCaptureSelection::Region { region } => {
+            let geometry = display_geometry(source_id)?;
+            region.validate_display(geometry.width, geometry.height)?;
+            Ok(geometry)
+        }
+        crate::screen_capture::ScreenCaptureSelection::Display => display_geometry(source_id),
+    }
+}
+
 /// Keep existing marks visible while excluding their pinned window from capture.
 /// New show requests wait until capture completes so its filter stays valid.
 pub struct CaptureGuard {
+    pub(crate) selection: crate::screen_capture::ScreenCaptureSelection,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) excluded_window: Option<u32>,
     app: AppHandle,
@@ -915,13 +952,20 @@ pub async fn begin_capture(
     source_id: u32,
 ) -> Result<CaptureGuard, String> {
     let id = share_id.clone();
-    let (geometry, pointer_epoch, excluded_window) = on_main(app, move |app| {
-        let geometry = display_geometry(source_id)?;
+    let (geometry, pointer_epoch, excluded_window, selection) = on_main(app, move |app| {
         let managed = app.state::<ScreenAnnotationState>();
         let mut state = managed
             .0
             .lock()
             .map_err(|_| "Screen pointer state is unavailable.")?;
+        let selection = state
+            .lease
+            .as_ref()
+            .filter(|lease| lease.id == id)
+            .ok_or("This screen sharing lease has ended.")?
+            .selection
+            .clone();
+        let geometry = selection_geometry(source_id, &selection)?;
         if state.active_capture.is_some() {
             return Err("A screen capture is already in progress.".into());
         }
@@ -945,10 +989,11 @@ pub async fn begin_capture(
         };
         state.active_capture = Some(id.clone());
         state.changed();
-        Ok((geometry, state.pointer_epoch, excluded_window))
+        Ok((geometry, state.pointer_epoch, excluded_window, selection))
     })
     .await?;
     Ok(CaptureGuard {
+        selection,
         excluded_window,
         app: app.clone(),
         share_id,
@@ -964,11 +1009,12 @@ pub(crate) async fn register_frame(
     if frame.source_id != guard.geometry.source_id || frame.width == 0 || frame.height == 0 {
         return Err("Screen capture does not match the shared display.".into());
     }
-    if (frame.width, frame.height)
-        != crate::screen_capture::bounded_dimensions(
-            guard.geometry.pixel_width,
-            guard.geometry.pixel_height,
-        )?
+    if guard.selection.supports_pointers()
+        && (frame.width, frame.height)
+            != crate::screen_capture::bounded_dimensions(
+                guard.geometry.pixel_width,
+                guard.geometry.pixel_height,
+            )?
     {
         return Err("Screen capture dimensions changed. Start sharing again.".into());
     }
@@ -980,17 +1026,21 @@ pub(crate) async fn register_frame(
     let id = guard.share_id.clone();
     let geometry = guard.geometry;
     let pointer_epoch = guard.pointer_epoch;
+    let selection = guard.selection.clone();
     on_main(&guard.app, move |app| {
         let managed = app.state::<ScreenAnnotationState>();
         let mut state = managed
             .0
             .lock()
             .map_err(|_| "Screen pointer state is unavailable.")?;
-        if display_geometry(geometry.source_id).ok() != Some(geometry) {
+        if selection_geometry(geometry.source_id, &selection).ok() != Some(geometry) {
             if state.end(&id) {
                 hide();
             }
             return Err("The display changed while capturing. Start sharing again.".into());
+        }
+        if state.lease(&id, geometry)?.selection != selection {
+            return Err("The selected capture source changed. Start sharing again.".into());
         }
         let frame_id = state.register(
             &id,
@@ -1002,8 +1052,9 @@ pub(crate) async fn register_frame(
         )?;
         Ok(FrameReference {
             frame_id,
-            pointers_enabled: state.pointers_enabled,
-            pointer_frame_valid: pointer_epoch == state.pointer_epoch,
+            pointers_enabled: state.pointers_enabled && selection.supports_pointers(),
+            pointer_frame_valid: pointer_epoch == state.pointer_epoch
+                && selection.supports_pointers(),
             pointer_epoch,
         })
     })
@@ -1037,6 +1088,40 @@ mod tests {
             height: None,
             label: None,
             duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn restricted_leases_never_register_display_pointer_anchors() {
+        let mut state = AnnotationState::default();
+        let now = Instant::now();
+        for selection in [
+            crate::screen_capture::ScreenCaptureSelection::Window,
+            crate::screen_capture::ScreenCaptureSelection::Region {
+                region: crate::screen_capture::ScreenCaptureRegion {
+                    x: 20.0,
+                    y: 30.0,
+                    width: 100.0,
+                    height: 80.0,
+                    display_width: 1440.0,
+                    display_height: 900.0,
+                },
+            },
+        ] {
+            state.begin("restricted".into(), geometry());
+            state.lease.as_mut().unwrap().selection = selection;
+            let frame = state
+                .register(
+                    "restricted",
+                    geometry(),
+                    1,
+                    (200, 160),
+                    state.pointer_epoch,
+                    now,
+                )
+                .unwrap();
+            assert!(state.lease.as_ref().unwrap().frames.is_empty());
+            assert!(state.frame_geometry(&frame, now).is_err());
         }
     }
 

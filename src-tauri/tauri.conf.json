@@ -19,6 +19,7 @@
         "minHeight": 600,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
+        "acceptFirstMouse": true,
         "trafficLightPosition": { "x": 12, "y": 10 },
         "transparent": true,
         "backgroundColor": "#020304",

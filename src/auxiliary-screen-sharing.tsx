@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { CameraPreviewToggle } from "./camera-preview-toggle";
 import { MediaPermissionHelp } from "./media-permission-help";
@@ -11,7 +11,13 @@ import {
   requestAuxiliaryAction,
   type ScreenSharingAuxiliaryAction,
 } from "./runtime/auxiliary-windows";
+import {
+  formatSharingInterval,
+  MAX_SHARING_INTERVAL_SECONDS,
+  MIN_SHARING_INTERVAL_SECONDS,
+} from "./runtime/sharing-interval";
 import { ScreenPointerToggle } from "./screen-pointer-toggle";
+import { ScreenSourceOptions } from "./screen-source-options";
 import { SharingSourceMenu } from "./sharing-source-menu";
 import { SharingStatus } from "./sharing-status";
 import "./screen-sharing-control.css";
@@ -24,10 +30,11 @@ const text = {
     noDisplays: "No displays available",
     refresh: "Refresh displays",
     interval: "Update interval",
-    seconds: (value: number) => `Every ${value}s`,
-    cost: "Shorter intervals use more tokens.",
+    hint: "Shorter intervals use more tokens.",
+    seconds: (value: number) => formatSharingInterval(value, "en"),
     unavailable: "Choose an agent that supports screen sharing in the main window.",
     cancel: "Cancel",
+    selecting: "Selecting region…",
     start: "Start sharing",
     stop: "Stop sharing",
     error: "Screen sharing failed. Check the main window for details.",
@@ -39,10 +46,11 @@ const text = {
     noDisplays: "共有できる画面がありません",
     refresh: "画面一覧を更新",
     interval: "更新間隔",
-    seconds: (value: number) => `${value}秒ごと`,
-    cost: "間隔が短いほどトークン消費が増えます。",
+    hint: "間隔が短いほどトークン消費が増えます。",
+    seconds: (value: number) => formatSharingInterval(value, "ja"),
     unavailable: "メインウィンドウで画面共有に対応するエージェントを選択してください。",
     cancel: "キャンセル",
+    selecting: "範囲を選択中…",
     start: "共有を開始",
     stop: "共有を停止",
     error: "画面共有でエラーが発生しました。詳細はメインウィンドウで確認してください。",
@@ -70,6 +78,7 @@ export default function AuxiliaryScreenSharing() {
   const language = state?.language ?? (navigator.language.startsWith("ja") ? "ja" : "en");
   const japanese = language === "ja";
   const camera = state?.sourceKind === "camera";
+  const screenSourceKind = state?.screenSourceKind ?? "display";
   const chooser =
     state?.sourceKind !== undefined &&
     selectedSource !== state?.sourceKind &&
@@ -84,7 +93,14 @@ export default function AuxiliaryScreenSharing() {
         noDisplays: japanese ? "共有できるカメラがありません" : "No cameras available",
         refresh: japanese ? "カメラ一覧を更新" : "Refresh cameras",
       }
-    : baseLabels;
+    : screenSourceKind === "window"
+      ? {
+          ...baseLabels,
+          display: japanese ? "ウィンドウ選択" : "Window",
+          noDisplays: japanese ? "共有できるウィンドウがありません" : "No windows available",
+          refresh: japanese ? "ウィンドウ一覧を更新" : "Refresh windows",
+        }
+      : baseLabels;
 
   useEffect(() => {
     let disposed = false;
@@ -118,8 +134,9 @@ export default function AuxiliaryScreenSharing() {
   const request = async (action: ScreenSharingAuxiliaryAction) => {
     const current = latest.current;
     const independent = isPointerSettingsAction(action);
+    const backgroundRefresh = action.type === "refresh-sources";
     if (!current || (!independent && requestingRef.current)) return;
-    if (!independent) {
+    if (!independent && !backgroundRefresh) {
       requestingRef.current = true;
       setRequesting(true);
     }
@@ -144,7 +161,7 @@ export default function AuxiliaryScreenSharing() {
       const refreshed = await readAuxiliarySnapshot().catch(() => null);
       if (refreshed) setPublished((previous) => latestAuxiliarySnapshot(previous, refreshed));
     } finally {
-      if (!independent) {
+      if (!independent && !backgroundRefresh) {
         requestingRef.current = false;
         setRequesting(false);
       }
@@ -166,8 +183,8 @@ export default function AuxiliaryScreenSharing() {
   const hasSelectedSource = state.sources.some((source) => source.id === state.sourceId);
   const canStart =
     state.available &&
-    (camera || state.pointersReady) &&
-    hasSelectedSource &&
+    (camera || screenSourceKind !== "display" || state.pointersReady) &&
+    ((!camera && screenSourceKind === "region") || hasSelectedSource) &&
     !state.busy &&
     !requesting;
   const commitInterval = (value: string) => {
@@ -177,9 +194,59 @@ export default function AuxiliaryScreenSharing() {
     }
   };
 
+  const sourceControls = (
+    <div className="screen-sharing-source-row">
+      <select
+        id="shared-display"
+        aria-label={labels.display}
+        value={hasSelectedSource ? (state.sourceId ?? "") : ""}
+        disabled={state.active || state.busy || !state.available || requesting}
+        onPointerDown={() => {
+          void request({ type: "refresh-sources" });
+        }}
+        onKeyDown={(event) => {
+          if (["Enter", " ", "ArrowDown", "ArrowUp", "F4"].includes(event.key)) {
+            void request({ type: "refresh-sources" });
+          }
+        }}
+        onChange={(event) =>
+          void request({ type: "select-source", sourceId: Number(event.currentTarget.value) })
+        }
+      >
+        <option value="" disabled>
+          {labels.noDisplays}
+        </option>
+        {state.sources.map((source) => (
+          <option key={source.id} value={source.id}>
+            {source.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+
   return (
     <main className="screen-sharing-panel auxiliary-sharing">
       <header className="screen-sharing-heading">
+        {!chooser && state.sourceKind !== undefined && !state.active && !state.busy ? (
+          <button
+            type="button"
+            className="sharing-back"
+            aria-label={japanese ? "戻る" : "Back"}
+            title={japanese ? "戻る" : "Back"}
+            onClick={(event) => {
+              const panel = event.currentTarget.closest(".screen-sharing-panel");
+              setSelectedSource(null);
+              requestAnimationFrame(() =>
+                panel
+                  ?.querySelector<HTMLButtonElement>(".sharing-source-menu button:not(:disabled)")
+                  ?.focus(),
+              );
+            }}
+          >
+            <Undo2 size={16} aria-hidden="true" />
+          </button>
+        ) : null}
         <h1>{chooser ? (japanese ? "共有" : "Sharing") : labels.title}</h1>
         <SharingStatus
           active={state.active}
@@ -204,41 +271,22 @@ export default function AuxiliaryScreenSharing() {
         />
       ) : (
         <>
-          {state.sourceKind !== undefined && !state.active && !state.busy ? (
-            <button type="button" className="sharing-back" onClick={() => setSelectedSource(null)}>
-              {japanese ? "← 共有元を変更" : "← Change sharing source"}
-            </button>
-          ) : null}
-          <div className="screen-sharing-source-row">
-            <select
-              id="shared-display"
-              aria-label={labels.display}
-              value={hasSelectedSource ? (state.sourceId ?? "") : ""}
+          {!camera && state.screenSourceKind !== undefined ? (
+            <ScreenSourceOptions
+              kind={screenSourceKind}
+              region={state.region}
               disabled={state.active || state.busy || !state.available || requesting}
-              onChange={(event) =>
-                void request({ type: "select-source", sourceId: Number(event.currentTarget.value) })
+              language={language}
+              onKindChange={(screenSourceKind) =>
+                void request({ type: "select-screen-source-kind", screenSourceKind })
               }
             >
-              <option value="" disabled>
-                {labels.noDisplays}
-              </option>
-              {state.sources.map((source) => (
-                <option key={source.id} value={source.id}>
-                  {source.name}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="screen-sharing-icon-button"
-              aria-label={labels.refresh}
-              title={labels.refresh}
-              disabled={state.active || state.busy || !state.available || requesting}
-              onClick={() => void request({ type: "refresh-sources" })}
-            >
-              <RefreshCw size={15} aria-hidden="true" />
-            </button>
-          </div>
+              {screenSourceKind === "region" ? null : sourceControls}
+            </ScreenSourceOptions>
+          ) : (
+            sourceControls
+          )}
+
           <div className="screen-sharing-interval-heading">
             <label className="screen-sharing-label" htmlFor="viewing-interval">
               {labels.interval}
@@ -249,21 +297,18 @@ export default function AuxiliaryScreenSharing() {
             id="viewing-interval"
             className="screen-sharing-slider"
             type="range"
-            min={20}
-            max={60}
+            min={MIN_SHARING_INTERVAL_SECONDS}
+            max={MAX_SHARING_INTERVAL_SECONDS}
             step={1}
             value={intervalDraft}
             aria-valuetext={labels.seconds(intervalDraft)}
-            aria-describedby="sharing-cost"
             disabled={requesting}
             onChange={(event) => setIntervalDraft(Number(event.currentTarget.value))}
             onPointerUp={(event) => commitInterval(event.currentTarget.value)}
             onKeyUp={(event) => commitInterval(event.currentTarget.value)}
             onBlur={(event) => commitInterval(event.currentTarget.value)}
           />
-          <p className="screen-sharing-cost" id="sharing-cost">
-            {labels.cost}
-          </p>
+          <p className="screen-sharing-description screen-sharing-interval-hint">{labels.hint}</p>
           {
             <CameraPreviewToggle
               visible={state.previewVisible ?? true}
@@ -272,7 +317,7 @@ export default function AuxiliaryScreenSharing() {
               onChange={(visible) => void request({ type: "set-preview-visible", visible })}
             />
           }
-          {!camera ? (
+          {!camera && screenSourceKind === "display" ? (
             <ScreenPointerToggle
               enabled={
                 pointerDraft && state.pointerRevision === pointerDraft.pointerRevision
@@ -285,6 +330,7 @@ export default function AuxiliaryScreenSharing() {
               onRetry={state.hasError ? () => void request({ type: "retry-pointers" }) : undefined}
             />
           ) : null}
+
           {!state.available ? (
             <p className="screen-sharing-description">{labels.unavailable}</p>
           ) : null}
@@ -300,10 +346,19 @@ export default function AuxiliaryScreenSharing() {
             type="button"
             className="screen-sharing-action"
             data-active={state.active}
-            disabled={state.active || state.busy ? requesting : !canStart}
+            disabled={
+              (!state.active && state.busy && !camera && screenSourceKind === "region") ||
+              (state.active || state.busy ? requesting : !canStart)
+            }
             onClick={() => void request({ type: state.active || state.busy ? "stop" : "start" })}
           >
-            {state.active ? labels.stop : state.busy ? labels.cancel : labels.start}
+            {state.active
+              ? labels.stop
+              : state.busy
+                ? !camera && screenSourceKind === "region"
+                  ? labels.selecting
+                  : labels.cancel
+                : labels.start}
           </button>
         </>
       )}

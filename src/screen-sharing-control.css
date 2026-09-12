@@ -37,14 +37,26 @@
 }
 
 .sharing-back {
-  display: block;
-  margin: 6px 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  margin: 0;
+  flex-shrink: 0;
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--yorishiro-accent, #8eb09c);
+  color: var(--yorishiro-fg-dim, #a6aba8);
   font: inherit;
   cursor: pointer;
+}
+
+.sharing-back:hover,
+.sharing-back:focus-visible {
+  background: var(--yorishiro-accent-soft, #202922);
+  color: var(--yorishiro-fg, #e8ebe7);
 }
 
 .screen-sharing-trigger {
@@ -143,6 +155,7 @@
 }
 
 .screen-sharing-source-row {
+  min-width: 0;
   position: relative;
   margin: 5px 0 14px;
 }
@@ -151,7 +164,7 @@
   content: "";
   position: absolute;
   top: 50%;
-  right: 46px;
+  right: 12px;
   width: 6px;
   height: 6px;
   border-right: 1px solid currentColor;
@@ -413,4 +426,78 @@
   .screen-sharing-spinner {
     animation: none;
   }
+}
+
+.screen-source-options {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.screen-source-kinds {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--yorishiro-border, #3b403d);
+}
+
+.screen-source-kinds [role="tab"] {
+  flex: 1;
+  padding: 8px 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.screen-source-kinds [aria-selected="true"] {
+  border-bottom-color: var(--yorishiro-accent, #8eb09c);
+  opacity: 1;
+}
+
+.screen-source-kinds [role="tab"]:focus-visible {
+  outline: 2px solid var(--yorishiro-accent, #8eb09c);
+  outline-offset: -2px;
+}
+
+.screen-source-kinds [role="tab"]:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.screen-source-options [role="tabpanel"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 8px;
+}
+
+.screen-source-options .screen-sharing-source-row,
+.screen-source-options .screen-sharing-description {
+  margin: 0;
+}
+
+.screen-source-options .screen-sharing-action {
+  background: var(--yorishiro-button-bg, #24282b);
+  color: var(--yorishiro-fg, #e8ebe7);
+  border-color: var(--yorishiro-border, #3b403d);
+  font-weight: 500;
+}
+
+.screen-source-options .screen-sharing-action:hover:not(:disabled) {
+  background: var(--yorishiro-accent-soft, #202922);
+}
+
+.screen-source-kinds [role="tab"]:hover:not(:disabled) {
+  color: var(--yorishiro-fg, #e8ebe7);
+  opacity: 1;
+}
+
+.screen-sharing-slider + .screen-sharing-pointer-toggle,
+.screen-sharing-interval-hint + .screen-sharing-pointer-toggle {
+  margin-top: 24px;
 }

@@ -26,7 +26,23 @@ const call = <T>(cmd: string, args: object): Promise<T> =>
 /** Wait for native fullscreen exit before changing the window size. */
 export const exitWindowFullscreen = (): Promise<void> => call("exit_window_fullscreen", {});
 
+export type ScreenSourceKind = "display" | "window" | "region";
+
+export interface ScreenCaptureRegion {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly displayWidth: number;
+  readonly displayHeight: number;
+}
+
+export type ScreenCaptureSelection =
+  | { readonly kind: "display" | "window" }
+  | { readonly kind: "region"; readonly region: ScreenCaptureRegion };
+
 export interface ScreenCaptureSource {
+  readonly kind?: "display" | "window";
   readonly id: number;
   readonly name: string;
   readonly width: number;
@@ -34,6 +50,7 @@ export interface ScreenCaptureSource {
 }
 
 export interface ScreenCaptureFrame {
+  readonly selectionKind?: ScreenSourceKind;
   readonly frameId: string;
   readonly pointersEnabled: boolean;
   readonly pointerFrameValid: boolean;
@@ -46,8 +63,26 @@ export interface ScreenCaptureFrame {
   readonly height: number;
 }
 
-export const screenCaptureListSources = (): Promise<ScreenCaptureSource[]> =>
-  call("screen_capture_list_sources", {});
+export const screenCaptureListSources = (
+  kind?: "display" | "window",
+): Promise<ScreenCaptureSource[]> => call("screen_capture_list_sources", { kind });
+export interface ScreenCaptureRegionSelection {
+  readonly sourceId: number;
+  readonly region: ScreenCaptureRegion;
+}
+
+export const screenCaptureSelectRegion = (
+  sourceId?: number,
+): Promise<ScreenCaptureRegionSelection | null> =>
+  call("screen_capture_select_region", { sourceId });
+/** shareId stays fixed for the frame while its capture lease may rotate. */
+export const screenCaptureRegionFrameOpen = (
+  shareId: string,
+  sourceId: number,
+  region: ScreenCaptureRegion,
+): Promise<void> => call("screen_capture_region_frame_open", { shareId, sourceId, region });
+export const screenCaptureRegionFrameClose = (shareId: string): Promise<void> =>
+  call("screen_capture_region_frame_close", { shareId });
 export const screenCaptureRequestPermission = (): Promise<boolean> =>
   call("screen_capture_request_permission", {});
 export const screenCaptureFrame = (
@@ -60,7 +95,8 @@ export const screenAnnotationBegin = (
   shareId: string,
   sourceId: number,
   documentId: string,
-): Promise<void> => call("screen_annotation_begin", { shareId, sourceId, documentId });
+  selection?: ScreenCaptureSelection,
+): Promise<void> => call("screen_annotation_begin", { shareId, sourceId, documentId, selection });
 export const screenAnnotationEnd = (shareId: string): Promise<void> =>
   call("screen_annotation_end", { shareId });
 export const screenAnnotationClear = (): Promise<void> => call("screen_annotation_clear", {});

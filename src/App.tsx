@@ -4232,7 +4232,7 @@ function App() {
   const screenSharingAvailable = codexVoiceAvailable && screenThreadId !== null;
   const screenSharing = useScreenSharing({
     available: screenSharingAvailable,
-    screenAvailable: /Mac/i.test(navigator.platform) && screenPointerSettings.ready,
+    screenAvailable: /Mac/i.test(navigator.platform),
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
     share: shareScreenObservation,
     onTiming: (timing) => {
@@ -4269,11 +4269,13 @@ function App() {
       // Keep the current session preference if persistence is unavailable.
     }
   }, []);
+  const initiallyDetachedPreview =
+    activePresentationViewModeIdValue === "portrait" ||
+    activePresentationViewModeIdValue === "companion";
   const screenPreviewWindow = useScreenPreviewWindow({
-    sourceKey:
-      screenPreviewVisible && screenSharing.screenPreviewFrame
-        ? screenSharing.screenShareKey
-        : null,
+    sourceKey: screenSharing.screenPreviewKey,
+    visible: screenPreviewVisible,
+    initiallyDetached: initiallyDetachedPreview,
     frame: screenSharing.screenPreviewFrame,
     language: appLanguage.resolved,
     onStop: screenSharing.stop,
@@ -4283,29 +4285,14 @@ function App() {
   const setPreviewVisible =
     screenSharing.sourceKind === "camera" ? setCameraPreviewVisible : setScreenPreviewVisible;
   const cameraPreviewWindow = useCameraPreviewWindow({
-    stream:
-      screenSharing.active && cameraPreviewVisible ? (screenSharing.cameraStream ?? null) : null,
+    stream: screenSharing.cameraStream,
+    visible: cameraPreviewVisible,
+    initiallyDetached: initiallyDetachedPreview,
     lastCapturedAt: screenSharing.lastCapturedAt,
     lastSharedAt: screenSharing.lastObservedAt,
     language: appLanguage.resolved,
     onStop: screenSharing.stop,
   });
-  const compactCameraView =
-    activePresentationViewModeIdValue === "portrait" ||
-    activePresentationViewModeIdValue === "companion";
-  const detachCameraPreview = cameraPreviewWindow.detach;
-  useEffect(() => {
-    if (compactCameraView && cameraPreviewVisible && screenSharing.cameraStream) {
-      void detachCameraPreview().catch(() => {});
-    }
-  }, [compactCameraView, cameraPreviewVisible, screenSharing.cameraStream, detachCameraPreview]);
-  const detachScreenPreview = screenPreviewWindow.detach;
-  const screenPreviewReady = screenSharing.screenPreviewFrame !== null;
-  useEffect(() => {
-    if (compactCameraView && screenPreviewVisible && screenPreviewReady) {
-      void detachScreenPreview().catch(() => {});
-    }
-  }, [compactCameraView, screenPreviewVisible, screenPreviewReady, detachScreenPreview]);
   speechScreenCaptureRef.current = screenSharing.active ? screenSharing.captureNow : null;
   const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
     ...screenSharing,
@@ -4318,7 +4305,8 @@ function App() {
     error:
       screenSharing.error ??
       (screenSharing.sourceKind === "screen"
-        ? (screenPreviewWindow.error ?? screenPointerSettings.error)
+        ? (screenPreviewWindow.error ??
+          (screenSharing.screenSourceKind === "display" ? screenPointerSettings.error : undefined))
         : undefined),
     available: screenSharing.available,
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
@@ -5876,7 +5864,7 @@ function App() {
       {screenSharing.active &&
       cameraPreviewVisible &&
       screenSharing.cameraStream &&
-      !cameraPreviewWindow.detached ? (
+      cameraPreviewWindow.inlineVisible ? (
         <CameraPreview
           stream={screenSharing.cameraStream}
           opening={cameraPreviewWindow.opening}
@@ -5891,7 +5879,7 @@ function App() {
       {screenSharing.active &&
       screenPreviewVisible &&
       screenSharing.screenPreviewFrame &&
-      !screenPreviewWindow.detached ? (
+      screenPreviewWindow.inlineVisible ? (
         <CameraPreview
           sourceKind="screen"
           imageDataUrl={screenSharing.screenPreviewFrame.imageDataUrl}
@@ -5951,10 +5939,17 @@ function App() {
               sourceId={screenSharing.sourceId}
               sourceKind={screenSharing.sourceKind}
               onSourceKindChange={screenSharing.setSourceKind}
+              screenSourceKind={screenSharing.screenSourceKind}
+              screenSelectionSupported={screenSharing.screenSelectionSupported}
+              region={screenSharing.region}
+              onScreenSourceKindChange={screenSharing.setScreenSourceKind}
               error={
                 screenSharing.error ??
                 (screenSharing.sourceKind === "screen"
-                  ? (screenPreviewWindow.error ?? screenPointerSettings.error)
+                  ? (screenPreviewWindow.error ??
+                    (screenSharing.screenSourceKind === "display"
+                      ? screenPointerSettings.error
+                      : undefined))
                   : undefined) ??
                 auxiliaryScreenSharing.error
               }

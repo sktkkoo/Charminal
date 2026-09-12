@@ -4,12 +4,35 @@
 //! permission command may show the macOS prompt; individual captures only preflight
 //! permission. Frames are bounded JPEGs kept in memory and are never logged or saved.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+#[cfg(target_os = "macos")]
+mod region_frame;
+#[cfg(target_os = "macos")]
+mod region_picker;
+mod selection;
+pub use selection::{ScreenCaptureRegion, ScreenCaptureSelection};
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenCaptureRegionSelection {
+    pub source_id: u32,
+    pub region: ScreenCaptureRegion,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ScreenCaptureSourceKind {
+    #[default]
+    Display,
+    Window,
+}
 use tauri::Manager;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenCaptureSource {
+    pub kind: ScreenCaptureSourceKind,
     pub id: u32,
     pub name: String,
     pub width: usize,
@@ -20,6 +43,7 @@ pub struct ScreenCaptureSource {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenCaptureFrame {
+    pub selection_kind: &'static str,
     pub frame_id: String,
     pub pointers_enabled: bool,
     pub pointer_frame_valid: bool,
@@ -43,14 +67,96 @@ fn require_host(window: &tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn screen_capture_list_sources(
+pub async fn screen_capture_list_sources(
     window: tauri::WebviewWindow,
+    kind: Option<ScreenCaptureSourceKind>,
 ) -> Result<Vec<ScreenCaptureSource>, String> {
     require_host(&window)?;
     #[cfg(target_os = "macos")]
-    return macos::list_sources();
+    return match kind.unwrap_or_default() {
+        ScreenCaptureSourceKind::Display => macos::list_sources(),
+        ScreenCaptureSourceKind::Window => {
+            macos::list_windows(host_window_id(&window).await?).await
+        }
+    };
     #[cfg(not(target_os = "macos"))]
-    Err(UNSUPPORTED.into())
+    {
+        let _ = kind;
+        Err(UNSUPPORTED.into())
+    }
+}
+
+/// Shows an AppKit drag selector without capturing or storing any desktop pixels.
+#[tauri::command]
+pub async fn screen_capture_select_region(
+    window: tauri::WebviewWindow,
+    source_id: Option<u32>,
+) -> Result<Option<ScreenCaptureRegionSelection>, String> {
+    require_host(&window)?;
+    #[cfg(target_os = "macos")]
+    {
+        macos::ensure_supported()?;
+        region_picker::select(window.app_handle(), source_id).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = source_id;
+        Err(UNSUPPORTED.into())
+    }
+}
+
+/// Keep exactly the user's explicitly drawn rectangle visible while sharing.
+#[tauri::command]
+pub async fn screen_capture_region_frame_open(
+    window: tauri::WebviewWindow,
+    share_id: String,
+    source_id: u32,
+    region: ScreenCaptureRegion,
+) -> Result<(), String> {
+    require_host(&window)?;
+    #[cfg(target_os = "macos")]
+    {
+        macos::ensure_supported()?;
+        region_frame::open(window.app_handle(), share_id, source_id, region).await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (share_id, source_id, region);
+        Err(UNSUPPORTED.into())
+    }
+}
+
+#[tauri::command]
+pub async fn screen_capture_region_frame_close(
+    window: tauri::WebviewWindow,
+    share_id: String,
+) -> Result<(), String> {
+    require_host(&window)?;
+    #[cfg(target_os = "macos")]
+    return region_frame::close(window.app_handle(), share_id).await;
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = share_id;
+        Err(UNSUPPORTED.into())
+    }
+}
+
+pub(crate) fn region_frame_document_reloaded(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        region_frame::document_reloaded(app);
+        region_picker::document_reloaded(app);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
+}
+
+pub(crate) fn shutdown_region_frame() {
+    #[cfg(target_os = "macos")]
+    {
+        region_frame::shutdown();
+        region_picker::shutdown();
+    }
 }
 
 /// Called only by the host's user-initiated Start sharing control.
@@ -88,8 +194,15 @@ pub async fn screen_capture_frame(
     #[cfg(target_os = "macos")]
     let mut frame = macos::capture(
         source_id,
+        guard.selection.clone(),
         guard.excluded_window,
+        if matches!(guard.selection, ScreenCaptureSelection::Window) {
+            Some(host_window_id(&window).await?)
+        } else {
+            None
+        },
         crate::screen_preview::capture_guard(window.app_handle()).await?,
+        region_frame::capture_guard(window.app_handle()).await?,
     )
     .await?;
     #[cfg(not(target_os = "macos"))]
@@ -105,6 +218,41 @@ pub async fn screen_capture_frame(
 #[cfg(not(target_os = "macos"))]
 async fn unsupported_capture() -> Result<ScreenCaptureFrame, String> {
     Err(UNSUPPORTED.into())
+}
+
+/// Resolve the authenticated host's native ID on the event-loop thread.
+/// Only this window, never another window with the same title, may be self-shared.
+#[cfg(target_os = "macos")]
+async fn host_window_id(window: &tauri::WebviewWindow) -> Result<u32, String> {
+    require_host(window)?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    window
+        .with_webview(move |webview| {
+            use objc2::{msg_send, runtime::AnyObject};
+            let result = unsafe {
+                let view: *mut AnyObject = webview.inner().cast();
+                let native_window: *mut AnyObject = msg_send![view, window];
+                if native_window.is_null() {
+                    Err("Main native window unavailable for screen sharing".to_string())
+                } else {
+                    let number: isize = msg_send![native_window, windowNumber];
+                    u32::try_from(number)
+                        .ok()
+                        .filter(|number| *number != 0)
+                        .ok_or_else(|| "Main native window ID unavailable".to_string())
+                }
+            };
+            let _ = sender.send(result);
+        })
+        .map_err(|_| "Could not identify the main window for screen sharing")?;
+    receiver
+        .await
+        .map_err(|_| "Main window identification cancelled")?
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn shareable_window_owner(pid: i32, id: u32, host_window_id: Option<u32>) -> bool {
+    pid != std::process::id() as i32 || (id != 0 && Some(id) == host_window_id)
 }
 
 const MAX_IMAGE_EDGE: usize = 2560;
@@ -167,14 +315,19 @@ pub(crate) fn bounded_dimensions(width: usize, height: usize) -> Result<(usize, 
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{bounded_dimensions, ScreenCaptureFrame, ScreenCaptureSource, MAX_IMAGE_EDGE};
+    use super::{
+        bounded_dimensions, ScreenCaptureFrame, ScreenCaptureSelection, ScreenCaptureSource,
+        ScreenCaptureSourceKind, MAX_IMAGE_EDGE,
+    };
     use base64::Engine;
     use block2::RcBlock;
     use objc2::rc::{autoreleasepool, Retained};
     use objc2::runtime::{AnyClass, AnyObject, Bool};
     use objc2::{msg_send, AnyThread};
     use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImageCompressionFactor};
-    use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber, NSRect};
+    use objc2_foundation::{
+        NSArray, NSData, NSDictionary, NSNumber, NSPoint, NSRect, NSSize, NSString,
+    };
     use std::ffi::{c_void, CStr};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
@@ -262,6 +415,7 @@ mod macos {
                 // one. The chosen display is still revalidated before capture.
                 let (width, height) = display_pixel_dimensions(*id).ok()?;
                 Some(ScreenCaptureSource {
+                    kind: ScreenCaptureSourceKind::Display,
                     id: *id,
                     name: format!(
                         "Display {}{}",
@@ -277,6 +431,97 @@ mod macos {
         Ok(displays)
     }
 
+    pub(super) async fn list_windows(
+        host_window_id: u32,
+    ) -> Result<Vec<ScreenCaptureSource>, String> {
+        ensure_supported()?;
+        if !unsafe { CGPreflightScreenCaptureAccess() } {
+            return Err(PERMISSION_DENIED.into());
+        }
+        let (sender, receiver) = oneshot::channel();
+        let sender = Arc::new(Mutex::new(Some(sender)));
+        {
+            let callback = RcBlock::new(move |content: *mut AnyObject, error: *mut AnyObject| {
+                let result = autoreleasepool(|_| {
+                    if !error.is_null() || content.is_null() {
+                        return Err(capture_error(error));
+                    }
+                    let mut result = Vec::new();
+                    unsafe {
+                        let windows: *mut AnyObject = msg_send![content, windows];
+                        if windows.is_null() {
+                            return Ok(result);
+                        }
+                        let count: usize = msg_send![windows, count];
+                        for index in 0..count {
+                            let window: *mut AnyObject = msg_send![windows, objectAtIndex: index];
+                            if let Some(source) = window_source(window, Some(host_window_id)) {
+                                result.push(source);
+                            }
+                        }
+                    }
+                    result.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+                    Ok(result)
+                });
+                if let Ok(mut sender) = sender.lock() {
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send(result);
+                    }
+                }
+            });
+            unsafe {
+                let _: () = msg_send![sc_class(c"SCShareableContent")?, getShareableContentWithCompletionHandler: &*callback];
+            }
+        }
+        tokio::time::timeout(Duration::from_secs(15), receiver)
+            .await
+            .map_err(|_| "Window enumeration timed out. Refresh and try again.".to_string())?
+            .map_err(|_| "Window enumeration was cancelled.".to_string())?
+    }
+
+    unsafe fn window_source(
+        window: *mut AnyObject,
+        host_window_id: Option<u32>,
+    ) -> Option<ScreenCaptureSource> {
+        let on_screen: Bool = msg_send![window, isOnScreen];
+        let layer: isize = msg_send![window, windowLayer];
+        let app: *mut AnyObject = msg_send![window, owningApplication];
+        if !on_screen.as_bool() || layer != 0 || app.is_null() {
+            return None;
+        }
+        let pid: i32 = msg_send![app, processID];
+        let id: u32 = msg_send![window, windowID];
+        // Offer the authenticated main window, excluding all our auxiliary windows.
+        if !super::shareable_window_owner(pid, id, host_window_id) {
+            return None;
+        }
+        let frame: NSRect = msg_send![window, frame];
+        if !frame.size.width.is_finite()
+            || !frame.size.height.is_finite()
+            || frame.size.width < 1.0
+            || frame.size.height < 1.0
+        {
+            return None;
+        }
+        let title: Option<Retained<NSString>> = msg_send![window, title];
+        let app_name: Option<Retained<NSString>> = msg_send![app, applicationName];
+        let app_name = app_name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "Application".into());
+        let title = title.map(|s| s.to_string()).unwrap_or_default();
+        Some(ScreenCaptureSource {
+            id,
+            kind: ScreenCaptureSourceKind::Window,
+            name: if title.trim().is_empty() {
+                app_name
+            } else {
+                format!("{app_name} — {title}")
+            },
+            width: frame.size.width.ceil() as usize,
+            height: frame.size.height.ceil() as usize,
+        })
+    }
+
     pub(super) fn request_permission() -> bool {
         unsafe { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() }
     }
@@ -290,8 +535,10 @@ mod macos {
     }
 
     struct CaptureRequest {
+        host_window_id: Option<u32>,
         // Retain exclusion through the native completion callback, even after timeout.
         _preview_guard: crate::screen_preview::CaptureGuard,
+        frame_guard: super::region_frame::CaptureGuard,
         cancelled: AtomicBool,
         sender: Mutex<Option<oneshot::Sender<Result<ScreenCaptureFrame, String>>>>,
         // The guard is held by the native callbacks, including after a timeout.
@@ -321,27 +568,43 @@ mod macos {
 
     pub(super) async fn capture(
         source_id: u32,
+        selection: ScreenCaptureSelection,
         excluded_window: Option<u32>,
+        host_window_id: Option<u32>,
         preview_guard: crate::screen_preview::CaptureGuard,
+        frame_guard: super::region_frame::CaptureGuard,
     ) -> Result<ScreenCaptureFrame, String> {
         ensure_supported()?;
         if !unsafe { CGPreflightScreenCaptureAccess() } {
             return Err(PERMISSION_DENIED.into());
         }
-        let source = list_sources()?
-            .into_iter()
-            .find(|source| source.id == source_id)
-            .ok_or_else(|| {
-                "The selected display is no longer available. Choose a display again.".to_string()
-            })?;
-        let dimensions = bounded_dimensions(source.width, source.height)?;
+        let source = if matches!(selection, ScreenCaptureSelection::Window) {
+            ScreenCaptureSource {
+                id: source_id,
+                kind: ScreenCaptureSourceKind::Window,
+                name: String::new(),
+                width: 1,
+                height: 1,
+            }
+        } else {
+            list_sources()?
+                .into_iter()
+                .find(|source| source.id == source_id)
+                .ok_or_else(|| {
+                    "The selected display is no longer available. Choose a display again."
+                        .to_string()
+                })?
+        };
+        selection.validate()?;
         CAPTURE_BUSY
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .map_err(|_| "A screen capture is already in progress.".to_string())?;
         let (sender, receiver) = oneshot::channel();
         let excluded_preview = preview_guard.excluded_window;
         let request = Arc::new(CaptureRequest {
+            host_window_id,
             _preview_guard: preview_guard,
+            frame_guard,
             cancelled: AtomicBool::new(false),
             sender: Mutex::new(Some(sender)),
             _busy: BusyGuard,
@@ -351,7 +614,7 @@ mod macos {
             begin_capture(
                 request,
                 source,
-                dimensions,
+                selection,
                 excluded_window,
                 excluded_preview,
             )
@@ -365,7 +628,7 @@ mod macos {
     fn begin_capture(
         request: Arc<CaptureRequest>,
         source: ScreenCaptureSource,
-        dimensions: (usize, usize),
+        selection: ScreenCaptureSelection,
         excluded_window: Option<u32>,
         excluded_preview: Option<u32>,
     ) -> Result<(), String> {
@@ -386,7 +649,7 @@ mod macos {
                         content,
                         request.clone(),
                         source.clone(),
-                        dimensions,
+                        selection.clone(),
                         excluded_window,
                         excluded_preview,
                     )
@@ -406,69 +669,148 @@ mod macos {
     unsafe fn capture_from_content(
         content: *mut AnyObject,
         request: Arc<CaptureRequest>,
-        source: ScreenCaptureSource,
-        dimensions: (usize, usize),
+        mut source: ScreenCaptureSource,
+        selection: ScreenCaptureSelection,
         excluded_window: Option<u32>,
         excluded_preview: Option<u32>,
     ) -> Result<(), String> {
-        let displays: *mut AnyObject = msg_send![content, displays];
-        if displays.is_null() {
-            return Err("No displays are available for screen sharing.".into());
-        }
-        let count: usize = msg_send![displays, count];
-        let mut selected = std::ptr::null_mut::<AnyObject>();
-        for index in 0..count {
-            let display: *mut AnyObject = msg_send![displays, objectAtIndex: index];
-            let id: u32 = msg_send![display, displayID];
-            if id == source.id {
-                selected = display;
-                break;
-            }
-        }
-        if selected.is_null() {
-            return Err(
-                "The selected display is no longer available. Choose a display again.".into(),
-            );
-        }
-        // Exclude the mark that was visible when capture began. New marks wait
-        // for this capture to finish; the existing mark never needs to blink.
-        let mut excluded = Vec::new();
-        let mut found_pointer = excluded_window.is_none();
-        let mut found_preview = excluded_preview.is_none();
-        let windows: *mut AnyObject = msg_send![content, windows];
-        if !windows.is_null() {
-            let count: usize = msg_send![windows, count];
-            for index in 0..count {
-                let window: *mut AnyObject = msg_send![windows, objectAtIndex: index];
-                let id: u32 = msg_send![window, windowID];
-                if super::excluded_capture_window(id, excluded_window, excluded_preview) {
-                    if let Some(window) = Retained::retain(window) {
-                        found_pointer |= Some(id) == excluded_window;
-                        found_preview |= Some(id) == excluded_preview;
-                        excluded.push(window);
+        let (filter, dimensions) = if matches!(selection, ScreenCaptureSelection::Window) {
+            let windows: *mut AnyObject = msg_send![content, windows];
+            let mut selected = None;
+            if !windows.is_null() {
+                let count: usize = msg_send![windows, count];
+                for index in 0..count {
+                    let window: *mut AnyObject = msg_send![windows, objectAtIndex: index];
+                    if let Some(candidate) = window_source(window, request.host_window_id) {
+                        if candidate.id == source.id {
+                            selected = Some((window, candidate));
+                            break;
+                        }
                     }
                 }
             }
-        }
-        if !found_pointer {
-            return Err(
+            let (window, candidate) = selected
+                .ok_or("The selected window is no longer available. Choose a window again.")?;
+            source = candidate;
+            let filter: Option<Retained<AnyObject>> = msg_send![msg_send![sc_class(c"SCContentFilter")?, alloc], initWithDesktopIndependentWindow: window];
+            let filter = filter.ok_or("Could not configure the selected window.")?;
+            let scale: f32 = msg_send![&*filter, pointPixelScale];
+            if !scale.is_finite() || scale <= 0.0 {
+                return Err("The selected window has no usable scale.".into());
+            }
+            let content_rect: NSRect = msg_send![&*filter, contentRect];
+            if !content_rect.size.width.is_finite()
+                || !content_rect.size.height.is_finite()
+                || content_rect.size.width <= 0.0
+                || content_rect.size.height <= 0.0
+            {
+                return Err("The selected window has no usable content bounds.".into());
+            }
+            let dimensions = bounded_dimensions(
+                (content_rect.size.width * scale as f64).ceil() as usize,
+                (content_rect.size.height * scale as f64).ceil() as usize,
+            )?;
+            (filter, dimensions)
+        } else {
+            let displays: *mut AnyObject = msg_send![content, displays];
+            if displays.is_null() {
+                return Err("No displays are available for screen sharing.".into());
+            }
+            let count: usize = msg_send![displays, count];
+            let mut selected = std::ptr::null_mut::<AnyObject>();
+            for index in 0..count {
+                let display: *mut AnyObject = msg_send![displays, objectAtIndex: index];
+                let id: u32 = msg_send![display, displayID];
+                if id == source.id {
+                    selected = display;
+                    break;
+                }
+            }
+            if selected.is_null() {
+                return Err(
+                    "The selected display is no longer available. Choose a display again.".into(),
+                );
+            }
+            // Exclude the mark that was visible when capture began. New marks wait
+            // for this capture to finish; the existing mark never needs to blink.
+            let mut excluded = Vec::new();
+            let mut found_pointer = excluded_window.is_none();
+            let mut found_preview = excluded_preview.is_none();
+            let mut remaining_frame_windows = request.frame_guard.excluded_windows.clone();
+            let windows: *mut AnyObject = msg_send![content, windows];
+            if !windows.is_null() {
+                let count: usize = msg_send![windows, count];
+                for index in 0..count {
+                    let window: *mut AnyObject = msg_send![windows, objectAtIndex: index];
+                    let id: u32 = msg_send![window, windowID];
+                    if super::excluded_capture_window(id, excluded_window, excluded_preview)
+                        || request.frame_guard.excluded_windows.contains(&id)
+                    {
+                        if let Some(window) = Retained::retain(window) {
+                            found_pointer |= Some(id) == excluded_window;
+                            found_preview |= Some(id) == excluded_preview;
+                            remaining_frame_windows.retain(|frame_id| *frame_id != id);
+                            excluded.push(window);
+                        }
+                    }
+                }
+            }
+            if !remaining_frame_windows.is_empty() {
+                return Err(
+                    "Could not exclude the capture region frame. Stop sharing and try again."
+                        .into(),
+                );
+            }
+            if !found_pointer {
+                return Err(
                 "Could not exclude the screen pointer from capture. Try again after it expires."
                     .into(),
             );
-        }
-        if !found_preview {
-            return Err("Could not exclude the screen preview from capture. Try again.".into());
-        }
-        let excluded_windows = NSArray::from_retained_slice(&excluded);
-        let filter: Option<Retained<AnyObject>> = msg_send![
-            msg_send![sc_class(c"SCContentFilter")?, alloc],
-            initWithDisplay: selected,
-            excludingWindows: &*excluded_windows,
-        ];
-        let filter =
-            filter.ok_or_else(|| "Could not configure the selected display.".to_string())?;
+            }
+            if !found_preview {
+                return Err("Could not exclude the screen preview from capture. Try again.".into());
+            }
+            let excluded_windows = NSArray::from_retained_slice(&excluded);
+            let filter: Option<Retained<AnyObject>> = msg_send![
+                msg_send![sc_class(c"SCContentFilter")?, alloc],
+                initWithDisplay: selected,
+                excludingWindows: &*excluded_windows,
+            ];
+            let filter =
+                filter.ok_or_else(|| "Could not configure the selected display.".to_string())?;
+            let bounds = CGDisplayBounds(source.id);
+            let dimensions = match &selection {
+                ScreenCaptureSelection::Region { region } => {
+                    region.validate_display(bounds.size.width, bounds.size.height)?;
+                    bounded_dimensions(
+                        (region.width * source.width as f64 / region.display_width)
+                            .floor()
+                            .max(1.0) as usize,
+                        (region.height * source.height as f64 / region.display_height)
+                            .floor()
+                            .max(1.0) as usize,
+                    )?
+                }
+                _ => bounded_dimensions(source.width, source.height)?,
+            };
+            (filter, dimensions)
+        };
         let configuration: Retained<AnyObject> =
             msg_send![sc_class(c"SCStreamConfiguration")?, new];
+        if let ScreenCaptureSelection::Region { region } = &selection {
+            let crop = NSRect::new(
+                NSPoint::new(region.x, region.y),
+                NSSize::new(region.width, region.height),
+            );
+            let _: () = msg_send![&*configuration, setSourceRect: crop];
+            source.name = format!("{} — Selected region", source.name);
+        }
+        if matches!(selection, ScreenCaptureSelection::Window) {
+            // Output is exactly the selected window's content bounds, without shadow padding.
+            let _: () = msg_send![&*configuration, setIgnoreShadowsSingleWindow: Bool::YES];
+            // A window remains the same selected source when partly outside a display.
+            let _: () = msg_send![&*configuration, setIgnoreGlobalClipSingleWindow: Bool::YES];
+        }
         let _: () = msg_send![&*configuration, setWidth: dimensions.0];
         let _: () = msg_send![&*configuration, setHeight: dimensions.1];
         let _: () = msg_send![&*configuration, setShowsCursor: Bool::YES];
@@ -489,7 +831,20 @@ mod macos {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as u64;
-                let result = encode_frame(image, &source, captured_at);
+                let result = if (unsafe { CGImageGetWidth(image) }, unsafe {
+                    CGImageGetHeight(image)
+                }) != dimensions
+                {
+                    Err(
+                        "Screen capture returned unexpected image dimensions. Start sharing again."
+                            .into(),
+                    )
+                } else {
+                    encode_frame(image, &source, captured_at).map(|mut frame| {
+                        frame.selection_kind = selection.kind();
+                        frame
+                    })
+                };
                 request.complete(result);
             });
         });
@@ -553,6 +908,7 @@ mod macos {
                     .encode(std::slice::from_raw_parts(bytes, length))
             );
             Ok(ScreenCaptureFrame {
+                selection_kind: "display",
                 frame_id: String::new(),
                 pointers_enabled: false,
                 pointer_frame_valid: false,
@@ -571,6 +927,22 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::{bounded_dimensions, oriented_pixel_dimensions, MAX_IMAGE_EDGE};
+
+    #[test]
+    fn allows_only_the_authenticated_main_window_from_our_process() {
+        let own_pid = std::process::id() as i32;
+        assert!(super::shareable_window_owner(own_pid, 42, Some(42)));
+        // Preview, controls, selector and pointer windows must all remain excluded.
+        for helper_id in [43, 44, 45, 46] {
+            assert!(!super::shareable_window_owner(own_pid, helper_id, Some(42)));
+        }
+        assert!(!super::shareable_window_owner(own_pid, 42, None));
+        assert!(!super::shareable_window_owner(own_pid, 0, Some(0)));
+        // A replaced main window must not authorize its old native ID.
+        assert!(!super::shareable_window_owner(own_pid, 42, Some(50)));
+        assert!(super::shareable_window_owner(own_pid + 1, 99, Some(42)));
+        assert!(super::shareable_window_owner(own_pid + 1, 99, None));
+    }
 
     #[test]
     fn uses_retina_backing_detail_instead_of_upscaling_logical_pixels() {
