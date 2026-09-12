@@ -75,7 +75,7 @@ pub struct ScreenSharingSnapshot {
     #[serde(default)]
     region: Option<crate::screen_capture::ScreenCaptureRegion>,
     source_id: Option<u32>,
-    interval_seconds: u8,
+    interval_seconds: u16,
     has_error: bool,
     permission_kind: Option<crate::media_permissions::MediaPermissionKind>,
     last_observed_at: Option<u64>,
@@ -95,8 +95,8 @@ impl ScreenSharingSnapshot {
         {
             return Err("Invalid auxiliary state revision".into());
         }
-        if !(20..=60).contains(&self.interval_seconds) {
-            return Err("Viewing interval must be between 20 and 60 seconds".into());
+        if !(10..=180).contains(&self.interval_seconds) {
+            return Err("Viewing interval must be between 10 and 180 seconds".into());
         }
         if self.sources.len() > 64 || self.sources.iter().any(|source| source.name.len() > 800) {
             return Err("Invalid display list".into());
@@ -140,7 +140,7 @@ pub enum ScreenSharingAction {
     },
     SetInterval {
         #[serde(rename = "intervalSeconds")]
-        interval_seconds: u8,
+        interval_seconds: u16,
     },
 }
 
@@ -271,9 +271,9 @@ fn validate_action(
             Err("Stop sharing before refreshing displays".into())
         }
         ScreenSharingAction::SetInterval { interval_seconds }
-            if !(20..=60).contains(interval_seconds) =>
+            if !(10..=180).contains(interval_seconds) =>
         {
-            Err("Viewing interval must be between 20 and 60 seconds".into())
+            Err("Viewing interval must be between 10 and 180 seconds".into())
         }
         _ => Ok(()),
     }
@@ -476,6 +476,22 @@ mod tests {
     }
 
     #[test]
+    fn three_minute_interval_round_trips_through_native_payloads() {
+        let mut snapshot = published().snapshot;
+        snapshot.interval_seconds = 180;
+        let json = serde_json::to_value(&snapshot).unwrap();
+        let decoded: ScreenSharingSnapshot = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded.interval_seconds, 180);
+        assert!(decoded.validate().is_ok());
+        let request: AuxiliaryActionRequest = serde_json::from_value(serde_json::json!({
+            "version": 7,
+            "action": { "type": "set-interval", "intervalSeconds": 180 }
+        }))
+        .unwrap();
+        assert!(validate_action(&published(), &request).is_ok());
+    }
+
+    #[test]
     fn only_the_intended_window_can_publish_or_request() {
         assert!(require_label(MAIN_LABEL, MAIN_LABEL).is_ok());
         assert!(require_label(CONTROLS_LABEL, MAIN_LABEL).is_err());
@@ -603,7 +619,7 @@ mod tests {
             &request(ScreenSharingAction::SelectSource { source_id: 99 })
         )
         .is_err());
-        for interval_seconds in [5, 19, 61] {
+        for interval_seconds in [0, 9, 181, 300, u16::MAX] {
             assert!(validate_action(
                 &state,
                 &request(ScreenSharingAction::SetInterval { interval_seconds })
@@ -612,7 +628,7 @@ mod tests {
             state.snapshot.interval_seconds = interval_seconds;
             assert!(state.snapshot.validate().is_err());
         }
-        for interval_seconds in [20, 30, 60] {
+        for interval_seconds in [10, 20, 30, 60, 179, 180] {
             assert!(validate_action(
                 &state,
                 &request(ScreenSharingAction::SetInterval { interval_seconds })

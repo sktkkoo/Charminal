@@ -156,6 +156,34 @@ struct RoutedAction {
     action: PreviewAction,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PreviewGeometry {
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+}
+
+impl PreviewGeometry {
+    fn intersects(
+        &self,
+        position: tauri::PhysicalPosition<i32>,
+        size: tauri::PhysicalSize<u32>,
+    ) -> bool {
+        let (x, y) = (i64::from(self.position.x), i64::from(self.position.y));
+        let (mx, my) = (i64::from(position.x), i64::from(position.y));
+        x < mx + i64::from(size.width)
+            && x + i64::from(self.size.width) > mx
+            && y < my + i64::from(size.height)
+            && y + i64::from(self.size.height) > my
+    }
+
+    fn read(window: &WebviewWindow) -> Option<Self> {
+        Some(Self {
+            position: window.outer_position().ok()?,
+            size: window.inner_size().ok()?,
+        })
+    }
+}
+
 #[derive(Default)]
 struct PreviewState {
     lease: Option<String>,
@@ -163,6 +191,7 @@ struct PreviewState {
     sequence: u64,
     opening: bool,
     closing: bool,
+    geometry: Option<PreviewGeometry>,
 }
 impl PreviewState {
     fn require_lease(&self, lease: &str) -> Result<(), String> {
@@ -232,7 +261,7 @@ pub async fn screen_preview_open(
     require_label(window.label(), MAIN)?;
     let _capture_exclusion = CAPTURE_EXCLUSION.write().await;
     let main_url = window.url().map_err(|error| error.to_string())?;
-    {
+    let geometry = {
         let mut state = state.0.lock().map_err(|_| "Preview state unavailable")?;
         state.require_lease(&lease_id)?;
         if state.opening || state.closing {
@@ -242,7 +271,8 @@ pub async fn screen_preview_open(
             return Ok(());
         }
         state.opening = true;
-    }
+        state.geometry
+    };
     // No state lock across native creation: platform callbacks may re-enter the application.
     let built = WebviewWindowBuilder::new(
         &app,
@@ -259,6 +289,7 @@ pub async fn screen_preview_open(
     .background_color(tauri::webview::Color(0, 0, 0, 0))
     .always_on_top(true)
     .focused(true)
+    .visible(false)
     .skip_taskbar(true)
     .disable_drag_drop_handler()
     .on_navigation(move |url| allowed_navigation(url, &main_url))
@@ -276,7 +307,41 @@ pub async fn screen_preview_open(
         built.destroy().map_err(|error| error.to_string())?;
         return Err("Screen preview was cancelled".into());
     }
+    if let Some(geometry) = geometry.filter(|geometry| {
+        built
+            .available_monitors()
+            .map(|monitors| {
+                monitors
+                    .iter()
+                    .any(|monitor| geometry.intersects(*monitor.position(), *monitor.size()))
+            })
+            .unwrap_or(false)
+    }) {
+        built
+            .set_size(geometry.size)
+            .map_err(|error| error.to_string())?;
+        built
+            .set_position(geometry.position)
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
+}
+
+/// The document calls this only after decoding its first shared image.
+#[tauri::command]
+pub fn screen_preview_ready(
+    window: WebviewWindow,
+    state: State<'_, ScreenPreviewState>,
+    lease_id: String,
+) -> Result<(), String> {
+    require_label(window.label(), PREVIEW)?;
+    let state = state.0.lock().map_err(|_| "Preview state unavailable")?;
+    state.require_lease(&lease_id)?;
+    if state.frame.is_none() || state.opening || state.closing {
+        return Err("Screen preview image is not ready".into());
+    }
+    // Serialize with revocation so a delayed decode cannot reveal a closed preview.
+    window.show().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -287,7 +352,9 @@ pub async fn screen_preview_revoke(
     lease_id: String,
 ) -> Result<(), String> {
     require_label(window.label(), MAIN)?;
-    let _capture_exclusion = CAPTURE_EXCLUSION.write().await;
+    // Removing an excluded window cannot expose it to an in-flight capture.
+    // Do not wait on OS-retained capture callbacks to dismiss the preview;
+    // clearing the lease also cancels any opening window before it can publish.
     let should_close = {
         let mut state = state.0.lock().map_err(|_| "Preview state unavailable")?;
         if state.require_lease(&lease_id).is_ok() {
@@ -300,6 +367,12 @@ pub async fn screen_preview_revoke(
     };
     if should_close {
         if let Some(window) = app.get_webview_window(PREVIEW) {
+            let geometry = PreviewGeometry::read(&window);
+            if let Ok(mut state) = state.0.lock() {
+                if geometry.is_some() {
+                    state.geometry = geometry;
+                }
+            }
             window.destroy().map_err(|error| error.to_string())?;
         }
     }
@@ -377,6 +450,7 @@ pub fn window_destroyed(app: &AppHandle, label: &str) {
 pub fn close_owned_windows(app: &AppHandle) {
     let should_close = if let Some(state) = app.try_state::<ScreenPreviewState>() {
         if let Ok(mut state) = state.0.lock() {
+            state.geometry = None;
             state.clear();
             state.closing = state.opening || app.get_webview_window(PREVIEW).is_some();
             !state.opening
@@ -461,6 +535,27 @@ mod tests {
         state.lease = Some("replacement".into());
         assert!(state.require_lease("first").is_err());
         assert!(state.require_lease("replacement").is_ok());
+    }
+    #[test]
+    fn saved_geometry_requires_a_connected_screen() {
+        let geometry = PreviewGeometry {
+            position: tauri::PhysicalPosition::new(-1200, 100),
+            size: tauri::PhysicalSize::new(400, 300),
+        };
+        assert!(!geometry.intersects(
+            tauri::PhysicalPosition::new(0, 0),
+            tauri::PhysicalSize::new(1920, 1080)
+        ));
+        assert!(geometry.intersects(
+            tauri::PhysicalPosition::new(-1920, 0),
+            tauri::PhysicalSize::new(1920, 1080)
+        ));
+        let mut state = PreviewState {
+            geometry: Some(geometry),
+            ..Default::default()
+        };
+        state.clear();
+        assert_eq!(state.geometry, Some(geometry));
     }
     #[test]
     fn window_roles_and_navigation_are_fixed() {

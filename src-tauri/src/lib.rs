@@ -3893,6 +3893,7 @@ pub fn run() {
             media_permissions::open_media_permission_settings,
             screen_preview::screen_preview_begin,
             screen_preview::screen_preview_open,
+            screen_preview::screen_preview_ready,
             screen_preview::screen_preview_revoke,
             screen_preview::screen_preview_publish,
             screen_preview::screen_preview_snapshot,

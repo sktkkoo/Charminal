@@ -293,7 +293,7 @@ describe("independent screen-sharing controls", () => {
       name: "Update interval",
     })) as HTMLInputElement;
     expect(interval.min).toBe("10");
-    expect(interval.max).toBe("300");
+    expect(interval.max).toBe("180");
     expect(interval.value).toBe("30");
     interval.focus();
     state = {

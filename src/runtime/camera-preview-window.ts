@@ -189,5 +189,10 @@ export function useCameraPreviewWindow(model: CameraPreviewModel) {
   const attach = useCallback(async () => {
     await host.current?.attach();
   }, []);
-  return { ...status, detach, attach };
+  return {
+    ...status,
+    inlineVisible: host.current?.isInline(model) ?? !model.initiallyDetached,
+    detach,
+    attach,
+  };
 }

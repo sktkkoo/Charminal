@@ -239,7 +239,7 @@ describe("screen sharing control", () => {
     expect(p.onStart).not.toHaveBeenCalled();
     const interval = screen.getByRole("slider") as HTMLInputElement;
     expect(interval.min).toBe("10");
-    expect(interval.max).toBe("300");
+    expect(interval.max).toBe("180");
     expect(interval.value).toBe("30");
     fireEvent.change(interval, { target: { value: "20" } });
     expect(p.onIntervalChange).toHaveBeenCalledWith(20);

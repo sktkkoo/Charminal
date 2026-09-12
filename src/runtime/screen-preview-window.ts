@@ -33,6 +33,9 @@ export function listenScreenPreview(
 export function readScreenPreview(): Promise<ScreenPreviewFrame | null> {
   return invoke("screen_preview_snapshot");
 }
+export function showScreenPreview(leaseId: string): Promise<void> {
+  return invoke("screen_preview_ready", { leaseId });
+}
 export function requestScreenPreviewAction(
   leaseId: string,
   action: "stop" | "attach",
@@ -164,5 +167,10 @@ export function useScreenPreviewWindow(model: ScreenPreviewModel) {
   const attach = useCallback(async () => {
     await host.current?.attach();
   }, []);
-  return { ...status, detach, attach };
+  return {
+    ...status,
+    inlineVisible: host.current?.isInline(model) ?? !model.initiallyDetached,
+    detach,
+    attach,
+  };
 }

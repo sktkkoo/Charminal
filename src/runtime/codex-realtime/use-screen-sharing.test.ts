@@ -1066,13 +1066,13 @@ describe("useScreenSharing", () => {
     await act(async () => {
       await result.current.start();
     });
-    for (let value = 9; value <= 301; value++) {
+    for (let value = 9; value <= 181; value++) {
       act(() => result.current.setIntervalSeconds(value));
     }
-    expect(result.current.intervalSeconds).toBe(300);
+    expect(result.current.intervalSeconds).toBe(180);
     expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(300_000);
+      await vi.advanceTimersByTimeAsync(180_000);
     });
     expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
   });

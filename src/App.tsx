@@ -5864,7 +5864,7 @@ function App() {
       {screenSharing.active &&
       cameraPreviewVisible &&
       screenSharing.cameraStream &&
-      !cameraPreviewWindow.detached ? (
+      cameraPreviewWindow.inlineVisible ? (
         <CameraPreview
           stream={screenSharing.cameraStream}
           opening={cameraPreviewWindow.opening}
@@ -5879,7 +5879,7 @@ function App() {
       {screenSharing.active &&
       screenPreviewVisible &&
       screenSharing.screenPreviewFrame &&
-      !screenPreviewWindow.detached ? (
+      screenPreviewWindow.inlineVisible ? (
         <CameraPreview
           sourceKind="screen"
           imageDataUrl={screenSharing.screenPreviewFrame.imageDataUrl}

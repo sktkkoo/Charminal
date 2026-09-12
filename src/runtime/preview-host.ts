@@ -56,6 +56,14 @@ export class PreviewHost<Model extends PreviewOptions, Source, Frame> {
   ) {
     this.detached = model.initiallyDetached ?? false;
   }
+  /** Rendering follows the chosen destination, including before update effects run. */
+  isInline(model: Model): boolean {
+    if (model.visible === false || !this.adapter.source(model)) return false;
+    if (this.adapter.source(this.model) !== this.adapter.source(model)) {
+      return !(model.initiallyDetached ?? false);
+    }
+    return !this.detached || (this.failed && this.model.visible !== false);
+  }
   update(model: Model): void {
     const replaced = this.adapter.source(this.model) !== this.adapter.source(model);
     const shown = this.model.visible === false && model.visible !== false;

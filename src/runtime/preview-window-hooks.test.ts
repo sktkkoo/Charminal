@@ -69,3 +69,31 @@ it("keeps a manually detached camera external through hide/show and a view chang
     native.invoke.mock.calls.filter(([command]) => command === "camera_preview_open"),
   ).toHaveLength(2);
 });
+
+it("never renders inline while an external screen preview opens or reopens", async () => {
+  const renders: boolean[] = [];
+  const initialProps = {
+    sourceKey: "share-flicker",
+    frame: { imageDataUrl: "data:image/jpeg;base64,AAAA" },
+    language: "ja",
+    onStop: vi.fn(),
+    visible: true,
+    initiallyDetached: true,
+  };
+  const { result, rerender } = renderHook(
+    (props) => {
+      const preview = useScreenPreviewWindow(props);
+      renders.push(preview.inlineVisible);
+      return preview;
+    },
+    { initialProps },
+  );
+  await waitFor(() => expect(result.current.detached).toBe(true));
+  rerender({ ...initialProps, visible: false });
+  await waitFor(() => expect(result.current.detached).toBe(false));
+  rerender({ ...initialProps, initiallyDetached: false });
+  await waitFor(() => expect(result.current.detached).toBe(true));
+  expect(renders.every((visible) => !visible)).toBe(true);
+  await act(() => result.current.attach());
+  expect(result.current.inlineVisible).toBe(true);
+});

@@ -1,5 +1,5 @@
 export const MIN_SHARING_INTERVAL_SECONDS = 10;
-export const MAX_SHARING_INTERVAL_SECONDS = 300;
+export const MAX_SHARING_INTERVAL_SECONDS = 180;
 
 export function formatSharingInterval(value: number, language: string): string {
   const minutes = Math.floor(value / 60);
