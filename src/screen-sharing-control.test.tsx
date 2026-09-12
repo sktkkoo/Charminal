@@ -49,6 +49,35 @@ function props(): ScreenSharingControlProps {
   };
 }
 describe("screen sharing control", () => {
+  it.each([
+    "screen",
+    "camera",
+  ] as const)("keeps %s sharing visibly unavailable during a call even if old availability is true", (sourceKind) => {
+    const p = { ...props(), callShared: true, sourceKind, language: "en" };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: sourceKind === "camera" ? "Camera sharing" : "Screen sharing",
+      }),
+    );
+    expect(screen.getByRole("note").textContent).toBe(
+      "Screen and camera sharing during calls is not available yet.",
+    );
+    const start = screen.getByRole("button", { name: "Start sharing" }) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    fireEvent.click(start);
+    expect(p.onStart).not.toHaveBeenCalled();
+    expect(screen.queryByRole("switch", { name: "Agent pointing (experimental)" })).toBeNull();
+    expect(screen.queryByText(/both AIs/)).toBeNull();
+  });
+  it("still permits stopping a previous share during a call", () => {
+    const p = { ...props(), callShared: true, active: true, language: "en" };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Screen sharing on" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop sharing" }));
+    expect(p.onStop).toHaveBeenCalledOnce();
+    expect(p.onStart).not.toHaveBeenCalled();
+  });
   it("starts region selection from Start without a separate picker action", () => {
     const p = {
       ...props(),

@@ -16,6 +16,7 @@ import { SharingStatus } from "./sharing-status";
 import "./screen-sharing-control.css";
 
 export interface ScreenSharingControlProps {
+  readonly callShared?: boolean;
   readonly screenSourceKind?: ScreenSourceKind;
   readonly screenSelectionSupported?: boolean;
   readonly region?: ScreenCaptureRegion | null;
@@ -110,6 +111,7 @@ function panelPosition(trigger: HTMLButtonElement | null, compactError = false) 
 
 /** Controlled screen-sharing settings. Opening the panel never starts capture. */
 export function ScreenSharingControl({
+  callShared = false,
   previewVisible = true,
   onPreviewVisibleChange,
   sourceKind = "screen",
@@ -184,6 +186,7 @@ export function ScreenSharingControl({
   const measuring = panelMode === "measuring";
   const hasSelectedSource = sources.some((source) => source.id === sourceId);
   const canStart =
+    !callShared &&
     available &&
     (camera || screenSourceKind !== "display" || pointersReady) &&
     (screenSourceKind === "region" && !camera ? screenSelectionSupported : hasSelectedSource) &&
@@ -506,7 +509,7 @@ export function ScreenSharingControl({
                   onChange={onPreviewVisibleChange}
                 />
               ) : null}
-              {!camera && screenSourceKind === "display" ? (
+              {!callShared && !camera && screenSourceKind === "display" ? (
                 <ScreenPointerToggle
                   enabled={pointersEnabled}
                   ready={pointersReady}
@@ -516,7 +519,14 @@ export function ScreenSharingControl({
                 />
               ) : null}
 
-              {!available ? (
+              {callShared && (
+                <p className="screen-sharing-description" role="note">
+                  {isJapanese
+                    ? "通話中の画面・カメラ共有は準備中です。"
+                    : "Screen and camera sharing during calls is not available yet."}
+                </p>
+              )}
+              {!available && !callShared ? (
                 <p className="screen-sharing-description">{labels.unavailable}</p>
               ) : null}
               {permissionKind ? (

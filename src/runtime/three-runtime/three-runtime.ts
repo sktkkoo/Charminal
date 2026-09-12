@@ -57,6 +57,7 @@ class ThreeRuntimeImpl implements ThreeRuntime {
   private currentUrl: string | null = null;
   private currentVrm: VRM | null = null;
   private currentBody: Body | null = null;
+  private readonly frameListeners = new Set<(delta: number, elapsed: number) => void>();
   private motionIntensity = 1.0;
   private trackHead: THREE.Object3D | null = null;
   private loadToken = 0;
@@ -302,6 +303,13 @@ class ThreeRuntimeImpl implements ThreeRuntime {
     return this.currentBody;
   }
 
+  subscribeFrame(listener: (delta: number, elapsed: number) => void): () => void {
+    this.frameListeners.add(listener);
+    return () => {
+      this.frameListeners.delete(listener);
+    };
+  }
+
   getCharacterAnchor(): { x: number; y: number; z: number } | null {
     const vrm = this.currentVrm;
     if (vrm === null) return null;
@@ -527,6 +535,15 @@ class ThreeRuntimeImpl implements ThreeRuntime {
         }
       }
 
+      for (const listener of this.frameListeners) {
+        try {
+          listener(delta, elapsed);
+        } catch (error) {
+          this.frameListeners.delete(listener);
+          console.error("[three-runtime] scene frame listener failed:", error);
+        }
+      }
+
       this.lastRenderAtMs = now;
       if (!this.r3fHost.advance(now)) {
         this.renderer.render(this.scene, this.camera);
@@ -688,7 +705,7 @@ class ThreeRuntimeImpl implements ThreeRuntime {
       this.bodyListenerRef.current?.(null);
     }
     if (this.currentVrm) {
-      this.scene.remove(this.currentVrm.scene);
+      this.currentVrm.scene.removeFromParent();
       this.currentVrm.scene.traverse((obj) => {
         if (obj instanceof THREE.Mesh) {
           obj.geometry?.dispose();

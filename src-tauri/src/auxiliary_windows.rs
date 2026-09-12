@@ -58,6 +58,8 @@ pub enum ScreenSourceKind {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScreenSharingSnapshot {
+    #[serde(default)]
+    call_shared: bool,
     revision: String,
     pointer_revision: String,
     available: bool,
@@ -214,7 +216,8 @@ fn validate_action(
     let snapshot = &published.snapshot;
     match &request.action {
         ScreenSharingAction::Start
-            if !snapshot.available
+            if snapshot.call_shared
+                || !snapshot.available
                 || (snapshot.source_kind != SharingSourceKind::Camera
                     && snapshot.screen_source_kind == ScreenSourceKind::Display
                     && !snapshot.pointers_ready)
@@ -232,7 +235,8 @@ fn validate_action(
         ScreenSharingAction::SetPointersEnabled { .. }
         | ScreenSharingAction::RetryPointers
         | ScreenSharingAction::ClearAnnotations
-            if snapshot.source_kind == SharingSourceKind::Camera
+            if snapshot.call_shared
+                || snapshot.source_kind == SharingSourceKind::Camera
                 || snapshot.screen_source_kind != ScreenSourceKind::Display =>
         {
             Err("Desktop pointers are not available for camera sharing".into())
@@ -244,7 +248,8 @@ fn validate_action(
             Err("Screen pointer settings do not need initialization".into())
         }
         ScreenSharingAction::SelectRegion
-            if snapshot.source_kind == SharingSourceKind::Camera
+            if snapshot.call_shared
+                || snapshot.source_kind == SharingSourceKind::Camera
                 || snapshot.screen_source_kind != ScreenSourceKind::Region
                 || snapshot.active
                 || snapshot.busy
@@ -393,11 +398,53 @@ pub fn close_owned_windows(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn call_context_rejects_capture_and_pointer_actions_even_when_available() {
+        let mut state = published();
+        state.snapshot.call_shared = true;
+        state.snapshot.available = true;
+        for action in [
+            ScreenSharingAction::Start,
+            ScreenSharingAction::ClearAnnotations,
+            ScreenSharingAction::RetryPointers,
+            ScreenSharingAction::SetPointersEnabled { enabled: true },
+            ScreenSharingAction::SelectRegion,
+        ] {
+            let request = AuxiliaryActionRequest {
+                version: state.version,
+                pointer_revision: Some(state.snapshot.pointer_revision.clone()),
+                action,
+            };
+            assert!(validate_action(&state, &request).is_err());
+        }
+        let stop = AuxiliaryActionRequest {
+            version: state.version,
+            pointer_revision: Some(state.snapshot.pointer_revision.clone()),
+            action: ScreenSharingAction::Stop,
+        };
+        assert!(validate_action(&state, &stop).is_ok());
+        let mut stale = stop;
+        stale.version -= 1;
+        assert!(validate_action(&state, &stale).is_err());
+    }
+    #[test]
+    fn old_snapshot_defaults_to_private_context_and_rejects_a_non_boolean_call_scope() {
+        let mut value = serde_json::to_value(published().snapshot).unwrap();
+        value.as_object_mut().unwrap().remove("callShared");
+        assert!(
+            !serde_json::from_value::<ScreenSharingSnapshot>(value.clone())
+                .unwrap()
+                .call_shared
+        );
+        value["callShared"] = "true".into();
+        assert!(serde_json::from_value::<ScreenSharingSnapshot>(value).is_err());
+    }
 
     fn published() -> PublishedSnapshot {
         PublishedSnapshot {
             version: 7,
             snapshot: ScreenSharingSnapshot {
+                call_shared: false,
                 revision: "main-owner-revision".into(),
                 pointer_revision: "pointer-owner-revision".into(),
                 available: true,

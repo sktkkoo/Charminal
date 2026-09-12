@@ -1,0 +1,73 @@
+html[data-window-view="call-resident"],
+html[data-window-view="call-resident"] body,
+html[data-window-view="call-resident"] #root {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: system-ui, sans-serif;
+}
+.remote-call-resident {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: #f7f8fa;
+}
+.remote-call-resident-avatar {
+  position: absolute;
+  inset: 0;
+}
+.remote-call-resident-avatar > p,
+.remote-call-resident-waiting {
+  position: absolute;
+  inset: 36px 12px auto;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(24, 26, 31, 0.86);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.remote-call-resident-chrome {
+  position: absolute;
+  inset: 6px 6px auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  opacity: 0.65;
+  transition: opacity 0.15s;
+}
+.remote-call-resident:hover .remote-call-resident-chrome,
+.remote-call-resident:focus-within .remote-call-resident-chrome {
+  opacity: 1;
+}
+.remote-call-resident-chrome button {
+  border: 0;
+  border-radius: 7px;
+  background: rgba(24, 26, 31, 0.78);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 6px 8px;
+}
+.remote-call-resident-name {
+  cursor: grab;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.remote-call-resident-name span {
+  color: #87d9b1;
+  font-size: 8px;
+}
+.remote-call-resident-hide {
+  cursor: pointer;
+  flex: 0 0 26px;
+}
+.remote-call-resident-chrome button:focus-visible {
+  outline: 2px solid #a3c8ff;
+  outline-offset: 2px;
+}

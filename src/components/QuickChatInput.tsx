@@ -10,6 +10,9 @@ export interface QuickChatInputStrings {
 }
 
 export interface QuickChatInputProps {
+  readonly busy?: boolean;
+  readonly error?: string;
+  readonly maxLength?: number;
   readonly value: string;
   readonly strings: QuickChatInputStrings;
   readonly onChange: (value: string) => void;
@@ -34,6 +37,9 @@ export interface QuickVoiceIndicatorProps {
 }
 
 export function QuickChatInput({
+  busy = false,
+  error,
+  maxLength,
   value,
   strings,
   onChange,
@@ -47,7 +53,7 @@ export function QuickChatInput({
   }, []);
 
   if (typeof document === "undefined") return null;
-  const canSubmit = value.trim().length > 0;
+  const canSubmit = !busy && value.trim().length > 0;
   const submit = () => {
     if (canSubmit) onSubmit();
   };
@@ -62,9 +68,12 @@ export function QuickChatInput({
           submit();
         }}
         role="dialog"
+        aria-busy={busy}
       >
         <input
           aria-label={strings.inputLabel}
+          maxLength={maxLength}
+          aria-invalid={!!error}
           autoComplete="off"
           className="quick-chat-input"
           enterKeyHint="send"
@@ -99,6 +108,11 @@ export function QuickChatInput({
           esc
         </span>
       </form>
+      {error && (
+        <p className="quick-chat-call-error" role="alert">
+          {error}
+        </p>
+      )}
     </div>,
     document.body,
   );

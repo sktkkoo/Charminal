@@ -52,6 +52,8 @@ export interface ThreeRuntime {
   getVrm(): VRM | null;
   /** Body 未生成なら null。VRM load 完了後に非 null。 */
   getBody(): Body | null;
+  /** Updates additional scene residents on the same render clock; pause/detach stops all updates. */
+  subscribeFrame(listener: (delta: number, elapsed: number) => void): () => void;
   /**
    * VRM head bone の world 座標。VRM 未ロード時は null。照明の自動配置アンカー用
    * （例: `src/runtime/three-runtime/attention-cue-light.tsx`）。

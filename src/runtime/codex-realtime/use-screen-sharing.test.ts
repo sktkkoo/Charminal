@@ -1232,6 +1232,27 @@ describe("useScreenSharing", () => {
     expect(share).not.toHaveBeenCalled();
   });
 
+  it("ends a private sharing lease when a call begins and never revives its pending frame after leaving", async () => {
+    const pending = deferred<typeof frame>();
+    vi.mocked(screenCaptureFrame).mockReturnValueOnce(pending.promise);
+    const { result, rerender, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.start());
+    const privateLease = vi.mocked(screenAnnotationBegin).mock.calls[0][0];
+    rerender({ ownerKey: "call:room:local-endpoint", available: false });
+    expect(screenAnnotationEnd).toHaveBeenCalledWith(privateLease);
+    expect(result.current.active).toBe(false);
+    await act(async () => result.current.start());
+    expect(screenAnnotationBegin).toHaveBeenCalledOnce();
+    await act(async () => pending.resolve(frame));
+    expect(share).not.toHaveBeenCalled();
+    rerender({ ownerKey: "main:thread:active", available: true });
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(result.current.active).toBe(false);
+    expect(screenAnnotationBegin).toHaveBeenCalledOnce();
+    expect(share).not.toHaveBeenCalled();
+  });
+
   it("caches the native document ID across sharing leases in the same JS document", async () => {
     const first = setup();
     await act(async () => first.result.current.refreshSources());

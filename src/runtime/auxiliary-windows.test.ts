@@ -52,6 +52,59 @@ function transport() {
 }
 
 describe("auxiliary window ownership", () => {
+  it("fences old controls at the call boundary and rejects new capture and pointer actions", async () => {
+    const port = transport();
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    const initial = model();
+    host.update(initial);
+    await host.open();
+    const old = port.publish.mock.calls[0][0];
+    const current = {
+      ...initial,
+      callShared: true,
+      available: true,
+      setScreenSourceKind: vi.fn(),
+      selectRegion: vi.fn(async () => {}),
+    };
+    host.update(current);
+    await host.open();
+    const next = port.publish.mock.calls[port.publish.mock.calls.length - 1][0];
+    expect(next.callShared).toBe(true);
+    expect(next.pointerRevision).not.toBe(old.pointerRevision);
+    expect(
+      await host.handleAction({
+        revision: old.revision,
+        pointerRevision: old.pointerRevision,
+        action: { type: "start" },
+      }),
+    ).toBe(false);
+    for (const action of [
+      { type: "start" },
+      { type: "set-pointers-enabled", enabled: true },
+      { type: "retry-pointers" },
+      { type: "clear-annotations" },
+      { type: "select-region" },
+    ] as const) {
+      expect(
+        await host.handleAction({
+          revision: next.revision,
+          pointerRevision: next.pointerRevision,
+          action,
+        }),
+      ).toBe(false);
+    }
+    expect(current.start).not.toHaveBeenCalled();
+    expect(current.setPointersEnabled).not.toHaveBeenCalled();
+    expect(
+      await host.handleAction({
+        revision: next.revision,
+        pointerRevision: next.pointerRevision,
+        action: { type: "stop" },
+      }),
+    ).toBe(true);
+    expect(current.stop).toHaveBeenCalledOnce();
+    host.dispose();
+  });
   it("publishes restricted source state and allows Start to draw the first region", async () => {
     const port = transport();
     const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);

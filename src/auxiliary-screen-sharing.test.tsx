@@ -55,6 +55,39 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("independent screen-sharing controls", () => {
+  it("keeps call sharing unavailable in a detached control and makes no start request", async () => {
+    state = {
+      ...state,
+      snapshot: { ...state.snapshot, callShared: true, pointersReady: true, available: true },
+    };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    render(<AuxiliaryScreenSharing />);
+    const start = await screen.findByRole("button", { name: "Start sharing" });
+    expect(screen.getByRole("note").textContent).toBe(
+      "Screen and camera sharing during calls is not available yet.",
+    );
+    expect((start as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(start);
+    expect(requestAuxiliaryAction).not.toHaveBeenCalled();
+    expect(screen.queryByRole("switch", { name: "Agent pointing (experimental)" })).toBeNull();
+  });
+  it("updates an already-open private control when a call begins without starting capture", async () => {
+    render(<AuxiliaryScreenSharing />);
+    const start = await screen.findByRole("button", { name: "Start sharing" });
+    expect((start as HTMLButtonElement).disabled).toBe(false);
+    act(() =>
+      receive({
+        ...state,
+        version: 2,
+        snapshot: { ...state.snapshot, callShared: true, revision: "call-owner" },
+      }),
+    );
+    expect(
+      (screen.getByRole("button", { name: "Start sharing" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(screen.getByRole("note")).toBeTruthy();
+    expect(requestAuxiliaryAction).not.toHaveBeenCalled();
+  });
   it("disables the action while region selection is pending", async () => {
     state = { ...state, snapshot: { ...state.snapshot, screenSourceKind: "region", busy: true } };
     vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);

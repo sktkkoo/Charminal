@@ -14,6 +14,30 @@ const strings: QuickChatInputStrings = {
 afterEach(cleanup);
 
 describe("QuickChatInput", () => {
+  it("retains a failed call draft and prevents duplicate sends while delivery is pending", () => {
+    const onSubmit = vi.fn();
+    const options = {
+      value: "より、二人で考えて",
+      strings,
+      onChange: vi.fn(),
+      onSubmit,
+      onClose: vi.fn(),
+    };
+    const view = render(<QuickChatInput {...options} busy maxLength={2000} />);
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    fireEvent.submit(screen.getByRole("dialog"));
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: strings.send })).toHaveProperty("disabled", true);
+    view.rerender(
+      <QuickChatInput {...options} error="二人の接続を待っています" maxLength={2000} />,
+    );
+    expect(screen.getByRole("textbox")).toHaveProperty("value", options.value);
+    expect(screen.getByRole("textbox")).toHaveProperty("maxLength", 2000);
+    expect(screen.getByRole("alert").textContent).toContain("接続を待っています");
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
+  });
+
   it("focuses the input when it appears", () => {
     render(
       <QuickChatInput

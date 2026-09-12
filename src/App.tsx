@@ -191,6 +191,9 @@ import {
   resolveLanguage,
 } from "./runtime/language/language";
 import { getModuleRegistry, KEYS } from "./runtime/module-registry";
+import { PeerCallControl } from "./runtime/peer-call/peer-call-control";
+import type { RoomCall } from "./runtime/peer-call/room-call";
+import { useCallSurfaces } from "./runtime/peer-call/use-call-surfaces";
 import { PersonaReflexDispatcher } from "./runtime/persona-reflex";
 import type { PersonaEntry } from "./runtime/persona-registry";
 import {
@@ -4059,13 +4062,50 @@ function App() {
   // GPT Live は Main Agent が所有する。表示中の terminal tab は接続寿命に影響させず、
   // shell で手作業中も音声会話を継続する。Main の置換中だけ tracker/client を畳み、
   // voice intent を保ったまま新 thread へ自動再接続する。
-  const codexVoiceAvailable = terminalAgent === "codex" && !mainSessionReplacing;
+  const [peerCallActive, setPeerCallActive] = useState(false);
+  const [peerCall, setPeerCall] = useState<RoomCall | null>(null);
+  const [, refreshPeerCall] = useState(0);
+  const [peerCallInputError, setPeerCallInputError] = useState<string>();
+  const peerCallRef = useRef<RoomCall | null>(null);
+  const peerCallSubmitRef = useRef<RoomCall | null>(null);
+  const [peerCallSubmitting, setPeerCallSubmitting] = useState(false);
+  const handlePeerCallChange = useCallback((room: RoomCall | null) => {
+    peerCallRef.current = room;
+    setPeerCall(room);
+    refreshPeerCall((value) => value + 1);
+    if (!room) {
+      setPeerCallInputError(undefined);
+      setQuickChatOpen(false);
+      peerCallSubmitRef.current = null;
+      setPeerCallSubmitting(false);
+    }
+  }, []);
+  const peerCallSurfaces = useCallSurfaces(
+    peerCall,
+    activePresentationViewModeIdValue,
+    appLanguage.resolved,
+  );
+  const peerCallMicrophoneActive = !!peerCall?.peer?.audio.microphoneActive;
+  const peerCallLipSync = useMemo<LipSyncSource>(
+    () => ({
+      sampleMouth(out = { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 }) {
+        out.aa = peerCallRef.current?.peer?.audio.sampleLocalMouth() ?? 0;
+        out.ih = out.ou = out.ee = out.oh = 0;
+        return out;
+      },
+    }),
+    [],
+  );
+  const codexVoiceAvailable = terminalAgent === "codex" && !mainSessionReplacing && !peerCallActive;
   const voiceEntryAvailable = isVoiceEntryAvailable();
   const greetedRef = useRef(false);
   const inTurnRef = useRef(false);
-  const applyRealtimeLipSyncSource = useCallback((source: LipSyncSource) => {
-    bodyRef.current?.setLipSyncSource(source);
-  }, []);
+  const applyRealtimeLipSyncSource = useCallback(
+    (source: LipSyncSource) => {
+      bodyRef.current?.setLipSyncSource(peerCallRef.current?.connected ? peerCallLipSync : source);
+    },
+    [peerCallLipSync],
+  );
   const realtimeStateExpressionCallbacks = useMemo(
     () => createBodyStateExpressionAdapter(() => bodyRef.current),
     [],
@@ -4192,7 +4232,35 @@ function App() {
     setVoiceReconnectPending(false);
   }, [codexRealtimeState.status, mainSessionReplacing, voiceReconnectPending]);
 
+  const handlePeerCallActiveChange = useCallback(
+    (active: boolean) => {
+      if (active) {
+        pendingRealtimeStartRef.current = false;
+        stopCodexRealtime();
+      }
+      setPeerCallActive(active);
+    },
+    [stopCodexRealtime],
+  );
+
+  useEffect(() => {
+    bodyRef.current?.setLipSyncSource(
+      peerCallActive ? peerCallLipSync : getCodexRealtimeLipSyncSource(),
+    );
+  }, [peerCallActive, peerCallLipSync, getCodexRealtimeLipSyncSource]);
+
   const handleToggleVoice = useCallback(async () => {
+    if (peerCallRef.current?.connected) {
+      const call = peerCallRef.current;
+      setPeerCallInputError(undefined);
+      try {
+        await call.setMicrophone(!call.peer?.audio.microphoneActive);
+      } catch (error) {
+        if (peerCallRef.current === call)
+          setPeerCallInputError(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     if (isConversationTransitionActive(mainConversationTransitionGateRef.current)) return;
     if (voiceReconnectPending) {
       stopCodexRealtime();
@@ -4229,11 +4297,16 @@ function App() {
     persist: (screenPointersEnabled) => updateConfig({ screenPointersEnabled }),
     notify: notifyScreenPointersEnabled,
   });
-  const screenSharingAvailable = codexVoiceAvailable && screenThreadId !== null;
+  const screenSharingAvailable = !peerCallActive && codexVoiceAvailable && screenThreadId !== null;
+  // A call owns a new opt-in sharing lease; joining never widens an existing private share.
+  const sharingOwnerKey =
+    peerCallActive && peerCall
+      ? `call:${peerCall.signaling.roomId}:${peerCall.signaling.localEndpointId}`
+      : `${tabState.mainSessionId}:${screenThreadId ?? ""}`;
   const screenSharing = useScreenSharing({
     available: screenSharingAvailable,
     screenAvailable: /Mac/i.test(navigator.platform),
-    ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
+    ownerKey: sharingOwnerKey,
     share: shareScreenObservation,
     onTiming: (timing) => {
       devLog.write({ subsystem: "ScreenSharing", phase: "capture-context", data: timing });
@@ -4295,6 +4368,7 @@ function App() {
   });
   speechScreenCaptureRef.current = screenSharing.active ? screenSharing.captureNow : null;
   const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
+    callShared: peerCallActive,
     ...screenSharing,
     previewVisible,
     setPreviewVisible,
@@ -4309,7 +4383,7 @@ function App() {
           (screenSharing.screenSourceKind === "display" ? screenPointerSettings.error : undefined))
         : undefined),
     available: screenSharing.available,
-    ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
+    ownerKey: sharingOwnerKey,
     language: appLanguage.resolved,
   });
 
@@ -4325,7 +4399,9 @@ function App() {
         setRuntimeControlValue("camera.tracking", true);
         setVrmReadyOnce(true);
         body.initAttention();
-        body.setLipSyncSource(getCodexRealtimeLipSyncSource());
+        body.setLipSyncSource(
+          peerCallRef.current?.connected ? peerCallLipSync : getCodexRealtimeLipSyncSource(),
+        );
         dispatcher.setContextFactory(
           createRealPersonaContextFactory({
             body,
@@ -4360,6 +4436,7 @@ function App() {
       voicePlayer,
       personaRegistry,
       getCodexRealtimeLipSyncSource,
+      peerCallLipSync,
     ],
   );
 
@@ -5585,17 +5662,19 @@ function App() {
     return installTabKeybindings(tabManager, { getNewSessionCwd: () => cwd });
   }, [cwd, isUserLayerReady, tabManager]);
 
-  const conversationPaletteMode = supportsQuickChatForViewMode(activePresentationViewModeIdValue);
+  const conversationPaletteMode =
+    peerCallActive || supportsQuickChatForViewMode(activePresentationViewModeIdValue);
   const conversationShortcutEnabled =
     conversationPaletteMode &&
-    canMountTerminals &&
-    !mainSessionReplacing &&
+    (peerCallActive || (canMountTerminals && !mainSessionReplacing)) &&
     firstRunHealth === null &&
     restoreDialog === null &&
     voiceEntryDialog === null &&
     reloadCurtainPhase === "hidden";
   const quickVoiceStatus = codexRealtimeState.status === "idle" ? null : codexRealtimeState.status;
-  const quickChatEnabled = canUseQuickChat(conversationShortcutEnabled, codexRealtimeState.status);
+  const quickChatEnabled =
+    conversationShortcutEnabled &&
+    (peerCallActive || canUseQuickChat(conversationShortcutEnabled, codexRealtimeState.status));
 
   useEffect(() => {
     if (!conversationShortcutEnabled) {
@@ -5605,6 +5684,10 @@ function App() {
     return installQuickChatKeybinding({
       macos: isMac,
       onInvoke: () => {
+        if (peerCallRef.current?.connected) {
+          setQuickChatOpen((value) => !value);
+          return;
+        }
         if (codexRealtimeState.status === "active") {
           setCodexMicrophoneMuted(codexRealtimeState.microphoneMuted !== true);
           return;
@@ -5623,8 +5706,10 @@ function App() {
       onHoldStart:
         codexRealtimeState.status === "idle" || codexRealtimeState.status === "error"
           ? () => {
-              const mainSessionId = tabManager.getState().mainSessionId;
-              tabManager.switchTo(mainSessionId);
+              if (!peerCallRef.current?.connected) {
+                const mainSessionId = tabManager.getState().mainSessionId;
+                tabManager.switchTo(mainSessionId);
+              }
               setQuickChatOpen(false);
               void handleToggleVoice();
             }
@@ -5644,6 +5729,32 @@ function App() {
   const handleQuickChatSubmit = useCallback(() => {
     const prompt = quickChatDraft.trim();
     if (!quickChatEnabled || prompt.length === 0) return;
+    const call = peerCallRef.current;
+    if (call?.connected) {
+      if (peerCallSubmitRef.current === call) return;
+      peerCallSubmitRef.current = call;
+      setPeerCallSubmitting(true);
+      setPeerCallInputError(undefined);
+      void call
+        .submitTopic(prompt)
+        .then(() => {
+          if (peerCallRef.current === call) {
+            setQuickChatDraft("");
+            setQuickChatOpen(false);
+          }
+        })
+        .catch((error: unknown) => {
+          if (peerCallRef.current === call)
+            setPeerCallInputError(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          if (peerCallSubmitRef.current === call) {
+            peerCallSubmitRef.current = null;
+            setPeerCallSubmitting(false);
+          }
+        });
+      return;
+    }
     const mainSessionId = tabManager.getState().mainSessionId;
     tabManager.switchTo(mainSessionId);
     setQuickChatDraft("");
@@ -5908,24 +6019,70 @@ function App() {
         viewModes={viewModes}
         activeViewModeId={pickerActiveViewModeId}
         onSelectViewMode={handleSelectViewMode}
-        voiceAvailable={voiceEntryAvailable}
-        voiceDisabled={mainSessionReplacing}
-        voiceState={titleBarVoiceState}
-        voiceMicrophoneActive={codexRealtimeState.microphoneActive === true}
-        voiceLabel={
-          titleBarVoiceState === "active"
-            ? strings.gptLiveVoiceStop
-            : titleBarVoiceState === "connecting"
-              ? strings.gptLiveVoiceConnecting
-              : titleBarVoiceState === "error"
-                ? strings.gptLiveVoiceRetry
-                : strings.gptLiveVoiceStart
+        voiceAvailable={voiceEntryAvailable || peerCallActive}
+        voiceDisabled={!peerCallActive && mainSessionReplacing}
+        voiceState={
+          peerCallActive ? (peerCallMicrophoneActive ? "active" : "idle") : titleBarVoiceState
         }
-        voiceError={codexRealtimeState.error}
+        voiceMicrophoneActive={
+          peerCallActive ? peerCallMicrophoneActive : codexRealtimeState.microphoneActive === true
+        }
+        voiceLabel={
+          peerCallActive
+            ? appLanguage.resolved.startsWith("ja")
+              ? peerCallMicrophoneActive
+                ? "マイクをオフ（通話相手と両方のAIに共有中）"
+                : "マイクをオン（通話相手と両方のAIに届きます）"
+              : peerCallMicrophoneActive
+                ? "Mute microphone (shared with both AIs)"
+                : "Enable microphone for both AIs"
+            : titleBarVoiceState === "active"
+              ? strings.gptLiveVoiceStop
+              : titleBarVoiceState === "connecting"
+                ? strings.gptLiveVoiceConnecting
+                : titleBarVoiceState === "error"
+                  ? strings.gptLiveVoiceRetry
+                  : strings.gptLiveVoiceStart
+        }
+        voiceError={
+          peerCallActive ? peerCallInputError || peerCallSurfaces.error : codexRealtimeState.error
+        }
         onToggleVoice={() => void handleToggleVoice()}
+        peerCallControl={
+          <PeerCallControl
+            getVoice={async () => {
+              const config = parseConfig(await readYorishiroConfigText());
+              const [selected] = listCodexRealtimeVoiceCandidatesForPersona(
+                config,
+                personaRegistry.getActivePersonaId(),
+              );
+              return selected.source === "default" ? undefined : selected.voice;
+            }}
+            residentName={
+              personaRegistry
+                .listEntries()
+                .find((entry) => entry.id === personaRegistry.getActivePersonaId())?.manifest
+                .name ?? "Yori"
+            }
+            publicDescription={
+              personaRegistry
+                .listEntries()
+                .find((entry) => entry.id === personaRegistry.getActivePersonaId())?.manifest
+                .description ?? ""
+            }
+            avatarUrl={vrmUrl}
+            onActiveChange={handlePeerCallActiveChange}
+            onRoomChange={handlePeerCallChange}
+            onTopicRequested={() => setQuickChatOpen(true)}
+            onShowResident={() => void peerCallSurfaces.show()?.catch(() => {})}
+            language={appLanguage.resolved}
+            viewMode={activePresentationViewModeIdValue}
+          />
+        }
         screenSharingControl={
-          codexVoiceAvailable ? (
+          codexVoiceAvailable || peerCallActive ? (
             <ScreenSharingControl
+              callShared={peerCallActive}
               activeViewModeId={activePresentationViewModeIdValue}
               previewVisible={previewVisible}
               onPreviewVisibleChange={setPreviewVisible}
@@ -6079,10 +6236,21 @@ function App() {
       </div>
       {quickChatOpen && quickChatEnabled ? (
         <QuickChatInput
+          busy={peerCallActive && peerCallSubmitting}
+          error={peerCallActive ? peerCallInputError : undefined}
+          maxLength={peerCallActive ? 2000 : undefined}
           value={quickChatDraft}
           strings={{
-            placeholder: strings.quickChatPlaceholder,
-            inputLabel: strings.quickChatInputLabel,
+            placeholder: peerCallActive
+              ? appLanguage.resolved.startsWith("ja")
+                ? "名前で呼んで、ふたりに話しかける"
+                : "Call a name and talk to both residents"
+              : strings.quickChatPlaceholder,
+            inputLabel: peerCallActive
+              ? appLanguage.resolved.startsWith("ja")
+                ? "ふたりに話しかける"
+                : "Talk to both residents"
+              : strings.quickChatInputLabel,
             send: strings.quickChatSend,
             close: strings.quickChatClose,
           }}

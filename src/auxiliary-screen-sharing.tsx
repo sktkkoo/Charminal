@@ -182,6 +182,7 @@ export default function AuxiliaryScreenSharing() {
 
   const hasSelectedSource = state.sources.some((source) => source.id === state.sourceId);
   const canStart =
+    !state.callShared &&
     state.available &&
     (camera || screenSourceKind !== "display" || state.pointersReady) &&
     ((!camera && screenSourceKind === "region") || hasSelectedSource) &&
@@ -317,7 +318,7 @@ export default function AuxiliaryScreenSharing() {
               onChange={(visible) => void request({ type: "set-preview-visible", visible })}
             />
           }
-          {!camera && screenSourceKind === "display" ? (
+          {!state?.callShared && !camera && screenSourceKind === "display" ? (
             <ScreenPointerToggle
               enabled={
                 pointerDraft && state.pointerRevision === pointerDraft.pointerRevision
@@ -331,7 +332,14 @@ export default function AuxiliaryScreenSharing() {
             />
           ) : null}
 
-          {!state.available ? (
+          {state.callShared && (
+            <p className="screen-sharing-description" role="note">
+              {japanese
+                ? "通話中の画面・カメラ共有は準備中です。"
+                : "Screen and camera sharing during calls is not available yet."}
+            </p>
+          )}
+          {!state.available && !state.callShared ? (
             <p className="screen-sharing-description">{labels.unavailable}</p>
           ) : null}
           {state.permissionKind ? (

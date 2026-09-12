@@ -6,8 +6,10 @@ mod history;
 mod journal;
 mod mcp;
 mod media_permissions;
+mod peer_call_agent;
 mod pty;
 mod realtime_bridge;
+mod remote_call_window;
 mod screen_annotation;
 mod screen_capture;
 mod screen_preview;
@@ -3860,36 +3862,49 @@ pub fn run() {
         .manage(Arc::clone(&registry))
         .manage(hook_server_endpoint)
         .manage(RealtimeBridgeState::default())
+        .manage(peer_call_agent::PeerCallAgentState::default())
         .manage(WatcherState::new())
         .manage(tts::TtsState::new())
         .manage(mcp::McpServerStatus::default())
         .manage(screen_annotation::ScreenAnnotationState::default())
         .manage(auxiliary_windows::AuxiliaryWindowsState::default())
         .manage(camera_preview::CameraPreviewState::default())
+        .manage(remote_call_window::RemoteCallWindowState::default())
         .manage(screen_preview::ScreenPreviewState::default())
         .on_page_load(|webview, payload| {
             if webview.label() == "main"
                 && matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
             {
                 screen_annotation::document_reloaded(webview.app_handle());
+                peer_call_agent::shutdown(webview.app_handle());
                 auxiliary_windows::close_owned_windows(webview.app_handle());
                 camera_preview::close_owned_windows(webview.app_handle());
+                remote_call_window::close_owned_windows(webview.app_handle());
                 screen_preview::close_owned_windows(webview.app_handle());
             }
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Resized(size) = event {
+                remote_call_window::window_resized(window.app_handle(), window.label(), *size);
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 camera_preview::window_destroyed(window.app_handle(), window.label());
+                remote_call_window::window_destroyed(window.app_handle(), window.label());
                 screen_preview::window_destroyed(window.app_handle(), window.label());
             }
             if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
                 screen_annotation::shutdown(window.app_handle());
+                peer_call_agent::shutdown(window.app_handle());
                 auxiliary_windows::close_owned_windows(window.app_handle());
                 camera_preview::close_owned_windows(window.app_handle());
+                remote_call_window::close_owned_windows(window.app_handle());
                 screen_preview::close_owned_windows(window.app_handle());
             }
         })
         .invoke_handler(tauri::generate_handler![
+            peer_call_agent::peer_call_agent_start,
+            peer_call_agent::peer_call_agent_text,
+            peer_call_agent::peer_call_agent_stop,
             media_permissions::open_media_permission_settings,
             screen_preview::screen_preview_begin,
             screen_preview::screen_preview_open,
@@ -3899,6 +3914,14 @@ pub fn run() {
             screen_preview::screen_preview_snapshot,
             screen_preview::screen_preview_request_action,
             camera_preview::camera_preview_begin,
+            remote_call_window::remote_call_window_begin,
+            remote_call_window::remote_call_window_open,
+            remote_call_window::remote_call_window_revoke,
+            remote_call_window::remote_call_window_publish,
+            remote_call_window::remote_call_window_snapshot,
+            remote_call_window::remote_call_window_avatar,
+            remote_call_window::remote_call_window_read_avatar,
+            remote_call_window::remote_call_window_hide,
             camera_preview::camera_preview_open,
             camera_preview::camera_preview_revoke,
             camera_preview::camera_preview_publish,
@@ -4038,6 +4061,7 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 screen_annotation::shutdown(app);
+                peer_call_agent::shutdown(app);
                 // 全 PTY session と codex app-server sidecar を明示的に teardown する。
                 // managed state の Drop は process exit では走らない（issue #109）。
                 let registry: State<'_, Arc<SessionRegistry>> = app.state();

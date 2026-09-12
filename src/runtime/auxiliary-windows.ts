@@ -12,6 +12,11 @@ export const AUXILIARY_ACTION_EVENT = "auxiliary-window-action";
 export function resolveWindowView(label: string, search: string) {
   if (label === "main") return "main";
   if (
+    label === "auxiliary-call-resident" &&
+    new URLSearchParams(search).get("auxiliary") === "call-resident"
+  )
+    return "call-resident";
+  if (
     label === "auxiliary-screen-preview" &&
     new URLSearchParams(search).get("auxiliary") === "screen-preview"
   )
@@ -31,6 +36,7 @@ export function resolveWindowView(label: string, search: string) {
 }
 
 export interface ScreenSharingSnapshot {
+  readonly callShared?: boolean;
   readonly permissionKind?: MediaPermissionKind;
   readonly previewVisible?: boolean;
   readonly revision: string;
@@ -78,6 +84,7 @@ export function isPointerSettingsAction(action: ScreenSharingAuxiliaryAction): b
 }
 
 export interface ScreenSharingAuxiliaryModel {
+  readonly callShared?: boolean;
   readonly previewVisible?: boolean;
   readonly setPreviewVisible?: (visible: boolean) => void;
   readonly ownerKey: string;
@@ -118,6 +125,7 @@ export function createScreenSharingSnapshot(
     revision,
     pointerRevision,
     available: model.available,
+    callShared: model.callShared ?? false,
     active: model.active,
     busy: model.busy,
     pointersEnabled: model.pointersEnabled,
@@ -230,6 +238,7 @@ export class ScreenSharingAuxiliaryHost {
     const revision = this.transport.revision();
     const pointerSignature = JSON.stringify([
       model.ownerKey,
+      model.callShared ?? false,
       model.pointersEnabled,
       model.pointersReady,
     ]);
@@ -298,6 +307,7 @@ export class ScreenSharingAuxiliaryHost {
         break;
       case "start":
         if (
+          model.callShared ||
           !model.available ||
           (model.sourceKind !== "camera" &&
             (model.screenSourceKind ?? "display") === "display" &&
@@ -318,18 +328,30 @@ export class ScreenSharingAuxiliaryHost {
         await model.refreshSources();
         break;
       case "clear-annotations":
-        if (model.sourceKind === "camera" || (model.screenSourceKind ?? "display") !== "display")
+        if (
+          model.callShared ||
+          model.sourceKind === "camera" ||
+          (model.screenSourceKind ?? "display") !== "display"
+        )
           return false;
         await model.clearAnnotations();
         break;
       case "retry-pointers":
-        if (model.sourceKind === "camera" || (model.screenSourceKind ?? "display") !== "display")
+        if (
+          model.callShared ||
+          model.sourceKind === "camera" ||
+          (model.screenSourceKind ?? "display") !== "display"
+        )
           return false;
         if (model.pointersReady || !model.error) return false;
         await model.retryPointers();
         break;
       case "set-pointers-enabled":
-        if (model.sourceKind === "camera" || (model.screenSourceKind ?? "display") !== "display")
+        if (
+          model.callShared ||
+          model.sourceKind === "camera" ||
+          (model.screenSourceKind ?? "display") !== "display"
+        )
           return false;
         if (!model.pointersReady || typeof action.enabled !== "boolean") return false;
         await model.setPointersEnabled(action.enabled);
@@ -358,6 +380,7 @@ export class ScreenSharingAuxiliaryHost {
         break;
       case "select-region":
         if (
+          model.callShared ||
           model.active ||
           !model.selectRegion ||
           model.sourceKind === "camera" ||
