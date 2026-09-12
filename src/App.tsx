@@ -336,7 +336,6 @@ import {
 } from "./runtime/ui-pack-transition/stage-transition";
 import { getUiStateStore } from "./runtime/ui-state-store";
 import { useAuxiliaryScreenSharing } from "./runtime/use-auxiliary-screen-sharing";
-import { useInitialPreviewDestination } from "./runtime/use-initial-preview-destination";
 import { useViewModeCamera } from "./runtime/use-view-mode-camera";
 import {
   loadUserLayer,
@@ -4270,8 +4269,13 @@ function App() {
       // Keep the current session preference if persistence is unavailable.
     }
   }, []);
+  const initiallyDetachedPreview =
+    activePresentationViewModeIdValue === "portrait" ||
+    activePresentationViewModeIdValue === "companion";
   const screenPreviewWindow = useScreenPreviewWindow({
-    sourceKey: screenPreviewVisible ? screenSharing.screenPreviewKey : null,
+    sourceKey: screenSharing.screenPreviewKey,
+    visible: screenPreviewVisible,
+    initiallyDetached: initiallyDetachedPreview,
     frame: screenSharing.screenPreviewFrame,
     language: appLanguage.resolved,
     onStop: screenSharing.stop,
@@ -4281,27 +4285,13 @@ function App() {
   const setPreviewVisible =
     screenSharing.sourceKind === "camera" ? setCameraPreviewVisible : setScreenPreviewVisible;
   const cameraPreviewWindow = useCameraPreviewWindow({
-    stream:
-      screenSharing.active && cameraPreviewVisible ? (screenSharing.cameraStream ?? null) : null,
+    stream: screenSharing.cameraStream,
+    visible: cameraPreviewVisible,
+    initiallyDetached: initiallyDetachedPreview,
     lastCapturedAt: screenSharing.lastCapturedAt,
     lastSharedAt: screenSharing.lastObservedAt,
     language: appLanguage.resolved,
     onStop: screenSharing.stop,
-  });
-  const compactCameraView =
-    activePresentationViewModeIdValue === "portrait" ||
-    activePresentationViewModeIdValue === "companion";
-  useInitialPreviewDestination({
-    sessionKey: screenSharing.cameraStream,
-    ready: cameraPreviewVisible && screenSharing.cameraStream !== null,
-    initiallyDetached: compactCameraView,
-    detach: cameraPreviewWindow.detach,
-  });
-  useInitialPreviewDestination({
-    sessionKey: screenSharing.screenPreviewKey,
-    ready: screenPreviewVisible && screenSharing.screenPreviewFrame !== null,
-    initiallyDetached: compactCameraView,
-    detach: screenPreviewWindow.detach,
   });
   speechScreenCaptureRef.current = screenSharing.active ? screenSharing.captureNow : null;
   const auxiliaryScreenSharing = useAuxiliaryScreenSharing({
