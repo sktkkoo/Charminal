@@ -134,9 +134,9 @@ Yorishiro's commands let you create and edit packs, run tutorials, and more — 
 
 Codex does not support custom `/` commands, so Yorishiro registers the same tools as `$yori-*` skills instead.
 
-### Voice conversations
+### Voice conversations (Codex)
 
-Yorishiro supports voice conversation through GPT Live when using Codex 0.145.0 or newer. Press the microphone button in the title bar to start, and press it again to stop. The normal Codex TUI stays visible: voice and text share the same thread, approvals, and tool flow. Voice inherits the current Codex CLI login. Microphone access is requested only when you press the button. See [the realtime voice decision](docs/decisions/codex-realtime-voice.md) for architecture and limitations.
+Codex 0.145.0 or newer supports voice conversation through GPT Live. Press the microphone button to start, and press it again to stop. Voice and text share the same session. Voice inherits the current Codex CLI login. See [the realtime voice decision](docs/decisions/codex-realtime-voice.md) for architecture and limitations.
 
 <p align="center">
   <img src="docs/assets/gpt-live-title-bar.png" alt="GPT Live microphone button in the Yorishiro title bar" width="220" />
@@ -144,7 +144,7 @@ Yorishiro supports voice conversation through GPT Live when using Codex 0.145.0 
 
 Set `codexRealtimeVoice` in `~/.yorishiro/config.json` to choose the GPT Live output voice globally (default: `sol`), and `realtimeVoiceByPersona` to override it per persona pack id. The values are read whenever a new voice session starts, so stop and restart an active voice conversation to apply a change. If the app-server explicitly rejects the selected voice as invalid or unsupported, Yorishiro retries with the next candidate (persona → global → default); other connection failures surface as errors. See [configuration](docs/configuration.md#codex-gpt-live-voice).
 
-### Screen sharing / Camera sharing
+### Screen sharing / Camera sharing (Codex)
 
 Use the sharing icon in the title bar to send screen or camera stills to the current Codex conversation. Screen sharing on macOS supports an entire display, a window, or a region you can move and resize. For camera sharing, select a camera and start sharing.
 

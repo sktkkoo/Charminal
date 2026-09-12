@@ -126,9 +126,9 @@ Yorishiroのコマンドを使うと、packの作成・編集・チュートリ�
 
 Codexはカスタムの`/`コマンドに対応していないため、Yorishiroは同じツールを`$yori-*`スキルとして登録します。
 
-### 音声会話
+### 音声会話（Codex）
 
-Yorishiroでは、Codex 0.145.0以降を使用するとGPT Liveによる音声会話を利用できます。title barのマイクボタンを押すと開始し、もう一度押すと終了します。通常のCodex TUIはそのまま表示され、音声とテキストは同じthread・approval・tool flowを共有します。認証はCodex CLIの現在のログインを引き継ぎます。マイク権限はボタンを押したときだけ要求します。構成と制限は[realtime voiceの設計判断](docs/decisions/codex-realtime-voice.md)を参照してください。
+Codex 0.145.0以降でGPT Liveによる音声会話を利用できます。マイクボタンを押すと開始し、もう一度押すと終了します。音声とテキストは同じセッションを共有します。認証はCodex CLIの現在のログインを引き継ぎます。構成と制限は[realtime voiceの設計判断](docs/decisions/codex-realtime-voice.md)を参照してください。
 
 <p align="center">
   <img src="docs/assets/gpt-live-title-bar.png" alt="Yorishiroのtitle barにあるGPT Liveのマイクボタン" width="220" />
@@ -136,7 +136,7 @@ Yorishiroでは、Codex 0.145.0以降を使用するとGPT Liveによる音声�
 
 `~/.yorishiro/config.json`の`codexRealtimeVoice`でGPT Liveの出力voiceを全体設定（既定値：`sol`）し、`realtimeVoiceByPersona`でpersona pack idごとに上書きできます。設定は新しい音声会話を始めるたびに読み込まれるため、進行中の会話では一度終了してから開始し直してください。選択したvoiceをapp-serverが明示的に拒否した場合は、persona設定→全体設定→既定値の順に次の候補を試します。それ以外の接続失敗はエラーとして表示します。詳細は[設定](docs/configuration.md#codex-gpt-live-voice)を参照してください。
 
-### 画面共有 / カメラ共有
+### 画面共有 / カメラ共有（Codex）
 
 タイトルバーの共有アイコンから、画面やカメラの静止画像を現在のCodexの会話に共有できます。macOSの画面共有では、画面全体・ウィンドウ・移動やリサイズができる範囲を選べます。カメラ共有では、使用するカメラを選んで共有を開始します。
 
