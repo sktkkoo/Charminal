@@ -161,7 +161,7 @@ Set the update interval to **10–180 seconds**; shorter intervals use more toke
 Import and switch VRM avatars from Settings. The chooser shows each model's thumbnail, declared name, author, VRM version, and usage permissions before you switch. Persona packs can also provide an `avatar.vrm` that is applied when you switch persona.
 
 <p align="center">
-  <img src="docs/assets/vrm-avatar-chooser.png" alt="Yorishiro VRM avatar chooser with thumbnails, model metadata, and usage permissions" width="960" />
+  <img src="docs/assets/vrm-avatar-chooser-en.png" alt="Yorishiro VRM avatar chooser with thumbnails, model metadata, and usage permissions" width="960" />
 </p>
 
 ### Language
