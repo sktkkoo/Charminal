@@ -153,7 +153,7 @@ Set the update interval to **10–180 seconds**; shorter intervals use more toke
 **Agent pointing is experimental.** During entire-display sharing, ask the AI to point out a location, and it will mark it with an arrow or outline. We recommend Astra or a higher-capability model for agent pointing. It is unavailable for window sharing, area-selection mode, and camera sharing.
 
 <p align="center">
-  <img src="docs/assets/screen-sharing-controls-en.png" alt="Screen sharing settings with display, window, and area-selection tabs, update interval, and preview toggle" width="480" />
+  <img src="docs/assets/screen-sharing-controls-en.png" alt="Screen sharing settings with display, window, and area-selection tabs, update interval, and preview toggle" width="320" />
 </p>
 
 ### Custom avatars
