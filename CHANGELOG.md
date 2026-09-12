@@ -2,7 +2,15 @@
 
 ## Unreleased
 
+## 0.7.7 - 2026-09-12
+
 - Added Animates-inspired conversation controls to Portrait, Call, and Theater: tap Command to open a Spotlight-like Quick Chat input, or hold Command to start GPT Live. Quick Chat replies fall back to the macOS Voice Summary path when the agent did not already speak its own summary. While voice is connected, Command toggles microphone mute and a compact status pill provides explicit mute and end controls.
+- Added experimental Codex screen and camera sharing, with display, window, and adjustable area capture, configurable capture intervals, and detachable previews that preserve placement and visibility across view changes. Denied media permissions link to macOS Settings.
+- Added experimental AI pointing and handwritten annotations on shared screens, with persistent user controls, improved contrast, and fixes for capture flicker and label clipping. Screen context and voice notifications now remain coordinated across captures and reconnections.
+- Made Codex the default terminal agent for new configurations while retaining Claude Code support.
+- Added the bundled Twilight Café scene and background music, reduced its rendering cost, and improved pack display names.
+- Added startup failure recovery controls and fixed compact-view camera framing, fullscreen transitions, debug-control window dragging, and first clicks in inactive macOS windows.
+- Updated English and Japanese documentation for sharing, AI pointing, voice controls, and external-terminal setup, with refreshed screenshots.
 
 ## 0.7.6 - 2026-08-31
 
