@@ -218,15 +218,14 @@ fn validate_action(
                 || (snapshot.source_kind != SharingSourceKind::Camera
                     && snapshot.screen_source_kind == ScreenSourceKind::Display
                     && !snapshot.pointers_ready)
-                || (snapshot.source_kind != SharingSourceKind::Camera
-                    && snapshot.screen_source_kind == ScreenSourceKind::Region
-                    && snapshot.region.is_none())
                 || snapshot.active
                 || snapshot.busy
-                || !snapshot
-                    .sources
-                    .iter()
-                    .any(|source| Some(source.id) == snapshot.source_id) =>
+                || ((snapshot.source_kind == SharingSourceKind::Camera
+                    || snapshot.screen_source_kind != ScreenSourceKind::Region)
+                    && !snapshot
+                        .sources
+                        .iter()
+                        .any(|source| Some(source.id) == snapshot.source_id)) =>
         {
             Err("Screen sharing is not ready to start".into())
         }
@@ -437,7 +436,7 @@ mod tests {
         assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_ok());
         assert!(validate_action(&state, &request(ScreenSharingAction::ClearAnnotations)).is_err());
         state.snapshot.screen_source_kind = ScreenSourceKind::Region;
-        assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_err());
+        assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_ok());
         assert!(validate_action(&state, &request(ScreenSharingAction::SelectRegion)).is_ok());
         state.snapshot.region = Some(crate::screen_capture::ScreenCaptureRegion {
             x: 0.0,
@@ -448,6 +447,32 @@ mod tests {
             display_height: 900.0,
         });
         assert!(validate_action(&state, &request(ScreenSharingAction::Start)).is_ok());
+    }
+
+    #[test]
+    fn region_start_opens_picker_without_a_preselected_display_or_rectangle() {
+        let mut state = published();
+        state.snapshot.screen_source_kind = ScreenSourceKind::Region;
+        state.snapshot.source_id = None;
+        state.snapshot.sources.clear();
+        state.snapshot.pointers_ready = false;
+        let request = AuxiliaryActionRequest {
+            version: 7,
+            pointer_revision: None,
+            action: ScreenSharingAction::Start,
+        };
+        assert!(validate_action(&state, &request).is_ok());
+        state.snapshot.busy = true;
+        assert!(validate_action(&state, &request).is_err());
+        state.snapshot.busy = false;
+        state.snapshot.active = true;
+        assert!(validate_action(&state, &request).is_err());
+        state.snapshot.active = false;
+        state.snapshot.available = false;
+        assert!(validate_action(&state, &request).is_err());
+        state.snapshot.available = true;
+        state.snapshot.screen_source_kind = ScreenSourceKind::Window;
+        assert!(validate_action(&state, &request).is_err());
     }
 
     #[test]
