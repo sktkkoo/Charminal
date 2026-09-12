@@ -303,6 +303,7 @@ pub async fn auxiliary_window_open(
         .resizable(true)
         .always_on_top(true)
         .focused(true)
+        .accept_first_mouse(true)
         .skip_taskbar(true)
         .disable_drag_drop_handler()
         .on_navigation(move |url| is_allowed_navigation(url, &main_url, &query))
