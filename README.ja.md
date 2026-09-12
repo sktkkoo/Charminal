@@ -10,7 +10,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white">
 </p>
 
-<p align="center"><strong>住人の宿る、ターミナル。</strong></p>
+<p align="center"><strong>住人の宿るターミナル</strong></p>
 
 Yorishiroは、AIに身体と実在感を与える、新しいかたちのターミナルです。
 

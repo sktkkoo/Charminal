@@ -10,7 +10,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white">
 </p>
 
-<p align="center"><strong>A terminal your AI inhabits.</strong></p>
+<p align="center"><strong>A terminal your AI inhabits</strong></p>
 
 Yorishiro is a new kind of terminal that gives your AI a body — and a sense of presence.
 
