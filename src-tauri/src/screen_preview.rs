@@ -250,8 +250,8 @@ pub async fn screen_preview_open(
         WebviewUrl::App(format!("index.html?{QUERY}").into()),
     )
     .title("Screen preview — Yorishiro")
-    .inner_size(400.0, 300.0)
-    .min_inner_size(220.0, 180.0)
+    .inner_size(200.0, 150.0)
+    .min_inner_size(160.0, 120.0)
     .resizable(true)
     .decorations(false)
     .shadow(false)
