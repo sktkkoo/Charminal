@@ -8,7 +8,7 @@ interface Props {
 
 export function ScreenPointerToggle({ enabled, ready, language, onChange, onRetry }: Props) {
   const japanese = language.startsWith("ja");
-  const label = japanese ? "エージェントの指し示し" : "Agent pointing";
+  const label = japanese ? "エージェントの指し示し（実験的）" : "Agent pointing (experimental)";
   return (
     <div>
       <label className="screen-sharing-pointer-toggle">

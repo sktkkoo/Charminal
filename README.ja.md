@@ -136,6 +136,18 @@ Yorishiroでは、Codex 0.145.0以降を使用するとGPT Liveによる音声�
 
 `~/.yorishiro/config.json`の`codexRealtimeVoice`でGPT Liveの出力voiceを全体設定（既定値：`sol`）し、`realtimeVoiceByPersona`でpersona pack idごとに上書きできます。設定は新しい音声会話を始めるたびに読み込まれるため、進行中の会話では一度終了してから開始し直してください。選択したvoiceをapp-serverが明示的に拒否した場合は、persona設定→全体設定→既定値の順に次の候補を試します。それ以外の接続失敗はエラーとして表示します。詳細は[設定](docs/configuration.md#codex-gpt-live-voice)を参照してください。
 
+### 画面共有 / カメラ共有
+
+タイトルバーの共有アイコンから、画面やカメラの静止画像を現在のCodexの会話に共有できます。macOSの画面共有では、画面全体・ウィンドウ・移動やリサイズができる範囲を選べます。カメラ共有では、使用するカメラを選んで共有を開始します。
+
+更新間隔は**10〜180秒**で、短いほどトークン消費が増えます。送信を止めるには**「共有を停止」**を押してください。
+
+**エージェントの指し示しは実験的機能です。** 画面全体の共有中に、矢印や囲みで場所を示せます。ウィンドウ・範囲・カメラの共有では利用できません。
+
+<p align="center">
+  <img src="docs/assets/screen-sharing-controls.png" alt="画面全体・ウィンドウ・範囲のタブ、更新間隔、プレビューを設定する画面共有パネル" width="480" />
+</p>
+
 ### カスタムアバター
 
 SettingsからVRMアバターを取り込み、切り替えられます。切り替える前に、chooserで各モデルのサムネイル、モデル名、作者、VRM version、利用条件を確認できます。Persona packに`avatar.vrm`を同梱すると、persona切替時にその姿を適用できます。
@@ -284,6 +296,7 @@ packやinit.jsが変わるたびに、チェックポイントが自動で作ら
 - 住人の`git push`成功を花火で祝う（同梱Yoriペルソナの反応）
 - Light Alert: agentが入力・許可待ちになると明かりがついて知らせる
 - ターミナルリンク: 表示中のHTTP/HTTPS URLをCmd+clickして既定ブラウザで開く
+- 画面共有 / カメラ共有: 静止画像を10〜180秒間隔で現在のCodexの会話に共有。macOSでは画面全体・ウィンドウ・調整可能な範囲に対応し、画面全体では実験的なエージェントの指し示しも利用可能
 - コンテキスト共有: Voice SummaryとTerminal Reference Marker（Cmd+Shift+click / Option+Shift+drag）
 - Journalによる長期記憶と、セッション開始時の想起
 - 復元: pack / init.js / 設定の自動チェックポイントと、可逆な巻き戻し

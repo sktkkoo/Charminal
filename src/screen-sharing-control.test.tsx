@@ -66,7 +66,7 @@ describe("screen sharing control", () => {
       (screen.getByRole("button", { name: "Start sharing" }) as HTMLButtonElement).disabled,
     ).toBe(false);
     expect(screen.queryByRole("button", { name: "Select region" })).toBeNull();
-    expect(screen.queryByRole("switch", { name: "Agent pointing" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Agent pointing (experimental)" })).toBeNull();
     view.rerender(
       <ScreenSharingControl
         {...p}
@@ -167,7 +167,7 @@ describe("screen sharing control", () => {
     expect(screen.getByRole("combobox", { name: "Window" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
     expect(p.onStart).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("switch", { name: "Agent pointing" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Agent pointing (experimental)" })).toBeNull();
   });
 
   it("shows camera preview by default and allows hiding it while capture continues", () => {
@@ -510,12 +510,12 @@ describe("screen sharing control", () => {
     const p = { ...props(), active: true, busy: true };
     const view = render(<ScreenSharingControl {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "画面共有中" }));
-    fireEvent.click(screen.getByRole("switch", { name: "エージェントの指し示し" }));
+    fireEvent.click(screen.getByRole("switch", { name: "エージェントの指し示し（実験的）" }));
     expect(p.onPointersEnabledChange).toHaveBeenCalledExactlyOnceWith(false);
     expect(p.onStop).not.toHaveBeenCalled();
     view.rerender(<ScreenSharingControl {...p} pointersEnabled={false} pointersReady={false} />);
     const toggle = screen.getByRole("switch", {
-      name: "エージェントの指し示し",
+      name: "エージェントの指し示し（実験的）",
     }) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
     expect(toggle.disabled).toBe(true);

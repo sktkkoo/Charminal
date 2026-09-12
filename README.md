@@ -144,6 +144,18 @@ Yorishiro supports voice conversation through GPT Live when using Codex 0.145.0 
 
 Set `codexRealtimeVoice` in `~/.yorishiro/config.json` to choose the GPT Live output voice globally (default: `sol`), and `realtimeVoiceByPersona` to override it per persona pack id. The values are read whenever a new voice session starts, so stop and restart an active voice conversation to apply a change. If the app-server explicitly rejects the selected voice as invalid or unsupported, Yorishiro retries with the next candidate (persona → global → default); other connection failures surface as errors. See [configuration](docs/configuration.md#codex-gpt-live-voice).
 
+### Screen sharing / Camera sharing
+
+Use the sharing icon in the title bar to send screen or camera stills to the current Codex conversation. Screen sharing on macOS supports an entire display, a window, or a region you can move and resize. For camera sharing, select a camera and start sharing.
+
+Set the update interval to **10–180 seconds**; shorter intervals use more tokens. Use **Stop sharing** to stop sending images.
+
+**Agent pointing is experimental** and can mark locations with arrows or outlines during entire-display sharing. It is unavailable for window, region, and camera sharing.
+
+<p align="center">
+  <img src="docs/assets/screen-sharing-controls.png" alt="Screen sharing settings with display, window, and region tabs, update interval, and preview toggle" width="480" />
+</p>
+
 ### Custom avatars
 
 Import and switch VRM avatars from Settings. The chooser shows each model's thumbnail, declared name, author, VRM version, and usage permissions before you switch. Persona packs can also provide an `avatar.vrm` that is applied when you switch persona.
@@ -292,6 +304,7 @@ What works today:
 - Fireworks celebrate a successful `git push` by the inhabitant (bundled Yori persona)
 - Light Alert: a light comes on when the agent waits for your input or approval
 - Terminal links: Cmd+click a visible HTTP/HTTPS URL to open it in the default browser
+- Screen sharing / Camera sharing: still images for the current Codex conversation at 10–180 second intervals; macOS supports display, window, and adjustable region sharing, with experimental agent pointing for entire displays
 - Context sharing: Voice Summary and Terminal Reference Markers (Cmd+Shift+click / Option+Shift+drag)
 - Journal: long-term memory across sessions, with recall at session start
 - Restore: automatic checkpoints for packs / init.js / settings, with reversible rollback
