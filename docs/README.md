@@ -19,6 +19,7 @@
 | 標準 hook / DispatchEvent の語彙を確認したい | [`catalogs/standard-hooks.md`](catalogs/standard-hooks.md) |
 | 過去に「なぜそう決めたか」を引きたい | [`decisions/README.md`](decisions/README.md) |
 | 設計上踏んではいけない line を確認したい | [`decisions/critical-constraints.md`](decisions/critical-constraints.md) |
+| 人/AI・ローカル/別PCの通話基盤と検証用プロファイルの方針を確認したい | [`decisions/peer-call-session-boundary.md`](decisions/peer-call-session-boundary.md) |
 | `~/.yorishiro/config.json` の field を確認したい | [`configuration.md`](configuration.md) |
 | Terminal の session profile / shell integration / カスタマイズを確認したい | [`terminal.md`](terminal.md) |
 | 起動失敗・壊れた pack・safe mode の復旧手順を確認したい | [`troubleshooting.md`](troubleshooting.md) |
@@ -85,7 +86,7 @@ Source code 内で参照するときは：
 | Directory | 責務 | 詳細 |
 |---|---|---|
 | `src/core/` | Presence Harness の primitive 層（body / time / perception / expression / space / scene / interaction / log-bridge / two-layer / dev-log / ui-layout / attention / tween） | [../src/core/README.md](../src/core/README.md) |
-| `src/runtime/` | Pack 管理 / event dispatch / module registry / singleton services / ui-pack-registry / project-context / attention-runtime / workspace-attention / ambient-ui-pack-registry / ambient-audio / session-tabs / surface-registry | [../src/runtime/README.md](../src/runtime/README.md) |
+| `src/runtime/` | Pack 管理 / event dispatch / module registry / singleton services / ui-pack-registry / project-context / attention-runtime / workspace-attention / ambient-ui-pack-registry / ambient-audio / session-tabs / surface-registry / peer-call | [../src/runtime/README.md](../src/runtime/README.md) |
 | `src/sdk/` | Pack 作者向け型定義と API contract（公開 surface） | [../src/sdk/README.md](../src/sdk/README.md) |
 | `src/bindings/` | Tauri command bridge（TS ↔ Rust） | — |
 
