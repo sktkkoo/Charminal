@@ -110,3 +110,54 @@ describe("remote native resident projection", () => {
     expect(stoppedUpload).not.toHaveBeenCalled();
   });
 });
+
+it("coalesces scene settings separately from motion and sends the newest controls after a pending upload", async () => {
+  vi.useFakeTimers();
+  let controls = { "lights.fill": 0.4 };
+  const sampleScene = vi.fn(() => ({
+    source: null,
+    scene: null,
+    controls,
+    background: "#141619",
+    renderer: {
+      toneMapping: 0,
+      toneMappingExposure: 1,
+      outputColorSpace: "srgb",
+      shadowMapEnabled: false,
+      shadowMapType: 1,
+    },
+  }));
+  const source = { ...model(), sampleScene };
+  let finish!: (revision: number) => void;
+  const upload = vi.fn(
+    () =>
+      new Promise<number>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const publish = vi.fn(async () => {});
+  const stop = startRemoteCallRelay(
+    () => source,
+    "lease",
+    publish,
+    vi.fn(),
+    vi.fn(),
+    undefined,
+    upload,
+  );
+  await vi.advanceTimersByTimeAsync(300);
+  expect(upload).toHaveBeenCalledOnce();
+  expect(publish.mock.calls.length).toBeGreaterThan(3);
+  controls = { "lights.fill": 1.2 };
+  finish(1);
+  await vi.advanceTimersByTimeAsync(110);
+  expect(upload).toHaveBeenCalledTimes(2);
+  expect(upload.mock.lastCall).toEqual(["lease", sampleScene()]);
+  finish(2);
+  await vi.advanceTimersByTimeAsync(300);
+  expect(upload).toHaveBeenCalledTimes(2);
+  stop();
+  controls = { "lights.fill": 2 };
+  await vi.advanceTimersByTimeAsync(300);
+  expect(upload).toHaveBeenCalledTimes(2);
+});

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getThreeRuntime } from "../three-runtime/three-runtime";
+import { sampleCallScene } from "./call-scene-state";
 import { useRemoteCallWindow } from "./remote-call-window";
 import type { RoomCall } from "./room-call";
 import { attachTheaterCallPeer } from "./theater-call-peer";
@@ -30,6 +31,7 @@ export function useCallSurfaces(room: RoomCall | null, viewMode: string | null, 
     avatarUrl,
     sampleMotion: () => room?.peer?.motion.sample(performance.now()) ?? null,
     sampleMouth: () => room?.peer?.audio.sampleRemoteMouth() ?? 0,
+    sampleScene: sampleCallScene,
     sampleCamera: () => {
       const runtime = getThreeRuntime();
       const camera = runtime.getCamera();

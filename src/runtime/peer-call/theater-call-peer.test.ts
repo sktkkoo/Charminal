@@ -30,7 +30,7 @@ const mock = vi.hoisted(() => ({
   parse: vi.fn(),
   managers: [] as Array<{ resolveURL(url: string): string }>,
 }));
-vi.mock("../three-runtime", () => ({ getThreeRuntime: vi.fn() }));
+vi.mock("../three-runtime/three-runtime", () => ({ getThreeRuntime: vi.fn() }));
 vi.mock("../vrm-cache", () => ({ getVrmCache: () => ({ getBytes: mock.getBytes }) }));
 vi.mock("three/addons/loaders/GLTFLoader.js", () => ({
   GLTFLoader: class {

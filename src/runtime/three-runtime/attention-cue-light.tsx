@@ -16,7 +16,7 @@
  */
 
 import { useFrame } from "@react-three/fiber";
-import { useEffect, useRef, useState } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import type { AmbientLight, PointLight, SpotLight } from "three";
 import {
   type AttentionLightCue,
@@ -43,6 +43,28 @@ const POINT_OFFSET: readonly [number, number, number] = [0, 0.1, 0.6];
 const SPOT_OFFSET: readonly [number, number, number] = [-0.15, 0.55, 0.7];
 
 type Anchor = { x: number; y: number; z: number } | null;
+
+interface AttentionCueRuntime {
+  readonly getAnchor: () => Anchor;
+  readonly cueStore: AttentionLightCueStore;
+}
+
+const AttentionCueRuntimeContext = createContext<AttentionCueRuntime | null>(null);
+
+/** Allows a scene-only renderer to supply its own anchor without creating ThreeRuntime. */
+export function AttentionCueRuntimeProvider({
+  children,
+  value,
+}: {
+  readonly children: ReactNode;
+  readonly value: AttentionCueRuntime;
+}) {
+  return (
+    <AttentionCueRuntimeContext.Provider value={value}>
+      {children}
+    </AttentionCueRuntimeContext.Provider>
+  );
+}
 
 export interface AttentionCueLightProps {
   /** 未指定ならキャラ head 位置から自動計算（offset は const、帰納調整前提） */
@@ -99,9 +121,13 @@ function AttentionCueLightCore({
   position,
   color = DEFAULT_COLOR,
   intensityScale = DEFAULT_INTENSITY_SCALE,
-  cueStore = getAttentionLightCueStore(),
-  getAnchor = () => getThreeRuntime().getCharacterAnchor(),
+  cueStore: providedCueStore,
+  getAnchor: providedGetAnchor,
 }: AttentionCueLightProps) {
+  const runtime = useContext(AttentionCueRuntimeContext);
+  const cueStore = providedCueStore ?? runtime?.cueStore ?? getAttentionLightCueStore();
+  const getAnchor =
+    providedGetAnchor ?? runtime?.getAnchor ?? (() => getThreeRuntime().getCharacterAnchor());
   const [cue, setCue] = useState<AttentionLightCue | null>(() => cueStore.getCurrent());
   const [, setCompletedVersion] = useState(0);
   const completedSeqRef = useRef<number | null>(null);

@@ -10,6 +10,8 @@ export interface PreviewAction {
 export interface PreviewTransport<Frame> {
   begin: () => Promise<string>;
   open: (leaseId: string) => Promise<void>;
+  /** Reveal an existing window only after an explicit user action. */
+  show?: (leaseId: string) => Promise<void>;
   revoke: (leaseId: string) => Promise<void>;
   publish: (frame: Frame) => Promise<void>;
   listen: (callback: (action: PreviewAction) => void) => Promise<() => void>;
@@ -114,7 +116,23 @@ export class PreviewHost<Model extends PreviewOptions, Source, Frame> {
   detach(): Promise<void> {
     this.detached = true;
     this.failed = false;
-    return this.open();
+    const opening = this.open();
+    const attempt = this.attempt;
+    const ready = this.lifecycle.pending;
+    return opening.then(async () => {
+      // An automatic open may already be in progress. Preserve this exact owner while
+      // waiting, so a late click cannot focus a replacement session's window.
+      await ready;
+      if (!attempt?.leaseId || !this.current(attempt) || !this.transport.show) return;
+      try {
+        await this.transport.show(attempt.leaseId);
+        if (this.current(attempt)) this.changed({ detached: true, opening: false });
+      } catch (error) {
+        if (!this.current(attempt)) return;
+        this.changed({ detached: true, opening: false, error: String(error) });
+        throw error;
+      }
+    });
   }
   private open(): Promise<void> {
     const source = this.adapter.source(this.model);

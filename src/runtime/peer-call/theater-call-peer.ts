@@ -4,7 +4,7 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { registerOrphanMorphs } from "../../core/body/register-orphan-morphs";
 import { applyVrmRestPose } from "../../core/body/vrm-rest-pose";
 import { MOUTH_KEYS, type MouthValues } from "../../core/voice/mouth-values";
-import { getThreeRuntime } from "../three-runtime";
+import { getThreeRuntime } from "../three-runtime/three-runtime";
 import type { ThreeRuntime } from "../three-runtime/types";
 import { getVrmCache } from "../vrm-cache";
 import {

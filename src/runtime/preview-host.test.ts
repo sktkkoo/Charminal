@@ -28,6 +28,7 @@ function fixture(overrides: Partial<Model> = {}) {
   const transport = {
     begin: vi.fn(async () => "lease-a"),
     open: vi.fn(async (_lease: string) => {}),
+    show: vi.fn(async (_lease: string) => {}),
     revoke: vi.fn(async (_lease: string) => {}),
     publish: vi.fn(async (_frame: string) => {}),
     listen: vi.fn(async (callback: typeof action) => {
@@ -75,6 +76,67 @@ function fixture(overrides: Partial<Model> = {}) {
     publish: (frame: string) => publish(frame),
   };
 }
+it("reveals an existing window on explicit detach without focusing automatic creation", async () => {
+  const f = fixture();
+  f.host.update(f.model);
+  await f.opened();
+  expect(f.transport.show).not.toHaveBeenCalled();
+  await f.host.detach();
+  expect(f.transport.show).toHaveBeenCalledWith("lease-a");
+  expect(f.transport.open).toHaveBeenCalledOnce();
+  expect(f.relay).toHaveBeenCalledOnce();
+  f.host.dispose();
+});
+it("waits for a pending automatic open before an explicit reveal", async () => {
+  const f = fixture();
+  const pending = deferred<void>();
+  f.transport.open.mockReturnValueOnce(pending.promise);
+  f.host.update(f.model);
+  await vi.waitFor(() => expect(f.transport.open).toHaveBeenCalledOnce());
+  const reveal = f.host.detach();
+  await Promise.resolve();
+  expect(f.transport.show).not.toHaveBeenCalled();
+  pending.resolve();
+  await reveal;
+  expect(f.transport.show).toHaveBeenCalledWith("lease-a");
+  expect(f.transport.open).toHaveBeenCalledOnce();
+  f.host.dispose();
+});
+it("never reveals a replacement owner for a click made during the previous open", async () => {
+  const f = fixture();
+  const pending = deferred<void>();
+  f.transport.open.mockReturnValueOnce(pending.promise);
+  f.host.update(f.model);
+  await vi.waitFor(() => expect(f.transport.open).toHaveBeenCalledOnce());
+  const reveal = f.host.detach();
+  f.transport.begin.mockResolvedValue("lease-b");
+  f.host.update({ ...f.model, source: "b" });
+  pending.resolve();
+  await reveal;
+  await f.opened();
+  expect(f.transport.open).toHaveBeenLastCalledWith("lease-b");
+  expect(f.transport.show).not.toHaveBeenCalled();
+  await f.host.detach();
+  expect(f.transport.show).toHaveBeenCalledWith("lease-b");
+  f.host.dispose();
+});
+it("reports reveal errors without revoking the active view and allows retry", async () => {
+  const f = fixture();
+  f.host.update(f.model);
+  await f.opened();
+  f.transport.show.mockRejectedValueOnce(new Error("reveal failed"));
+  await expect(f.host.detach()).rejects.toThrow("reveal failed");
+  expect(f.changed).toHaveBeenLastCalledWith({
+    detached: true,
+    opening: false,
+    error: "Error: reveal failed",
+  });
+  expect(f.transport.revoke).not.toHaveBeenCalled();
+  await f.host.detach();
+  expect(f.changed).toHaveBeenLastCalledWith({ detached: true, opening: false });
+  expect(f.transport.open).toHaveBeenCalledOnce();
+  f.host.dispose();
+});
 it("keeps the session destination through hide/show and later mode changes", async () => {
   const f = fixture();
   f.host.update(f.model);

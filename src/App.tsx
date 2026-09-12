@@ -1,6 +1,3 @@
-import * as ReactThreeDrei from "@react-three/drei";
-import * as ReactThreeFiber from "@react-three/fiber";
-import * as ReactThreePostprocessing from "@react-three/postprocessing";
 import { getVersion } from "@tauri-apps/api/app";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -22,12 +19,8 @@ import type {
   UiThreeAPI,
 } from "@yorishiro/sdk";
 import { LevaPanel } from "leva";
-import * as Postprocessing from "postprocessing";
 import * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as ReactJsxRuntime from "react/jsx-runtime";
-import * as ReactDomClient from "react-dom/client";
-import * as THREE from "three";
 import {
   checkTutorialDone,
   exitWindowFullscreen,
@@ -50,11 +43,9 @@ import {
 } from "./bindings/tauri-commands";
 import {
   abandonedFactoryManifest,
-  abandonedFactoryPack,
   abandonedMonitorManifest,
   abandonedMonitorPack,
   amberWindowManifest,
-  amberWindowPack,
   attentionAuraManifest,
   cameraMoveManifest,
   cameraMovePack,
@@ -69,7 +60,6 @@ import {
   immersiveManifest,
   immersivePack,
   mistyGrasslandsManifest,
-  mistyGrasslandsPack,
   musicShelfManifest,
   PREVIOUS_ACTIVE_UI_KEY,
   pomodoroManifest,
@@ -83,7 +73,6 @@ import {
   screenShakePack,
   screenshotThumbnailPack,
   simpleRoomManifest,
-  simpleRoomPack,
   textPhysicsManifest,
   textPhysicsPack,
   theaterManifest,
@@ -242,6 +231,7 @@ import {
   type ScenePackEntry,
   type ScenePackRegistry,
 } from "./runtime/scene-pack-registry";
+import { BUNDLED_SCENES } from "./runtime/scene-pack-registry/bundled-scenes";
 import { useScreenPreviewWindow } from "./runtime/screen-preview-window";
 import {
   getSessionStatusStore,
@@ -367,6 +357,7 @@ import {
   appendInitReloadErrorMarker,
   stripInitReloadErrorMarker,
 } from "./runtime/user-pack-loader/init-changed-title";
+import { installPackHostGlobals } from "./runtime/user-pack-loader/pack-host-globals";
 import {
   readLastStartupReport,
   readSessionPersonasText,
@@ -391,12 +382,8 @@ import {
   startWorkspaceAttentionPresenceBridge,
 } from "./runtime/workspace-attention";
 import { ScreenSharingControl } from "./screen-sharing-control";
-import * as YorishiroAttentionCue from "./sdk/attention-cue";
-import * as YorishiroControls from "./sdk/controls";
 import type { PersonaDefinition } from "./sdk/persona";
 import type { PersonaPackManifest } from "./sdk/persona-pack";
-import * as YorishiroR3f from "./sdk/r3f";
-import type { ScenePackDefinition, ScenePackManifest } from "./sdk/scene-pack";
 import Sidebar from "./sidebar";
 import TitleBar from "./title-bar";
 import {
@@ -757,31 +744,7 @@ function removeSceneLayerOverride(
   return overrides.filter((override) => sceneLayerTargetKey(override.target) !== key);
 }
 
-declare global {
-  var __YORISHIRO_REACT__: typeof React | undefined;
-  var __YORISHIRO_REACT_DOM_CLIENT__: typeof ReactDomClient | undefined;
-  var __YORISHIRO_REACT_JSX_RUNTIME__: typeof ReactJsxRuntime | undefined;
-  var __YORISHIRO_REACT_THREE_DREI__: typeof ReactThreeDrei | undefined;
-  var __YORISHIRO_REACT_THREE_FIBER__: typeof ReactThreeFiber | undefined;
-  var __YORISHIRO_REACT_THREE_POSTPROCESSING__: typeof ReactThreePostprocessing | undefined;
-  var __YORISHIRO_POSTPROCESSING__: typeof Postprocessing | undefined;
-  var __YORISHIRO_THREE__: typeof THREE | undefined;
-  var __YORISHIRO_SDK_ATTENTION_CUE__: typeof YorishiroAttentionCue | undefined;
-  var __YORISHIRO_SDK_CONTROLS__: typeof YorishiroControls | undefined;
-  var __YORISHIRO_SDK_R3F__: typeof YorishiroR3f | undefined;
-}
-
-globalThis.__YORISHIRO_REACT__ = React;
-globalThis.__YORISHIRO_REACT_DOM_CLIENT__ = ReactDomClient;
-globalThis.__YORISHIRO_REACT_JSX_RUNTIME__ = ReactJsxRuntime;
-globalThis.__YORISHIRO_REACT_THREE_DREI__ = ReactThreeDrei;
-globalThis.__YORISHIRO_REACT_THREE_FIBER__ = ReactThreeFiber;
-globalThis.__YORISHIRO_REACT_THREE_POSTPROCESSING__ = ReactThreePostprocessing;
-globalThis.__YORISHIRO_POSTPROCESSING__ = Postprocessing;
-globalThis.__YORISHIRO_THREE__ = THREE;
-globalThis.__YORISHIRO_SDK_ATTENTION_CUE__ = YorishiroAttentionCue;
-globalThis.__YORISHIRO_SDK_CONTROLS__ = YorishiroControls;
-globalThis.__YORISHIRO_SDK_R3F__ = YorishiroR3f;
+installPackHostGlobals();
 
 function fallbackSelectorForSurface(name: SurfaceName): string {
   switch (name) {
@@ -1724,16 +1687,7 @@ function App() {
       // try/catch は pack 単位。1 pack の asset 解決失敗で後続 pack の登録を巻き
       // 添えにしない（特に defaultBundledId が指す pack が先頭にあるため、
       // 一括 try だと先頭失敗で全 scene が消える）。
-      const bundledScenes: ReadonlyArray<{
-        readonly pack: ScenePackDefinition;
-        readonly manifest: ScenePackManifest;
-      }> = [
-        { pack: simpleRoomPack, manifest: simpleRoomManifest as ScenePackManifest },
-        { pack: mistyGrasslandsPack, manifest: mistyGrasslandsManifest as ScenePackManifest },
-        { pack: abandonedFactoryPack, manifest: abandonedFactoryManifest as ScenePackManifest },
-        { pack: amberWindowPack, manifest: amberWindowManifest as ScenePackManifest },
-      ];
-      for (const { pack, manifest } of bundledScenes) {
+      for (const { pack, manifest } of BUNDLED_SCENES) {
         try {
           const resolved = await resolveSceneAssets(pack.scene, {
             origin: "bundled",

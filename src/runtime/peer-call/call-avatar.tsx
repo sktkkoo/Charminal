@@ -1,10 +1,13 @@
 import { type VRM, VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { registerOrphanMorphs } from "../../core/body/register-orphan-morphs";
 import { applyVrmRestPose } from "../../core/body/vrm-rest-pose";
+import { SceneRouter } from "../../core/scene/scene-router";
 import { MOUTH_KEYS, type MouthValues } from "../../core/voice/mouth-values";
+import type { ScenePackEntry } from "../scene-pack-registry";
+import { R3fHost } from "../three-runtime/r3f-host";
 import { getVrmCache } from "../vrm-cache";
 import {
   AVATAR_MOTION_EXPRESSIONS,
@@ -12,6 +15,8 @@ import {
   avatarMotionVrmPose,
 } from "./avatar-motion";
 import { validateAvatarGlb } from "./avatar-transfer";
+import { CallSceneRoot } from "./call-scene-root";
+import type { CallSceneAppearance } from "./call-scene-state";
 import type { RemoteCallCamera } from "./remote-call-window";
 
 export interface NativeCallAvatarProps {
@@ -25,6 +30,9 @@ export interface NativeCallAvatarProps {
   sampleMouth?: () => Readonly<MouthValues> | number;
   /** Detached native participants inherit the main view's existing camera, never a new preset. */
   sampleCamera?: () => RemoteCallCamera | null;
+  /** Scene from this installation, resolved through the same pack loader as main. */
+  sceneEntry?: ScenePackEntry | null;
+  appearance?: CallSceneAppearance | null;
   className?: string;
 }
 
@@ -69,18 +77,32 @@ function NativeCallCanvas({
   participants: NativeCallAvatarProps[];
   className?: string;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasHostRef = useRef<HTMLDivElement>(null);
+  const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // SceneRouter may replace its character slot when the layer structure changes. Keep the
+  // renderer/VRM above that lifecycle and move its existing canvas into the new slot, like main.
+  const attachCanvas = useCallback((host: HTMLDivElement | null) => {
+    canvasHostRef.current = host;
+    if (host && activeCanvasRef.current) host.appendChild(activeCanvasRef.current);
+  }, []);
+  const updateScene = useRef<
+    ((entry?: ScenePackEntry | null, appearance?: CallSceneAppearance | null) => void) | null
+  >(null);
+  const sceneEntry = participants[0]?.sceneEntry;
+  const appearance = participants[0]?.appearance;
   const samples = useRef(participants);
   samples.current = participants;
   const [loadState, setLoadState] = useState("姿を読み込んでいます…");
   const [error, setError] = useState<string | null>(null);
+  const [sceneError, setSceneError] = useState<string | null>(null);
   // Keep the WebGL/VRM lifecycle independent of callback identity and every-frame UI state.
   const assetKey = JSON.stringify(participants.map((participant) => participant.avatarUrl));
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const canvasHost = canvasHostRef.current;
+    if (!canvasHost) return;
     setError(null);
+    setSceneError(null);
     setLoadState("姿を読み込んでいます…");
     const avatarUrls = JSON.parse(assetKey) as string[];
     const avatarBytes = samples.current.map((participant) => participant.avatarBytes);
@@ -98,19 +120,37 @@ function NativeCallCanvas({
       return;
     }
     let renderer: THREE.WebGLRenderer;
+    // R3F/WebGL disposal is asynchronous. Never hand a new renderer a canvas whose
+    // previous root is still tearing down during a model swap, StrictMode or HMR.
+    const canvas = document.createElement("canvas");
+    activeCanvasRef.current = canvas;
+    canvas.setAttribute("aria-label", samples.current.map((p) => p.label).join(" / "));
+    Object.assign(canvas.style, { width: "100%", height: "100%", display: "block" });
+    canvasHost.appendChild(canvas);
     try {
-      renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+      renderer = new THREE.WebGLRenderer({
+        canvas,
+        alpha: true,
+        antialias: false,
+        powerPreference: "low-power",
+      });
     } catch {
+      canvas.remove();
+      if (activeCanvasRef.current === canvas) activeCanvasRef.current = null;
       setError("アバターの表示を開始できませんでした。");
       return;
     }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     const scene = new THREE.Scene();
-    scene.add(new THREE.HemisphereLight(0xe4f3ff, 0x30343d, 2));
-    const light = new THREE.DirectionalLight(0xfff4e8, 2);
-    light.position.set(1, 2, 3);
-    scene.add(light);
+    // Only the legacy isolated preview uses fallback lights. Native peer windows
+    // load the actual selected scene, including its lighting/environment/composer.
+    if (samples.current[0]?.appearance === undefined) {
+      scene.add(new THREE.HemisphereLight(0xe4f3ff, 0x30343d, 2));
+      const light = new THREE.DirectionalLight(0xfff4e8, 2);
+      light.position.set(1, 2, 3);
+      scene.add(light);
+    }
     const camera = new THREE.PerspectiveCamera(32, 1, 0.05, 20);
     let tallestHead = 1.5;
     const headHeights = Array.from({ length: count }, () => 0);
@@ -133,6 +173,38 @@ function NativeCallCanvas({
     } | null> = Array.from({ length: count }, () => null);
     let previousTime = performance.now();
     const head = new THREE.Vector3();
+    let sceneHost: R3fHost | null = null;
+    const syncScene = (
+      entry = samples.current[0]?.sceneEntry,
+      appearance = samples.current[0]?.appearance,
+    ) => {
+      if (disposed || !sceneHost) return;
+      sceneHost.render(
+        entry ? (
+          <CallSceneRoot
+            key={`${entry.origin}:${entry.id}`}
+            entry={entry}
+            controls={appearance?.controls ?? {}}
+            getAnchor={() => {
+              const bone = avatars[0]?.vrm.humanoid.getNormalizedBoneNode("head");
+              return bone ? bone.getWorldPosition(new THREE.Vector3()) : null;
+            }}
+            onError={() => {
+              const current = samples.current[0]?.sceneEntry;
+              if (
+                !disposed &&
+                current?.id === entry.id &&
+                current.origin === entry.origin &&
+                current.component === entry.component
+              ) {
+                setSceneError("シーンを表示できませんでした。");
+              }
+            }}
+          />
+        ) : null,
+      );
+    };
+    updateScene.current = syncScene;
 
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
@@ -141,11 +213,25 @@ function NativeCallCanvas({
       camera.aspect = rect.width / rect.height;
       camera.updateProjectionMatrix();
       frameCamera();
-      renderer.render(scene, camera);
+      sceneHost?.setSize(rect.width, rect.height);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
     resize();
+    if (samples.current[0]?.appearance !== undefined) {
+      sceneHost = new R3fHost({ canvas, renderer, scene, camera });
+      void sceneHost
+        .initialize()
+        .then(() => {
+          if (!disposed) {
+            syncScene();
+            resize();
+          }
+        })
+        .catch(() => {
+          if (!disposed) setSceneError("シーンの表示を開始できませんでした。");
+        });
+    }
 
     const manager = new THREE.LoadingManager();
     manager.setURLModifier((url) => {
@@ -266,7 +352,17 @@ function NativeCallCanvas({
           camera.updateProjectionMatrix();
         }
       }
-      renderer.render(scene, camera);
+      const visual = samples.current[0]?.appearance?.renderer;
+      if (visual) {
+        renderer.toneMapping = visual.toneMapping as THREE.ToneMapping;
+        renderer.toneMappingExposure = visual.toneMappingExposure;
+        renderer.outputColorSpace = visual.outputColorSpace;
+        renderer.shadowMap.enabled = visual.shadowMapEnabled;
+        renderer.shadowMap.type = visual.shadowMapType as THREE.ShadowMapType;
+      }
+      // R3F owns useFrame and postprocessing priority; rendering again here would
+      // overwrite the scene's EffectComposer output with the raw unlit result.
+      if (!sceneHost?.advance(now)) renderer.render(scene, camera);
       animation = requestAnimationFrame(render);
     };
     animation = requestAnimationFrame(render);
@@ -274,25 +370,43 @@ function NativeCallCanvas({
       disposed = true;
       cancelAnimationFrame(animation);
       observer.disconnect();
+      if (updateScene.current === syncScene) updateScene.current = null;
+      sceneHost?.dispose();
       avatars.forEach((instance, index) => {
         if (!instance) return;
         scene.remove(instance.placement);
         VRMUtils.deepDispose(instance.vrm.scene);
         avatars[index] = null;
       });
-      renderer.dispose();
-      renderer.forceContextLoss();
+      // R3F unmount owns renderer disposal when present.
+      if (!sceneHost) {
+        renderer.dispose();
+        renderer.forceContextLoss();
+      }
+      canvas.remove();
+      if (activeCanvasRef.current === canvas) activeCanvasRef.current = null;
     };
   }, [assetKey]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Only a new scene identity can recover a failed component boundary.
+  useEffect(() => {
+    setSceneError(null);
+  }, [sceneEntry?.origin, sceneEntry?.id, sceneEntry?.component]);
+  useEffect(() => {
+    updateScene.current?.(sceneEntry, appearance);
+  }, [sceneEntry, appearance]);
 
+  const renderedEntry =
+    sceneEntry && appearance?.scene ? { ...sceneEntry, scene: appearance.scene } : sceneEntry;
   return (
     <div className={className ?? "native-call-avatar"}>
-      <canvas
-        ref={canvasRef}
-        aria-label={participants.map((participant) => participant.label).join(" / ")}
-        style={{ width: "100%", height: "100%", display: "block" }}
-      />
-      {error ? <p role="alert">{error}</p> : loadState ? <p role="status">{loadState}</p> : null}
+      <SceneRouter entry={renderedEntry ?? null}>
+        <div ref={attachCanvas} style={{ width: "100%", height: "100%", display: "block" }} />
+      </SceneRouter>
+      {error || sceneError ? (
+        <p role="alert">{error || sceneError}</p>
+      ) : loadState ? (
+        <p role="status">{loadState}</p>
+      ) : null}
     </div>
   );
 }

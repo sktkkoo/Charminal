@@ -14,6 +14,8 @@ html[data-window-view="call-resident"] #root {
   height: 100%;
   overflow: hidden;
   color: #f7f8fa;
+  border-radius: 14px;
+  clip-path: inset(0 round 14px);
 }
 .remote-call-resident-avatar {
   position: absolute;
@@ -30,6 +32,7 @@ html[data-window-view="call-resident"] #root {
   line-height: 1.5;
 }
 .remote-call-resident-chrome {
+  z-index: 20;
   position: absolute;
   inset: 6px 6px auto;
   display: flex;

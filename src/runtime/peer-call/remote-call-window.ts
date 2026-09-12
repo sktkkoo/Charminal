@@ -6,6 +6,8 @@ import { PreviewHost, type PreviewStatus, type PreviewTransport } from "../previ
 import { getVrmCache } from "../vrm-cache";
 import { type AvatarMotionPose, encodeAvatarMotion } from "./avatar-motion";
 import { validateAvatarGlb } from "./avatar-transfer";
+import { publishCallScene, releaseCallScenePublisher } from "./call-scene-media";
+import type { CallSceneAppearance } from "./call-scene-state";
 
 export const REMOTE_CALL_WINDOW_LABEL = "auxiliary-call-resident";
 export const REMOTE_CALL_WINDOW_EVENT = "remote-call-window-state";
@@ -29,6 +31,7 @@ export interface RemoteCallWindowFrame {
   camera: RemoteCallCamera;
   sequence?: number;
   avatarRevision?: number;
+  sceneRevision?: number;
 }
 export interface RemoteCallWindowModel {
   /** Stable for an admitted remote participant. Null closes only the presentation. */
@@ -41,10 +44,13 @@ export interface RemoteCallWindowModel {
   sampleMotion(): AvatarMotionPose | null;
   sampleMouth(): Readonly<MouthValues> | number;
   sampleCamera(): RemoteCallCamera;
+  /** Selected scene and controls from this main window, never received from the call peer. */
+  sampleScene?(): CallSceneAppearance;
 }
 
 interface Transport extends PreviewTransport<RemoteCallWindowFrame> {
   avatar(leaseId: string, bytes: ArrayBuffer): Promise<void>;
+  scene(leaseId: string, scene: CallSceneAppearance): Promise<number>;
 }
 function base64(bytes: ArrayBuffer): string {
   const data = new Uint8Array(bytes);
@@ -57,10 +63,15 @@ function base64(bytes: ArrayBuffer): string {
 const nativeTransport: Transport = {
   begin: () => invoke("remote_call_window_begin"),
   open: (leaseId) => invoke("remote_call_window_open", { leaseId }),
-  revoke: (leaseId) => invoke("remote_call_window_revoke", { leaseId }),
+  show: (leaseId) => invoke("remote_call_window_show", { leaseId }),
+  revoke: (leaseId) => {
+    releaseCallScenePublisher(leaseId);
+    return invoke("remote_call_window_revoke", { leaseId });
+  },
   publish: (frame) => invoke("remote_call_window_publish", { frame }),
   avatar: (leaseId, bytes) =>
     invoke("remote_call_window_avatar", { leaseId, encoded: base64(bytes) }),
+  scene: publishCallScene,
   listen: (callback) =>
     getCurrentWindow().listen<{ leaseId: string; action: "attach" }>(
       "remote-call-window-action",
@@ -76,6 +87,7 @@ export function startRemoteCallRelay(
   upload: (leaseId: string, bytes: ArrayBuffer) => Promise<void>,
   fail: (error: unknown) => void,
   getBytes: (url: string) => Promise<ArrayBuffer> = (url) => getVrmCache().getBytes(url),
+  uploadScene?: (leaseId: string, scene: CallSceneAppearance) => Promise<number>,
 ): () => void {
   let stopped = false;
   let pending = false;
@@ -83,6 +95,30 @@ export function startRemoteCallRelay(
   let uploaded: string | null = null;
   let uploading: string | null = null;
   let failedAvatar: string | null = null;
+  let scenePending = false;
+  let sceneKey: string | undefined;
+  const sampleScene = () => {
+    if (stopped || scenePending || !uploadScene) return;
+    try {
+      const appearance = model().sampleScene?.();
+      if (!appearance) return;
+      const key = JSON.stringify(appearance);
+      if (key === sceneKey) return;
+      scenePending = true;
+      void uploadScene(leaseId, appearance)
+        .then(() => {
+          if (!stopped) sceneKey = key;
+        })
+        .catch((error: unknown) => {
+          if (!stopped) fail(error);
+        })
+        .finally(() => {
+          scenePending = false;
+        });
+    } catch (error) {
+      if (!stopped) fail(error);
+    }
+  };
   const sample = () => {
     if (stopped || pending) return;
     const source = model();
@@ -152,10 +188,13 @@ export function startRemoteCallRelay(
     }
   };
   const timer = setInterval(sample, 33);
+  const sceneTimer = setInterval(sampleScene, 100);
+  sampleScene();
   sample();
   return () => {
     stopped = true;
     clearInterval(timer);
+    clearInterval(sceneTimer);
   };
 }
 
@@ -175,7 +214,15 @@ export class RemoteCallWindowHost extends PreviewHost<HostModel, string, RemoteC
         source: (current) => current.ownerKey,
         ready: () => true,
         relay: (_source, latest, leaseId, publish, fail) =>
-          startRemoteCallRelay(latest, leaseId, publish, transport.avatar, fail),
+          startRemoteCallRelay(
+            latest,
+            leaseId,
+            publish,
+            transport.avatar,
+            fail,
+            undefined,
+            transport.scene,
+          ),
       },
       lifecycle,
     );
@@ -218,6 +265,12 @@ export function readRemoteCallWindow(): Promise<RemoteCallWindowFrame | null> {
 }
 export function readRemoteCallAvatar(leaseId: string, revision: number): Promise<ArrayBuffer> {
   return invoke("remote_call_window_read_avatar", { leaseId, revision });
+}
+export function readRemoteCallScene(
+  leaseId: string,
+  revision: number,
+): Promise<CallSceneAppearance | null> {
+  return invoke("remote_call_window_read_scene", { leaseId, revision });
 }
 export function hideRemoteCallWindow(leaseId: string): Promise<void> {
   return invoke("remote_call_window_hide", { leaseId });

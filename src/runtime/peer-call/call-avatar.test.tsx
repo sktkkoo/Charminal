@@ -2,17 +2,41 @@
 
 import type { VRM } from "@pixiv/three-vrm";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { BoxGeometry, Group, Mesh, MeshBasicMaterial } from "three";
+import { BoxGeometry, Group, Mesh, MeshBasicMaterial, type Scene } from "three";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ScenePackManifest } from "../../sdk/scene-pack";
 import { NativeCallAvatar, NativeCallStage } from "./call-avatar";
 
 const mocks = vi.hoisted(() => ({
   getBytes: vi.fn(),
   parse: vi.fn(),
   renderers: [] as Array<{ dispose: ReturnType<typeof vi.fn>; render: ReturnType<typeof vi.fn> }>,
+  hosts: [] as Array<{
+    render: ReturnType<typeof vi.fn>;
+    advance: ReturnType<typeof vi.fn>;
+    dispose: ReturnType<typeof vi.fn>;
+    deps: { scene: Scene };
+  }>,
+  canvases: [] as HTMLCanvasElement[],
   managers: [] as Array<{ resolveURL: (value: string) => string }>,
 }));
 
+vi.mock("../three-runtime/r3f-host", () => ({
+  R3fHost: class {
+    render = vi.fn(() => true);
+    advance = vi.fn(() => true);
+    dispose = vi.fn();
+    constructor(public deps: { scene: Scene }) {
+      mocks.hosts.push(this);
+    }
+    initialize = async () => {};
+    setSize() {}
+  },
+}));
+vi.mock("./call-scene-root", () => ({ CallSceneRoot: () => null }));
+vi.mock("../../core/scene/procedural-scene-layer", () => ({
+  ProceduralSceneLayer: () => <div data-testid="procedural-background" />,
+}));
 vi.mock("../vrm-cache", () => ({ getVrmCache: () => ({ getBytes: mocks.getBytes }) }));
 vi.mock("./avatar-transfer", () => ({
   validateAvatarGlb: (bytes: ArrayBuffer) => bytes.byteLength === 24,
@@ -35,7 +59,9 @@ vi.mock("three", async (importOriginal) => {
     WebGLRenderer: class {
       dispose = vi.fn();
       render = vi.fn();
-      constructor() {
+      shadowMap = { enabled: false, type: 1 };
+      constructor({ canvas }: { canvas: HTMLCanvasElement }) {
+        mocks.canvases.push(canvas);
         mocks.renderers.push(this);
       }
       setPixelRatio() {}
@@ -76,6 +102,8 @@ beforeEach(() => {
   mocks.parse.mockReset();
   mocks.renderers.length = 0;
   mocks.managers.length = 0;
+  mocks.hosts.length = 0;
+  mocks.canvases.length = 0;
   frames = new Map();
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     const id = ++counter;
@@ -269,4 +297,152 @@ describe("native call VRM renderer ownership", () => {
     expect(screen.getByLabelText("A")).toBeTruthy();
     expect(screen.getByLabelText("B")).toBeTruthy();
   });
+});
+
+it("loads a selected scene into the avatar renderer and lets its composer own rendering", async () => {
+  mocks.parse.mockImplementation(async () => model().gltf);
+  const entry = {
+    id: "room",
+    origin: "bundled" as const,
+    manifest: {} as ScenePackManifest,
+    scene: { id: "room", layers: [] },
+    component: () => null,
+  };
+  const appearance = {
+    source: { origin: "bundled" as const, id: "room" },
+    scene: entry.scene,
+    controls: { "light.fill": 0.8 },
+    background: "#141619",
+    renderer: {
+      toneMapping: 4,
+      toneMappingExposure: 1.2,
+      outputColorSpace: "srgb",
+      shadowMapEnabled: true,
+      shadowMapType: 2,
+    },
+  };
+  const props = {
+    avatarUrl: "/avatar.vrm",
+    label: "Remote",
+    sampleMotion: () => null,
+    sceneEntry: entry,
+    appearance,
+  };
+  const view = render(<NativeCallAvatar {...props} />);
+  await act(async () => {});
+  expect(mocks.hosts).toHaveLength(1);
+  expect(mocks.hosts[0].deps.scene.children.some((item) => "isLight" in item && item.isLight)).toBe(
+    false,
+  );
+  act(tick);
+  expect(mocks.hosts[0].advance).toHaveBeenCalled();
+  expect(mocks.renderers[0].render).not.toHaveBeenCalled();
+  expect(
+    (mocks.renderers[0] as unknown as { toneMappingExposure: number }).toneMappingExposure,
+  ).toBe(1.2);
+  view.rerender(
+    <NativeCallAvatar {...props} appearance={{ ...appearance, controls: { "light.fill": 1.5 } }} />,
+  );
+  expect(mocks.hosts).toHaveLength(1);
+  expect(mocks.parse).toHaveBeenCalledOnce();
+  view.rerender(<NativeCallAvatar {...props} avatarUrl="/another.vrm" />);
+  await act(async () => {});
+  expect(mocks.hosts[0].dispose).toHaveBeenCalledOnce();
+  expect(mocks.canvases[0]).not.toBe(mocks.canvases[1]);
+  expect(mocks.canvases[0].isConnected).toBe(false);
+});
+
+it("preserves a component failure across setting updates and ignores errors from the replaced scene", async () => {
+  mocks.parse.mockImplementation(async () => model().gltf);
+  const entry = {
+    id: "room",
+    origin: "bundled" as const,
+    manifest: {} as ScenePackManifest,
+    scene: { id: "room", layers: [] },
+    component: () => null,
+  };
+  const props = {
+    avatarUrl: "/avatar.vrm",
+    label: "Remote",
+    sampleMotion: () => null,
+    sceneEntry: entry,
+    appearance: null,
+  };
+  const view = render(<NativeCallAvatar {...props} />);
+  await act(async () => {});
+  const previous = mocks.hosts[0].render.mock.lastCall?.[0] as { props: { onError(): void } };
+  act(() => previous.props.onError());
+  expect(screen.getByRole("alert").textContent).toBe("シーンを表示できませんでした。");
+  view.rerender(<NativeCallAvatar {...props} sceneEntry={{ ...entry }} />);
+  expect(screen.getByRole("alert").textContent).toBe("シーンを表示できませんでした。");
+  view.rerender(<NativeCallAvatar {...props} sceneEntry={{ ...entry, component: () => null }} />);
+  expect(screen.queryByRole("alert")).toBeNull();
+  act(() => previous.props.onError());
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("keeps one VRM, renderer and canvas through cafe, loading gap and grassland scene slots", async () => {
+  const loaded = model();
+  mocks.parse.mockResolvedValue(loaded.gltf);
+  const cafe = {
+    id: "cafe",
+    origin: "bundled" as const,
+    manifest: {} as ScenePackManifest,
+    scene: {
+      id: "cafe",
+      layers: [
+        { id: "cafe-resident", role: "character" as const, blur: 0 },
+        { id: "cafe-vignette", role: "foreground" as const, backgroundColor: "transparent" },
+      ],
+    },
+    component: () => null,
+  };
+  const grass = {
+    ...cafe,
+    id: "misty-grasslands",
+    component: () => null,
+    scene: {
+      id: "misty-grasslands",
+      layers: [
+        {
+          id: "grass",
+          role: "background" as const,
+          procedural: { kind: "misty-grasslands" as const },
+          blur: 1,
+        },
+        { id: "grass-resident", role: "character" as const, blur: 0 },
+        { id: "haze", role: "foreground" as const, backgroundColor: "transparent" },
+      ],
+    },
+  };
+  const props = {
+    avatarUrl: "/avatar.vrm",
+    label: "Mai",
+    sampleMotion: () => null,
+    appearance: null,
+  };
+  const view = render(<NativeCallAvatar {...props} sceneEntry={cafe} />);
+  await act(async () => {});
+  const canvas = mocks.canvases[0];
+  const oldSlot = canvas.closest('[data-layer-id="cafe-resident"]');
+  expect(oldSlot).not.toBeNull();
+  view.rerender(<NativeCallAvatar {...props} sceneEntry={null} />);
+  expect(canvas.isConnected).toBe(true);
+  expect(oldSlot?.isConnected).toBe(false);
+  view.rerender(<NativeCallAvatar {...props} sceneEntry={grass} />);
+  await act(async () => {});
+  expect(canvas.closest('[data-layer-id="grass-resident"]')).not.toBeNull();
+  expect(screen.getByTestId("procedural-background")).toBeTruthy();
+  expect(mocks.canvases).toEqual([canvas]);
+  expect(mocks.renderers).toHaveLength(1);
+  expect(mocks.hosts).toHaveLength(1);
+  expect(mocks.parse).toHaveBeenCalledOnce();
+  expect(mocks.hosts[0].dispose).not.toHaveBeenCalled();
+  expect(loaded.geometryDispose).not.toHaveBeenCalled();
+  act(tick);
+  expect(mocks.hosts[0].advance).toHaveBeenCalled();
+  expect(canvas.isConnected).toBe(true);
+  view.unmount();
+  expect(mocks.hosts[0].dispose).toHaveBeenCalledOnce();
+  expect(loaded.geometryDispose).toHaveBeenCalledOnce();
 });

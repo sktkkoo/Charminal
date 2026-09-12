@@ -4,13 +4,21 @@ import { MOUTH_KEYS, type MouthValues, ZERO_MOUTH } from "./core/voice/mouth-val
 import { AvatarMotionBuffer, decodeAvatarMotion } from "./runtime/peer-call/avatar-motion";
 import { validateAvatarGlb } from "./runtime/peer-call/avatar-transfer";
 import { NativeCallAvatar } from "./runtime/peer-call/call-avatar";
+import { loadCallScene } from "./runtime/peer-call/call-scene-loader";
+import {
+  type CallSceneMediaReceiver,
+  createCallSceneMediaReceiver,
+} from "./runtime/peer-call/call-scene-media";
+import type { CallSceneAppearance } from "./runtime/peer-call/call-scene-state";
 import {
   hideRemoteCallWindow,
   listenRemoteCallWindow,
   type RemoteCallWindowFrame,
   readRemoteCallAvatar,
+  readRemoteCallScene,
   readRemoteCallWindow,
 } from "./runtime/peer-call/remote-call-window";
+import type { ScenePackEntry } from "./runtime/scene-pack-registry";
 import "./auxiliary-call-resident.css";
 
 /** A second native resident view only. No App, room, audio output, microphone, or provider session. */
@@ -19,6 +27,13 @@ export default function AuxiliaryCallResident() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarBytes, setAvatarBytes] = useState<ArrayBuffer | null>(null);
   const [error, setError] = useState("");
+  const [appearance, setAppearance] = useState<CallSceneAppearance | null>(null);
+  const [sceneEntry, setSceneEntry] = useState<ScenePackEntry | null>(null);
+  const [sceneReadError, setSceneReadError] = useState("");
+  const [sceneLoadError, setSceneLoadError] = useState("");
+  const appearanceContext = useRef({ leaseId: "", sceneRevision: 0 });
+  const loadedSceneKey = useRef("");
+  const sceneMedia = useRef<CallSceneMediaReceiver | null>(null);
   const latest = useRef<RemoteCallWindowFrame | null>(null);
   const motion = useRef(new AvatarMotionBuffer(35));
   const lastArrival = useRef(0);
@@ -41,6 +56,7 @@ export default function AuxiliaryCallResident() {
       setFrame((current) =>
         current?.leaseId === next.leaseId &&
         current.avatarRevision === next.avatarRevision &&
+        current.sceneRevision === next.sceneRevision &&
         current.label === next.label &&
         current.mode === next.mode &&
         current.language === next.language
@@ -95,9 +111,77 @@ export default function AuxiliaryCallResident() {
       if (ownedUrl) URL.revokeObjectURL(ownedUrl);
     };
   }, [frame?.leaseId, frame?.avatarRevision]);
+  useEffect(() => {
+    const receiver = frame?.leaseId ? createCallSceneMediaReceiver(frame.leaseId) : null;
+    sceneMedia.current = receiver;
+    return () => {
+      receiver?.dispose();
+      if (sceneMedia.current === receiver) sceneMedia.current = null;
+    };
+  }, [frame?.leaseId]);
+  useEffect(() => {
+    let disposed = false;
+    if (!frame?.sceneRevision) {
+      setAppearance(null);
+      setSceneReadError("");
+      return;
+    }
+    const receiver = sceneMedia.current;
+    void readRemoteCallScene(frame.leaseId, frame.sceneRevision)
+      .then((next) => (next && receiver ? receiver.project(next) : next))
+      .then((next) => {
+        if (!disposed && next) {
+          appearanceContext.current = {
+            leaseId: frame.leaseId,
+            sceneRevision: frame.sceneRevision ?? 0,
+          };
+          setAppearance(next);
+          setSceneReadError("");
+        }
+      })
+      .catch(() => {
+        if (!disposed) setSceneReadError("シーンの設定を取得できませんでした。");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [frame?.leaseId, frame?.sceneRevision]);
+  const sceneSource = JSON.stringify(appearance?.source ?? null);
+  const sceneLease = appearanceContext.current.leaseId;
+  useEffect(() => {
+    if (sceneSource === "null") {
+      loadedSceneKey.current = "";
+      setSceneEntry(null);
+      setSceneLoadError("");
+      return;
+    }
+    const key = `${frame?.leaseId}:${sceneSource}`;
+    if (loadedSceneKey.current === key) return;
+    let disposed = false;
+    setSceneEntry(null);
+    setSceneLoadError("");
+    if (sceneLease === frame?.leaseId) {
+      void loadCallScene(JSON.parse(sceneSource), appearanceContext.current)
+        .then((entry) => {
+          if (!disposed) {
+            loadedSceneKey.current = key;
+            setSceneEntry(entry);
+          }
+        })
+        .catch(() => {
+          if (!disposed) setSceneLoadError("シーンを読み込めませんでした。");
+        });
+    }
+    return () => {
+      disposed = true;
+    };
+  }, [sceneSource, sceneLease, frame?.leaseId]);
   const japanese = (frame?.language ?? navigator.language).startsWith("ja");
   return (
-    <main className={`remote-call-resident remote-call-resident-${frame?.mode ?? "portrait"}`}>
+    <main
+      className={`remote-call-resident remote-call-resident-${frame?.mode ?? "portrait"}`}
+      style={{ background: appearance?.background ?? "#141619" }}
+    >
       {avatarUrl ? (
         <NativeCallAvatar
           avatarUrl={avatarUrl}
@@ -113,12 +197,19 @@ export default function AuxiliaryCallResident() {
             ) as unknown as MouthValues;
           }}
           sampleCamera={() => latest.current?.camera ?? null}
+          sceneEntry={sceneEntry}
+          appearance={appearance}
         />
       ) : (
         <div className="remote-call-resident-waiting" role="status">
           {error || (japanese ? "相手の姿を待っています…" : "Waiting for the resident…")}
         </div>
       )}
+      {sceneLoadError || sceneReadError ? (
+        <div className="remote-call-resident-waiting" role="alert">
+          {sceneLoadError || sceneReadError}
+        </div>
+      ) : null}
       <div className="remote-call-resident-chrome">
         <button
           type="button"
