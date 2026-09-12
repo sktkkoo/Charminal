@@ -83,7 +83,7 @@ describe("independent screen-sharing controls", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Start sharing" }));
     await waitFor(() => expect(requestAuxiliaryAction).toHaveBeenCalledWith(1, { type: "start" }));
     expect(screen.queryByRole("button", { name: "Select region" })).toBeNull();
-    expect(screen.queryByRole("switch", { name: "Agent pointing" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Agent pointing (experimental)" })).toBeNull();
   });
 
   it("routes screen source type changes through the owner", async () => {
@@ -209,7 +209,7 @@ describe("independent screen-sharing controls", () => {
     expect(back.getAttribute("title")).toBe("Back");
     expect(back.nextElementSibling).toBe(screen.getByRole("heading", { name: "Camera sharing" }));
     expect(back.parentElement?.classList.contains("screen-sharing-heading")).toBe(true);
-    expect(screen.queryByRole("switch", { name: "Agent pointing" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Agent pointing (experimental)" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
     await waitFor(() => expect(requestAuxiliaryAction).toHaveBeenCalledWith(2, { type: "start" }));
   });
@@ -225,7 +225,7 @@ describe("independent screen-sharing controls", () => {
       );
     render(<AuxiliaryScreenSharing />);
     const toggle = (await screen.findByRole("switch", {
-      name: "Agent pointing",
+      name: "Agent pointing (experimental)",
     })) as HTMLInputElement;
     fireEvent.click(toggle);
     expect(toggle.checked).toBe(false);
@@ -342,7 +342,7 @@ describe("independent screen-sharing controls", () => {
     vi.mocked(requestAuxiliaryAction).mockReturnValueOnce(new Promise(() => {}));
     render(<AuxiliaryScreenSharing />);
     const toggle = (await screen.findByRole("switch", {
-      name: "Agent pointing",
+      name: "Agent pointing (experimental)",
     })) as HTMLInputElement;
     const interval = screen.getByRole("slider", { name: "Update interval" });
     fireEvent.change(interval, { target: { value: "20" } });
@@ -366,7 +366,7 @@ describe("independent screen-sharing controls", () => {
     vi.mocked(requestAuxiliaryAction).mockReturnValueOnce(new Promise(() => {}));
     render(<AuxiliaryScreenSharing />);
     const toggle = (await screen.findByRole("switch", {
-      name: "Agent pointing",
+      name: "Agent pointing (experimental)",
     })) as HTMLInputElement;
     fireEvent.click(toggle);
     expect(toggle.checked).toBe(false);

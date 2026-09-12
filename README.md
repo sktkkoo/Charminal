@@ -10,7 +10,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/macOS-000000?style=flat-square&logo=apple&logoColor=white">
 </p>
 
-<p align="center"><strong>A terminal your AI inhabits.</strong></p>
+<p align="center"><strong>A terminal your AI inhabits</strong></p>
 
 Yorishiro is a new kind of terminal that gives your AI a body — and a sense of presence.
 
@@ -81,8 +81,8 @@ Switch from the View Mode menu in the title bar, or press `Option+Command+0` thr
 | Mode | Preview | Description |
 |---|---|---|
 | **Terminal** | <img src="docs/assets/view-mode-terminal.png" alt="Terminal view mode" width="320" /> | The full workspace, with the terminal and resident side by side |
-| **Portrait** | <img src="docs/assets/view-mode-portrait.png" alt="Portrait view mode" width="320" /> | A narrow, always-on-top resident window beside your external terminal |
-| **Call** | <img src="docs/assets/view-mode-call.png" alt="Call view mode" width="320" /> | A compact, face-centered window for conversation |
+| **Portrait** | <img src="docs/assets/view-mode-portrait.png" alt="Portrait view mode" width="320" /> | A narrow, always-on-top resident window |
+| **Call** | <img src="docs/assets/view-mode-call.png" alt="Call view mode" width="320" /> | A compact window for conversation |
 | **Theater** | <img src="docs/assets/view-mode-theater.png" alt="Theater view mode" width="320" /> | A full stage with the terminal and app chrome hidden |
 | **Immersive** | <img src="docs/assets/view-mode-immersive.png" alt="Immersive view mode" width="320" /> | A transparent terminal layered over the resident and scene |
 
@@ -134,15 +134,27 @@ Yorishiro's commands let you create and edit packs, run tutorials, and more — 
 
 Codex does not support custom `/` commands, so Yorishiro registers the same tools as `$yori-*` skills instead.
 
-### Voice conversations
+### Voice conversations (Codex)
 
-Yorishiro supports voice conversation through GPT Live when using Codex 0.145.0 or newer. Press the microphone button in the title bar to start, and press it again to stop. The normal Codex TUI stays visible: voice and text share the same thread, approvals, and tool flow. Voice inherits the current Codex CLI login. Microphone access is requested only when you press the button. See [the realtime voice decision](docs/decisions/codex-realtime-voice.md) for architecture and limitations.
+Codex 0.145.0 or newer supports voice conversation through GPT Live. Press the microphone button to start, and press it again to stop. Voice and text share the same session. Voice inherits the current Codex CLI login. See [the realtime voice decision](docs/decisions/codex-realtime-voice.md) for architecture and limitations.
 
 <p align="center">
   <img src="docs/assets/gpt-live-title-bar.png" alt="GPT Live microphone button in the Yorishiro title bar" width="220" />
 </p>
 
 Set `codexRealtimeVoice` in `~/.yorishiro/config.json` to choose the GPT Live output voice globally (default: `sol`), and `realtimeVoiceByPersona` to override it per persona pack id. The values are read whenever a new voice session starts, so stop and restart an active voice conversation to apply a change. If the app-server explicitly rejects the selected voice as invalid or unsupported, Yorishiro retries with the next candidate (persona → global → default); other connection failures surface as errors. See [configuration](docs/configuration.md#codex-gpt-live-voice).
+
+### Screen sharing / Camera sharing (Codex)
+
+Use the sharing icon in the title bar to send screen or camera stills to the current Codex conversation. Screen sharing on macOS supports an entire display, a window, or a region you can move and resize. For camera sharing, select a camera and start sharing.
+
+Set the update interval to **10–180 seconds**; shorter intervals use more tokens. Use **Stop sharing** to stop sending images.
+
+**Agent pointing is experimental** and can mark locations with arrows or outlines during entire-display sharing. It is unavailable for window, region, and camera sharing.
+
+<p align="center">
+  <img src="docs/assets/screen-sharing-controls.png" alt="Screen sharing settings with display, window, and region tabs, update interval, and preview toggle" width="480" />
+</p>
 
 ### Custom avatars
 
@@ -292,6 +304,7 @@ What works today:
 - Fireworks celebrate a successful `git push` by the inhabitant (bundled Yori persona)
 - Light Alert: a light comes on when the agent waits for your input or approval
 - Terminal links: Cmd+click a visible HTTP/HTTPS URL to open it in the default browser
+- Screen sharing / Camera sharing: still images for the current Codex conversation at 10–180 second intervals; macOS supports display, window, and adjustable region sharing, with experimental agent pointing for entire displays
 - Context sharing: Voice Summary and Terminal Reference Markers (Cmd+Shift+click / Option+Shift+drag)
 - Journal: long-term memory across sessions, with recall at session start
 - Restore: automatic checkpoints for packs / init.js / settings, with reversible rollback
