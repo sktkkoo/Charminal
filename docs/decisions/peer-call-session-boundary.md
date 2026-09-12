@@ -80,6 +80,12 @@ AIの入力・発話・停止・利用量の上限はAI参加アダプターが�
 
 通信サービス、最大人数、AI提供者ごとの参加方式、アセット配送、記録の既定値、UI細部は未確定。ホスト退出時の終了/権限移譲も部屋同期の実装前に決める。通信方式の判断にはTauri上の実機検証を含める。
 
+ユーザーの希望により、接続基盤はCloudflareへの集約と低コストを優先して比較する。候補はWorkers + SQLite-backed Durable Objectsで招待/認証/シグナリングを扱い、少人数のメディアはP2P、直接接続できない場合はRealtime TURNで中継する構成。多人数時はRealtime SFUも比較する。同一アプリ内の会話に外部の中継を必須としない。これは技術検証候補であり、アカウント作成・有料プラン変更・デプロイは行っていない。
+
+接続を管理するホスト役だけでは、インターネット越しの到達性は保証できない。WebRTCでは接続情報の交換と、NAT/firewallによって直接接続できない場合の中継が別に必要となる。[WebRTC接続](https://webrtc.org/getting-started/peer-connections)、[TURN](https://webrtc.org/getting-started/turn-server)。
+
+2026-09-12に確認した料金: WorkersにはFreeプランがあり、Paidはアカウント当たり月額最低$5。SQLite-backed Durable ObjectsはFreeで利用可能だが日次上限がある。Realtime SFU/TURNは共通の無料枠1,000GB、超過分はCloudflareからクライアントへの転送量$0.05/GB。実利用の金額は未計測で、AIの推論・音声利用料は別に見積もる。[Workers料金](https://developers.cloudflare.com/workers/platform/pricing/)、[DO料金](https://developers.cloudflare.com/durable-objects/platform/pricing/)、[Realtime料金](https://developers.cloudflare.com/realtime/sfu/pricing/)。
+
 ## 関連reference
 
 - [参加者モデル](../../src/runtime/peer-call/README.md)
