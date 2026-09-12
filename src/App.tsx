@@ -178,6 +178,7 @@ import {
   markPendingRealtimeStart,
   resolveVoiceEntryAction,
 } from "./runtime/codex-realtime/voice-entry";
+import { requestControlSurface } from "./runtime/control-surface";
 import { EventBus, type EventBusLogger } from "./runtime/event-bus";
 import { createExternalAttachController } from "./runtime/external-attach";
 import { collectHealthReport } from "./runtime/health-check";
@@ -4659,6 +4660,7 @@ function App() {
   // ── Settings ─────────────────────────────────────────────
 
   const handleOpenSettings = useCallback(() => {
+    requestControlSurface("settings");
     const uiPackRegistry = getUiRegistry();
     const uiState = getUiStateStore();
     const current = uiPackRegistry.getActiveUi()?.id ?? null;
@@ -4680,6 +4682,7 @@ function App() {
 
   const handleSelectViewMode = useCallback(
     (id: string | null) => {
+      requestControlSurface("view-mode");
       setViewModeHudVisible(false);
       getUiRegistry().setActiveUi(id);
       void updateYorishiroConfig((config) => ({ ...config, activeUi: id })).catch((error) => {

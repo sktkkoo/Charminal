@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import type { ScreenCaptureRegion, ScreenSourceKind } from "./bindings/tauri-commands";
 import { CameraPreviewToggle } from "./camera-preview-toggle";
 import { MediaPermissionHelp } from "./media-permission-help";
+import { requestControlSurface, subscribeControlSurface } from "./runtime/control-surface";
 import { getMediaPermissionKind } from "./runtime/media-permissions";
 import {
   formatSharingInterval,
@@ -198,8 +199,17 @@ export function ScreenSharingControl({
     setPanelMode("closed");
   }, []);
 
+  useEffect(
+    () =>
+      subscribeControlSurface((surface) => {
+        if (surface !== "sharing") closePanel();
+      }),
+    [closePanel],
+  );
+
   const openAuxiliary = useCallback(async () => {
     if (openingAuxiliaryRef.current) return;
+    requestControlSurface("sharing");
     const request = { dismissed: false };
     openingAuxiliaryRef.current = request;
     setOpeningAuxiliary(true);
@@ -226,6 +236,7 @@ export function ScreenSharingControl({
 
   const openPanel = () => {
     if (openingAuxiliaryRef.current || measurementRef.current) return;
+    requestControlSurface("sharing");
     setAuxiliaryError(undefined);
     setChoosingSource(true);
     if (!active) onRefreshSources();

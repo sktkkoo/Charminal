@@ -13,6 +13,7 @@ document.documentElement.dataset.windowView = view ?? "unknown";
 const Application = React.lazy(async () => {
   if (view === "screen-preview") return import("./auxiliary-screen-preview");
   if (view === "camera-preview") return import("./auxiliary-camera-preview");
+  if (view === "call-controls") return import("./auxiliary-call-controls");
   if (view === "call-resident") return import("./auxiliary-call-resident");
   if (view === "screen-sharing-controls") return import("./auxiliary-screen-sharing");
   if (view !== "main") return { default: () => <p>Unknown auxiliary window.</p> };

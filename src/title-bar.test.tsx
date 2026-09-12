@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { requestControlSurface, subscribeControlSurface } from "./runtime/control-surface";
 import type { UiPackEntry } from "./runtime/ui-pack-registry";
 import TitleBar from "./title-bar";
 
@@ -41,6 +42,28 @@ function renderTitleBar(overrides: Partial<Parameters<typeof TitleBar>[0]> = {})
 }
 
 describe("TitleBar View Mode picker", () => {
+  it("yields the open picker to call controls and reopens from keyboard without selecting a view", () => {
+    const select = vi.fn();
+    const requested = vi.fn();
+    const unsubscribe = subscribeControlSurface(requested);
+    try {
+      renderTitleBar({ viewModes: [portrait], onSelectViewMode: select });
+      const trigger = screen.getByRole("button", { name: "View Mode" });
+      fireEvent.click(trigger);
+      expect(screen.getByRole("menu", { name: "View Mode" })).toBeTruthy();
+      act(() => requestControlSurface("call"));
+      expect(screen.queryByRole("menu")).toBeNull();
+      fireEvent.keyDown(trigger, { key: "ArrowDown" });
+      expect(requested).toHaveBeenLastCalledWith("view-mode");
+      expect(screen.getByRole("menu", { name: "View Mode" })).toBeTruthy();
+      expect(select).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      expect(requested).toHaveBeenLastCalledWith("settings");
+      expect(screen.queryByRole("menu")).toBeNull();
+    } finally {
+      unsubscribe();
+    }
+  });
   it("exposes active state and selects a mode in two clicks", () => {
     const select = vi.fn();
     renderTitleBar({

@@ -1091,3 +1091,47 @@
   color: #ffd2d4;
   font-size: 12px;
 }
+
+html[data-window-view="call-controls"],
+html[data-window-view="call-controls"] body,
+html[data-window-view="call-controls"] #root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #171b23;
+}
+.peer-call-detached {
+  height: 100%;
+  width: 100%;
+}
+.peer-call-room.is-detached {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.peer-call-room.is-detached .peer-call-heading {
+  padding: 16px;
+}
+.peer-call-room.is-detached .peer-call-entry-scroll {
+  padding: 20px;
+}
+.peer-call-room.is-detached .peer-call-waiting-stage {
+  height: 190px;
+  min-height: 160px;
+}
+.peer-call-entry-window-error {
+  position: fixed;
+  z-index: 1900;
+  top: 40px;
+  left: 8px;
+  right: 8px;
+  padding: 10px;
+  background: #352626;
+  color: #f3baba;
+  font-size: 12px;
+  line-height: 1.6;
+}

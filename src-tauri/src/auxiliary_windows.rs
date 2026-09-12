@@ -14,18 +14,21 @@ const ACTION_EVENT: &str = "auxiliary-window-action";
 #[serde(rename_all = "kebab-case")]
 pub enum AuxiliaryWindowKind {
     ScreenSharingControls,
+    CallControls,
 }
 
 impl AuxiliaryWindowKind {
     fn label(self) -> &'static str {
         match self {
             Self::ScreenSharingControls => CONTROLS_LABEL,
+            Self::CallControls => crate::call_controls::LABEL,
         }
     }
 
     fn route(self) -> &'static str {
         match self {
             Self::ScreenSharingControls => "screen-sharing-controls",
+            Self::CallControls => "call-controls",
         }
     }
 }
@@ -301,9 +304,27 @@ pub async fn auxiliary_window_open(
     let query = format!("auxiliary={}", kind.route());
     let resource = format!("index.html?{query}");
     WebviewWindowBuilder::new(&app, kind.label(), WebviewUrl::App(resource.into()))
-        .title("Screen sharing — Yorishiro")
-        .inner_size(360.0, 530.0)
-        .min_inner_size(320.0, 400.0)
+        .title(match kind {
+            AuxiliaryWindowKind::ScreenSharingControls => "Screen sharing — Yorishiro",
+            AuxiliaryWindowKind::CallControls => "Call — Yorishiro",
+        })
+        .inner_size(
+            match kind {
+                AuxiliaryWindowKind::ScreenSharingControls => 360.0,
+                AuxiliaryWindowKind::CallControls => 480.0,
+            },
+            match kind {
+                AuxiliaryWindowKind::ScreenSharingControls => 530.0,
+                AuxiliaryWindowKind::CallControls => 720.0,
+            },
+        )
+        .min_inner_size(
+            match kind {
+                AuxiliaryWindowKind::ScreenSharingControls => 320.0,
+                AuxiliaryWindowKind::CallControls => 400.0,
+            },
+            400.0,
+        )
         .resizable(true)
         .always_on_top(true)
         .focused(true)

@@ -10,6 +10,7 @@ import {
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { MediaPermissionHelp } from "./media-permission-help";
+import { requestControlSurface, subscribeControlSurface } from "./runtime/control-surface";
 import { getMediaPermissionKind } from "./runtime/media-permissions";
 import type { UiPackEntry } from "./runtime/ui-pack-registry";
 
@@ -86,6 +87,17 @@ export default function TitleBar({
   const pickerRef = useRef<HTMLDivElement>(null);
   const pickerButtonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(
+    () =>
+      subscribeControlSurface((surface) => {
+        if (surface !== "view-mode") setPickerOpen(false);
+      }),
+    [],
+  );
+  const openSettings = () => {
+    requestControlSurface("settings");
+    onOpenSettings();
+  };
   const focusMenuItem = (edge: "first" | "last") => {
     requestAnimationFrame(() => {
       const items = menuRef.current?.querySelectorAll<HTMLButtonElement>("button");
@@ -108,7 +120,10 @@ export default function TitleBar({
           <button
             type="button"
             className="title-bar-button title-bar-sidebar-button"
-            onClick={onToggleSidebar}
+            onClick={() => {
+              requestControlSurface("sidebar");
+              onToggleSidebar();
+            }}
             aria-label={sidebarLabel}
             aria-pressed={sidebarOpen}
             title={sidebarLabel}
@@ -125,14 +140,19 @@ export default function TitleBar({
             aria-haspopup="menu"
             aria-expanded={pickerOpen}
             title={viewModeLabel}
-            onClick={() => setPickerOpen((open) => !open)}
+            onClick={() => {
+              if (!pickerOpen) requestControlSurface("view-mode");
+              setPickerOpen((open) => !open);
+            }}
             onKeyDown={(event) => {
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
+                requestControlSurface("view-mode");
                 setPickerOpen(true);
                 focusMenuItem(event.key === "ArrowDown" ? "first" : "last");
               } else if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
+                if (!pickerOpen) requestControlSurface("view-mode");
                 setPickerOpen((open) => {
                   if (!open) focusMenuItem("first");
                   return !open;
@@ -216,7 +236,7 @@ export default function TitleBar({
                 role="menuitem"
                 aria-label={`${settingsLabel} (${settingsShortcutHint})`}
                 onClick={() => {
-                  onOpenSettings();
+                  openSettings();
                   setPickerOpen(false);
                 }}
               >
@@ -231,7 +251,7 @@ export default function TitleBar({
           className={`title-bar-button title-bar-settings-button${
             settingsActive ? " is-active" : ""
           }`}
-          onClick={onOpenSettings}
+          onClick={openSettings}
           aria-label={settingsLabel}
           aria-pressed={settingsActive}
           title={settingsLabel}
@@ -247,7 +267,10 @@ export default function TitleBar({
             className="title-bar-button title-bar-voice-button"
             data-voice-state={voiceState}
             data-microphone-active={voiceMicrophoneActive}
-            onClick={onToggleVoice}
+            onClick={() => {
+              requestControlSurface("voice");
+              onToggleVoice?.();
+            }}
             disabled={voiceDisabled}
             aria-label={voiceLabel}
             aria-pressed={voiceState === "active"}

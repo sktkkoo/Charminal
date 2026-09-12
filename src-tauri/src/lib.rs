@@ -1,6 +1,7 @@
 pub mod attach;
 mod auxiliary_windows;
 mod bundled_examples_gen;
+mod call_controls;
 mod camera_preview;
 mod history;
 mod journal;
@@ -3868,6 +3869,7 @@ pub fn run() {
         .manage(mcp::McpServerStatus::default())
         .manage(screen_annotation::ScreenAnnotationState::default())
         .manage(auxiliary_windows::AuxiliaryWindowsState::default())
+        .manage(call_controls::CallControlsState::default())
         .manage(camera_preview::CameraPreviewState::default())
         .manage(remote_call_window::RemoteCallWindowState::default())
         .manage(screen_preview::ScreenPreviewState::default())
@@ -3878,6 +3880,7 @@ pub fn run() {
                 screen_annotation::document_reloaded(webview.app_handle());
                 peer_call_agent::shutdown(webview.app_handle());
                 auxiliary_windows::close_owned_windows(webview.app_handle());
+                call_controls::close_owned_windows(webview.app_handle());
                 camera_preview::close_owned_windows(webview.app_handle());
                 remote_call_window::close_owned_windows(webview.app_handle());
                 screen_preview::close_owned_windows(webview.app_handle());
@@ -3888,6 +3891,7 @@ pub fn run() {
                 remote_call_window::window_resized(window.app_handle(), window.label(), *size);
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                call_controls::window_destroyed(window.app_handle(), window.label());
                 camera_preview::window_destroyed(window.app_handle(), window.label());
                 remote_call_window::window_destroyed(window.app_handle(), window.label());
                 screen_preview::window_destroyed(window.app_handle(), window.label());
@@ -3896,6 +3900,7 @@ pub fn run() {
                 screen_annotation::shutdown(window.app_handle());
                 peer_call_agent::shutdown(window.app_handle());
                 auxiliary_windows::close_owned_windows(window.app_handle());
+                call_controls::close_owned_windows(window.app_handle());
                 camera_preview::close_owned_windows(window.app_handle());
                 remote_call_window::close_owned_windows(window.app_handle());
                 screen_preview::close_owned_windows(window.app_handle());
@@ -3927,6 +3932,10 @@ pub fn run() {
             camera_preview::camera_preview_publish,
             camera_preview::camera_preview_snapshot,
             camera_preview::camera_preview_request_action,
+            call_controls::call_controls_publish,
+            call_controls::call_controls_snapshot,
+            call_controls::call_controls_request_action,
+            call_controls::call_controls_hide,
             auxiliary_windows::auxiliary_window_open,
             auxiliary_windows::auxiliary_window_publish,
             auxiliary_windows::auxiliary_window_snapshot,

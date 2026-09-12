@@ -47,6 +47,29 @@ const test = vi.hoisted(() => ({
   endpoint: "ws://localhost:1531/rooms",
   persist: vi.fn(),
   creation: null as Promise<void> | null,
+  native: false,
+  nativeFailure: false,
+  nativeInvoke: vi.fn(),
+  nativeHandlers: new Map<string, (event: { payload: unknown }) => void>(),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: () => test.native,
+  invoke: async (command: string, args: unknown) => {
+    test.nativeInvoke(command, args);
+    if (test.nativeFailure && command === "call_controls_publish")
+      throw Error("Command call_controls_publish not found");
+  },
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    label: "main",
+    listen: async (event: string, callback: (event: { payload: unknown }) => void) => {
+      test.nativeHandlers.set(event, callback);
+      return () => {
+        if (test.nativeHandlers.get(event) === callback) test.nativeHandlers.delete(event);
+      };
+    },
+  }),
 }));
 vi.mock("../three-runtime/three-runtime", () => ({
   getThreeRuntime: () => ({ getVrm: () => null }),
@@ -170,11 +193,15 @@ vi.mock("./room-call", () => ({
   },
 }));
 
+import { requestControlSurface } from "../control-surface";
 import { PeerCallControl } from "./peer-call-control";
 
 beforeEach(() => {
   test.endpoint = "ws://localhost:1531/rooms";
   test.creation = null;
+  test.native = false;
+  test.nativeFailure = false;
+  test.nativeHandlers.clear();
 });
 afterEach(() => {
   cleanup();
@@ -495,7 +522,7 @@ describe("native room call experience", () => {
     expect(test.rooms).toHaveLength(0);
   });
 
-  it("traps entry focus, restores the trigger on Escape, and preserves a waiting room until unmount", async () => {
+  it("keeps toolbar keyboard access, restores the trigger on Escape, and preserves a waiting room until unmount", async () => {
     const onRoomChange = vi.fn();
     const view = render(<PeerCallControl onRoomChange={onRoomChange} />);
     const room = await createRoom();
@@ -503,8 +530,8 @@ describe("native room call experience", () => {
     const first = within(dialog).getAllByRole("button")[0];
     const cancel = screen.getByRole("button", { name: "キャンセル" });
     first.focus();
-    expect(fireEvent.keyDown(first, { key: "Tab", shiftKey: true })).toBe(false);
-    expect(document.activeElement).toBe(cancel);
+    expect(dialog.getAttribute("aria-modal")).toBeNull();
+    expect(fireEvent.keyDown(first, { key: "Tab", shiftKey: true })).toBe(true);
     fireEvent.keyDown(cancel, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "通話" }));
@@ -547,6 +574,102 @@ describe("native room call experience", () => {
     expect(room.leave).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "部屋を作る" })).toBeTruthy();
     expect(screen.queryByText("部屋を作成しました")).toBeNull();
+  });
+
+  it.each([
+    "portrait",
+    "companion",
+  ])("opens readable native entry for %s, keeps its room on handoff/close, and hides it on admission", async (viewMode) => {
+    test.native = true;
+    render(<PeerCallControl viewMode={viewMode} residentName="より" />);
+    open();
+    await waitFor(() =>
+      expect(test.nativeInvoke).toHaveBeenCalledWith("auxiliary_window_open", {
+        kind: "call-controls",
+      }),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const latest = () =>
+      test.nativeInvoke.mock.calls
+        .filter(([command]) => command === "call_controls_publish")
+        .slice(-1)[0]?.[1].snapshot;
+    const dispatch = (action: unknown) =>
+      act(() =>
+        test.nativeHandlers.get("call-controls-action")?.({
+          payload: { revision: latest().revision, action },
+        }),
+      );
+    dispatch({ type: "create", name: "より" });
+    await waitFor(() => expect(test.rooms).toHaveLength(1));
+    const room = test.rooms[0];
+    await waitFor(() => expect(latest().signalState).toBe("hosting"));
+    act(() => requestControlSurface("settings"));
+    await waitFor(() =>
+      expect(test.nativeInvoke).toHaveBeenCalledWith("call_controls_hide", undefined),
+    );
+    expect(room.leave).not.toHaveBeenCalled();
+    open();
+    await waitFor(() => expect(latest().enabled).toBe(true));
+    act(() => test.nativeHandlers.get("call-controls-closed")?.({ payload: null }));
+    expect(room.leave).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "通話" }).getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    open();
+    act(() => room.incoming());
+    await waitFor(() => expect(latest().guest?.name).toBe("GPT"));
+    dispatch({ type: "accept", requestId: latest().guest.requestId });
+    await screen.findByRole("complementary", { name: "通話中" });
+    await waitFor(() => expect(latest().enabled).toBe(false));
+    expect(room.accept).toHaveBeenCalledOnce();
+    expect(room.leave).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "settings",
+    "sharing",
+    "view-mode",
+  ] as const)("keeps Theater entry inline and hands focus to %s without leaving", async (surface) => {
+    test.native = true;
+    render(
+      <>
+        <button type="button" onClick={() => requestControlSurface(surface)}>
+          Settings destination
+        </button>
+        <PeerCallControl viewMode="theater" />
+      </>,
+    );
+    const room = await createRoom();
+    expect(screen.getByRole("dialog").getAttribute("aria-modal")).toBeNull();
+    const target = screen.getByRole("button", { name: "Settings destination" });
+    target.focus();
+    fireEvent.click(target);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(target);
+    expect(room.leave).not.toHaveBeenCalled();
+    open();
+    expect(screen.getByRole("textbox", { name: "部屋の招待コード" })).toHaveProperty(
+      "value",
+      room.signaling.invitation,
+    );
+    expect(test.rooms).toHaveLength(1);
+    expect(
+      test.nativeInvoke.mock.calls.some(([command]) => command === "auxiliary_window_open"),
+    ).toBe(false);
+  });
+
+  it("falls back to usable inline entry with restart guidance for an older native binary", async () => {
+    test.native = true;
+    test.nativeFailure = true;
+    render(<PeerCallControl viewMode="portrait" />);
+    open();
+    await screen.findByRole("dialog");
+    expect(screen.getByRole("alert").textContent).toContain("再起動");
+    expect(screen.getByRole("button", { name: "部屋を作る" })).toBeTruthy();
+    expect(
+      test.nativeInvoke.mock.calls.some(([command]) => command === "auxiliary_window_open"),
+    ).toBe(false);
+    expect(test.rooms).toHaveLength(0);
   });
 
   it("supports English entry and call controls without presenting a fake successful call", async () => {

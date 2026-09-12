@@ -1,24 +1,18 @@
-import {
-  ArrowRight,
-  Check,
-  ChevronLeft,
-  Copy,
-  MessageSquare,
-  MicOff,
-  Pause,
-  Phone,
-  PhoneIncoming,
-  PhoneOff,
-  Plus,
-  Settings2,
-  UserRound,
-  X,
-} from "lucide-react";
+import { isTauri } from "@tauri-apps/api/core";
+import { MessageSquare, Pause, Phone, PhoneIncoming, PhoneOff, UserRound } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { requestControlSurface, subscribeControlSurface } from "../control-surface";
 import { getThreeRuntime } from "../three-runtime/three-runtime";
 import { captureAvatarMotion } from "./avatar-motion";
 import { type NativeCallAvatarProps, NativeCallStage } from "./call-avatar";
+import {
+  type CallControlsAction,
+  type CallEntrySnapshot,
+  callControlsActionAllowed,
+  useCallControlsWindow,
+} from "./call-controls-window";
+import { CallEntryView } from "./call-entry-view";
 import { configuredRoomEndpoint, persistRoomEndpoint, RoomCall } from "./room-call";
 import "./peer-call-control.css";
 
@@ -110,7 +104,6 @@ export function PeerCallControl({
   const t = (jp: string, en: string) => (ja ? jp : en);
   const name = residentName?.trim() || t("より", "Yori");
   const [callName, setCallName] = useState(name);
-  const nameEdited = useRef(false);
   const [open, setOpen] = useState(false);
   const layout = layoutFor(viewMode);
   const [room, setRoom] = useState<RoomCall | null>(null);
@@ -118,18 +111,13 @@ export function PeerCallControl({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [invitation, setInvitation] = useState("");
-  const [settings, setSettings] = useState(false);
   const [endpoint, setEndpoint] = useState(configuredRoomEndpoint);
-  const [endpointDraft, setEndpointDraft] = useState(endpoint);
-  const [copied, setCopied] = useState(false);
   const owned = useRef<RoomCall | null>(null);
+  const entryOwner = useRef(crypto.randomUUID());
   const mounted = useRef(true);
   const action = useRef(0);
   const operationBusy = useRef(false);
   const trigger = useRef<HTMLButtonElement>(null);
-  const panel = useRef<HTMLElement>(null);
-  const inviteInput = useRef<HTMLInputElement>(null);
   const identity = useRef({ name, avatarUrl });
   const activeCallback = useRef(onActiveChange);
   activeCallback.current = onActiveChange;
@@ -157,16 +145,24 @@ export function PeerCallControl({
     };
   }, []);
   useEffect(() => {
-    if (!nameEdited.current) setCallName(name);
+    setCallName(name);
   }, [name]);
-  useEffect(() => {
-    if (!open) return;
-    const previous = document.activeElement;
-    panel.current?.focus();
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
-    };
-  }, [open]);
+  useEffect(
+    () =>
+      subscribeControlSurface((surface) => {
+        if (surface !== "call") setOpen(false);
+      }),
+    [],
+  );
+  const prefersDetached = isTauri() && (viewMode === "portrait" || viewMode === "companion");
+  function showEntry() {
+    requestControlSurface("call");
+    setOpen(true);
+  }
+  function hideEntry() {
+    setOpen(false);
+    if (!detached) trigger.current?.focus();
+  }
 
   const active = !!room && !room.closed;
   const connected = active && room.connected;
@@ -179,7 +175,7 @@ export function PeerCallControl({
   useIncomingRing(requestId);
   const localName = active ? identity.current.name : callName.trim() || name;
   const localAvatar = active ? identity.current.avatarUrl : avatarUrl;
-  const remoteName = signal?.remoteName || guest?.name || t("相手のよりしろ", "Other resident");
+  const remoteName = signal?.remoteName || guest?.name || t("相手のYorishiro", "Other resident");
   const callError = error || room?.error || signal?.error;
   const status = !active
     ? t("招待するか招待コードで参加してください", "Invite someone or enter an invitation code")
@@ -200,6 +196,7 @@ export function PeerCallControl({
             : t("接続中", "Connecting");
 
   function leave() {
+    entryOwner.current = crypto.randomUUID();
     ++action.current;
     operationBusy.current = false;
     owned.current?.leave();
@@ -235,13 +232,15 @@ export function PeerCallControl({
     }
   }
 
-  function begin(kind: "create" | "join") {
+  function begin(kind: "create" | "join", selectedName: string, invitation = "") {
     void run(kind, async () => {
+      entryOwner.current = crypto.randomUUID();
       owned.current?.leave();
-      identity.current = { name: callName.trim(), avatarUrl };
+      setCallName(selectedName);
+      identity.current = { name: selectedName, avatarUrl };
       const next = new RoomCall({
         endpoint,
-        name: callName.trim(),
+        name: selectedName,
         publicDescription,
         avatarUrl,
         getVoice,
@@ -251,15 +250,13 @@ export function PeerCallControl({
       owned.current = next;
       setRoom(next);
       roomCallback.current?.(next);
-      setCopied(false);
-      setSettings(false);
       if (kind === "create") await next.create();
       else await next.join(invitation.trim());
     });
   }
 
   function answer() {
-    setOpen(true);
+    showEntry();
     void run("accept", () => room?.accept());
   }
 
@@ -272,10 +269,66 @@ export function PeerCallControl({
         },
       ]
     : [];
-  const disclosure = t(
-    "参加すると、名前・アバター・通話の音声を相手と共有し、AIとの会話にはOpenAIとCodexの利用枠を使います。マイクはオフで始まります。オンにしたマイクは通話相手と両方のAIに届きます。ターミナルの内容は自動共有しません。",
-    "Joining shares your name, avatar and call audio with the other participant. AI conversation uses OpenAI and your Codex allowance. Your microphone starts off. Your enabled microphone reaches the participant and both AIs. Terminal content is not automatically shared.",
+  const entryState: CallEntrySnapshot = {
+    ownerKey: entryOwner.current,
+    enabled: open && !connected,
+    language: ja ? "ja" : "en",
+    name: callName,
+    localName,
+    remoteName,
+    active,
+    connected,
+    busy,
+    status,
+    error: callError || "",
+    notice,
+    endpoint,
+    signalState: signal?.state || "idle",
+    role: signal?.role || "",
+    invitation: signal?.invitation || "",
+    guest: guest ? { name: guest.name, requestId: guest.requestId } : null,
+  };
+  function handleEntryAction(intent: CallControlsAction, ownerKey: string = entryOwner.current) {
+    if (ownerKey !== entryOwner.current) return;
+    if (!callControlsActionAllowed(entryState, intent)) return;
+    if (intent.type === "hide") {
+      hideEntry();
+      return;
+    }
+    if (intent.type === "cancel") {
+      leave();
+      return;
+    }
+    if (intent.type === "create" || intent.type === "join") {
+      begin(intent.type, intent.name.trim(), intent.type === "join" ? intent.invitation : "");
+      return;
+    }
+    if (intent.type === "accept") {
+      answer();
+      return;
+    }
+    if (intent.type === "decline") {
+      void run("reject", () => room?.reject());
+      return;
+    }
+    if (intent.type === "save-endpoint") {
+      try {
+        persistRoomEndpoint(intent.endpoint.trim());
+        setEndpoint(configuredRoomEndpoint());
+        setError("");
+        setNotice(t("接続先を保存しました。", "Connection saved."));
+      } catch (value) {
+        setError(value instanceof Error ? value.message : String(value));
+      }
+      refresh((value) => value + 1);
+    }
+  }
+  const entryWindow = useCallControlsWindow(
+    { ...entryState, enabled: prefersDetached && open && !connected },
+    handleEntryAction,
+    () => setOpen(false),
   );
+  const detached = prefersDetached && !entryWindow.unsupported;
   const incomingActions = (
     <div className="peer-call-actions">
       <button
@@ -302,7 +355,7 @@ export function PeerCallControl({
         aria-label={connected ? t("通話を終了", "End call") : t("通話", "Call")}
         aria-haspopup={connected ? undefined : "dialog"}
         aria-expanded={connected ? undefined : open}
-        onClick={() => (connected ? leave() : setOpen((value) => !value))}
+        onClick={() => (connected ? leave() : open ? hideEntry() : showEntry())}
       >
         {connected ? (
           <PhoneOff size={15} aria-hidden="true" />
@@ -311,6 +364,16 @@ export function PeerCallControl({
         )}
         {active && <span className="peer-call-dot" />}
       </button>
+      {entryWindow.error && open && (
+        <span className="peer-call-entry-window-error" role="alert">
+          {entryWindow.unsupported
+            ? t(
+                "独立した通話ウィンドウを使うには、Yorishiroを再起動してください。現在は本体内に表示しています。",
+                "Restart Yorishiro to use the separate call window. Showing controls in the main window for now.",
+              )
+            : entryWindow.error}
+        </span>
+      )}
       {connected &&
         createPortal(
           <aside
@@ -418,7 +481,7 @@ export function PeerCallControl({
             <button
               type="button"
               className="peer-call-dock"
-              onClick={() => setOpen(true)}
+              onClick={showEntry}
               aria-label={t("通話に戻る", "Return to call")}
             >
               <Phone size={15} aria-hidden="true" />
@@ -432,376 +495,22 @@ export function PeerCallControl({
         )}
       {open &&
         !connected &&
+        !detached &&
         createPortal(
-          <div className="peer-call-backdrop">
-            <section
-              ref={panel}
-              tabIndex={-1}
-              className={`peer-call-room layout-${layout}`}
-              role="dialog"
-              aria-modal="true"
-              aria-label={t("通話", "Call")}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setOpen(false);
-                  trigger.current?.focus();
-                }
-                if (event.key === "Tab") {
-                  const elements = Array.from(
-                    panel.current?.querySelectorAll<HTMLElement>(
-                      'button:not(:disabled), input:not(:disabled), [tabindex="0"]',
-                    ) ?? [],
-                  ).sort((a, b) => {
-                    if (a === b) return 0;
-                    return a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
-                  });
-                  const first = elements[0],
-                    last = elements[elements.length - 1];
-                  if (
-                    event.shiftKey &&
-                    (document.activeElement === first || document.activeElement === panel.current)
-                  ) {
-                    event.preventDefault();
-                    last?.focus();
-                  } else if (
-                    !event.shiftKey &&
-                    (document.activeElement === last || document.activeElement === panel.current)
-                  ) {
-                    event.preventDefault();
-                    first?.focus();
-                  }
-                }
-              }}
-            >
-              <header className="peer-call-heading">
-                <span className="peer-call-heading-icon">
-                  <Phone size={18} aria-hidden="true" />
-                </span>
-                <div className="peer-call-heading-copy">
-                  <h2>{t("通話", "Call")}</h2>
-                  <p role="status">
-                    <i className={active ? "is-live" : ""} />
-                    {status}
-                  </p>
-                </div>
-                <div className="peer-call-actions">
-                  {!active && (
-                    <button
-                      type="button"
-                      className="peer-call-icon-button"
-                      aria-label={t("通話の設定", "Call settings")}
-                      aria-pressed={settings}
-                      onClick={() => {
-                        setSettings((v) => !v);
-                        setEndpointDraft(endpoint);
-                      }}
-                    >
-                      <Settings2 size={17} aria-hidden="true" />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="peer-call-icon-button"
-                    aria-label={t("通話画面を閉じる", "Hide call")}
-                    onClick={() => setOpen(false)}
-                  >
-                    <X size={19} aria-hidden="true" />
-                  </button>
-                </div>
-              </header>
-              {callError && (
-                <p className="peer-call-error" role="alert">
-                  {callError}
-                </p>
-              )}
-              {!active ? (
-                <div className="peer-call-entry-scroll">
-                  {settings ? (
-                    <form
-                      className="peer-call-settings"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        try {
-                          persistRoomEndpoint(endpointDraft.trim());
-                          setEndpoint(configuredRoomEndpoint());
-                          setSettings(false);
-                          setError("");
-                        } catch (value) {
-                          setError(value instanceof Error ? value.message : String(value));
-                        }
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className="peer-call-back"
-                        onClick={() => setSettings(false)}
-                      >
-                        <ChevronLeft size={16} aria-hidden="true" />
-                        {t("戻る", "Back")}
-                      </button>
-                      <h3>{t("通話の接続先", "Call connection")}</h3>
-                      <p>
-                        {t(
-                          "両方のPCで同じ通話サーバーを使います。設定はこのPCに保存されます。",
-                          "Both PCs need the same call server. This setting is saved on this PC.",
-                        )}
-                      </p>
-                      <label htmlFor="peer-call-endpoint">{t("通話サーバー", "Call server")}</label>
-                      <input
-                        id="peer-call-endpoint"
-                        value={endpointDraft}
-                        onChange={(event) => setEndpointDraft(event.target.value)}
-                        placeholder="wss://example.com/rooms"
-                        autoComplete="off"
-                        spellCheck={false}
-                        maxLength={2048}
-                      />
-                      <button
-                        type="submit"
-                        className="peer-call-primary"
-                        disabled={!endpointDraft.trim()}
-                      >
-                        {t("保存する", "Save")}
-                      </button>
-                    </form>
-                  ) : (
-                    <div className="peer-call-welcome">
-                      <div className="peer-call-entry-art" aria-hidden="true">
-                        <span>{localName.slice(0, 1)}</span>
-                        <div>
-                          <i />
-                          <i />
-                          <i />
-                        </div>
-                        <span>
-                          <UserRound size={29} />
-                        </span>
-                      </div>
-                      <h3>{t("通話を始める", "Start a call")}</h3>
-                      <p className="peer-call-intro">
-                        {t(
-                          "別のPCのよりしろと接続します。二人のAIにお題を渡して会話を聞いたり、マイクで参加したりできます。",
-                          "Connect to a resident on another PC. Give the two AIs a topic, listen to their conversation, or join using your microphone.",
-                        )}
-                      </p>
-                      <div className="peer-call-entry-identity">
-                        <span className="peer-call-avatar-initial">{localName.slice(0, 1)}</span>
-                        <label className="peer-call-name-field" htmlFor="peer-call-name">
-                          <span>{t("通話での名前", "Name in this call")}</span>
-                          <input
-                            id="peer-call-name"
-                            value={callName}
-                            maxLength={64}
-                            autoComplete="off"
-                            onChange={(event) => {
-                              nameEdited.current = true;
-                              setCallName(event.target.value);
-                            }}
-                          />
-                        </label>
-                        <MicOff size={16} aria-label={t("マイクはオフ", "Microphone off")} />
-                      </div>
-                      {!endpoint && (
-                        <div className="peer-call-setup-notice">
-                          <span>
-                            {t(
-                              "最初に通話の接続先を設定してください。",
-                              "Set up your call connection to get started.",
-                            )}
-                          </span>
-                          <button type="button" onClick={() => setSettings(true)}>
-                            {t("設定する", "Set up")}
-                          </button>
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        className="peer-call-primary peer-call-create"
-                        disabled={!!busy || !endpoint || !callName.trim()}
-                        onClick={() => begin("create")}
-                      >
-                        <Plus size={17} aria-hidden="true" />
-                        {busy === "create"
-                          ? t("部屋を開いています…", "Opening your room…")
-                          : t("部屋を作る", "Create a room")}
-                        <ArrowRight size={17} aria-hidden="true" />
-                      </button>
-                      <div className="peer-call-or">
-                        <span>{t("招待コードで参加", "Join with an invitation code")}</span>
-                      </div>
-                      <form
-                        className="peer-call-join"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          if (invitation.trim() && endpoint && callName.trim() && !busy)
-                            begin("join");
-                        }}
-                      >
-                        <label className="peer-call-sr-only" htmlFor="peer-call-invitation">
-                          {t("招待コード", "Invitation code")}
-                        </label>
-                        <input
-                          id="peer-call-invitation"
-                          value={invitation}
-                          onChange={(event) => setInvitation(event.target.value)}
-                          placeholder={t("招待コードを貼り付ける", "Paste an invitation code")}
-                          autoComplete="off"
-                          spellCheck={false}
-                          maxLength={64}
-                        />
-                        <button
-                          type="submit"
-                          disabled={!!busy || !endpoint || !callName.trim() || !invitation.trim()}
-                        >
-                          {t("参加する", "Join")}
-                          <ArrowRight size={15} aria-hidden="true" />
-                        </button>
-                      </form>
-                      <p className="peer-call-disclosure">{disclosure}</p>
-                      {notice && (
-                        <p className="peer-call-notice" role="status">
-                          {notice}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <div className="peer-call-body">
-                    <main className="peer-call-main">
-                      <div className="peer-call-stage-wrap">
-                        <div className="peer-call-waiting-stage">
-                          <div className="peer-call-resident-tile">
-                            {localAvatar ? (
-                              <NativeCallStage
-                                className="peer-call-single-avatar"
-                                layout="call"
-                                participants={participants}
-                              />
-                            ) : (
-                              <div className="peer-call-placeholder">
-                                <UserRound size={44} />
-                                <strong>{localName}</strong>
-                              </div>
-                            )}
-                          </div>
-                          <div
-                            className={`peer-call-resident-tile peer-call-remote-tile${guest ? " is-ringing" : ""}`}
-                          >
-                            <div className="peer-call-placeholder">
-                              {guest ? <PhoneIncoming size={32} /> : <UserRound size={40} />}
-                              <strong>
-                                {guest?.name ||
-                                  (signal?.role === "guest"
-                                    ? remoteName
-                                    : t("参加待ち", "Waiting for a participant"))}
-                              </strong>
-                              <small>
-                                {guest
-                                  ? t("着信しています", "Incoming call")
-                                  : t(
-                                      "相手の参加を待っています",
-                                      "Waiting for the other participant",
-                                    )}
-                              </small>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="peer-call-waiting-copy">
-                        {guest ? (
-                          <>
-                            <h3>{t(`${guest.name}から着信です`, `${guest.name} is calling`)}</h3>
-                            {incomingActions}
-                          </>
-                        ) : signal?.state === "hosting" ? (
-                          <>
-                            <h3>{t("部屋を作成しました", "Your room is open")}</h3>
-                            <p>
-                              {t(
-                                "招待コードを相手に送ってください。",
-                                "Send the invitation code to the other participant.",
-                              )}
-                            </p>
-                            <div className="peer-call-invite-copy">
-                              <input
-                                ref={inviteInput}
-                                readOnly
-                                value={signal.invitation}
-                                aria-label={t("部屋の招待コード", "Your room invitation")}
-                              />
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  void run("copy", async () => {
-                                    try {
-                                      await navigator.clipboard.writeText(signal.invitation);
-                                      setCopied(true);
-                                    } catch {
-                                      inviteInput.current?.focus();
-                                      inviteInput.current?.select();
-                                      setNotice(
-                                        t(
-                                          "招待コードを選択しました。コピーして相手に渡してください。",
-                                          "Invitation selected. Copy it and send it to your guest.",
-                                        ),
-                                      );
-                                    }
-                                  })
-                                }
-                              >
-                                {copied ? (
-                                  <Check size={16} aria-hidden="true" />
-                                ) : (
-                                  <Copy size={16} aria-hidden="true" />
-                                )}
-                                {copied
-                                  ? t("コピーしました", "Copied")
-                                  : t("招待をコピー", "Copy invitation")}
-                              </button>
-                            </div>
-                            <small>
-                              {t(
-                                "招待は5分間有効です。通話に出るまで、音声は共有されません。",
-                                "The invitation lasts five minutes. Audio is shared only after you answer.",
-                              )}
-                            </small>
-                            {notice && <p role="status">{notice}</p>}
-                          </>
-                        ) : (
-                          <>
-                            <h3>
-                              {signal?.state === "requesting"
-                                ? t(`${remoteName}を呼び出しています…`, `Calling ${remoteName}…`)
-                                : t("接続中", "Connecting")}
-                            </h3>
-                            <p>
-                              {signal?.state === "requesting"
-                                ? t(
-                                    "相手が通話に出るのを待っています。",
-                                    "Waiting for the host to answer.",
-                                  )
-                                : t("このままお待ちください。", "Please stay here for a moment.")}
-                            </p>
-                          </>
-                        )}
-                      </div>
-                    </main>
-                  </div>
-                  <footer className="peer-call-footer">
-                    <p>{status}</p>
-                    <button type="button" className="peer-call-hangup" onClick={leave}>
-                      <PhoneOff size={18} />
-                      {t("キャンセル", "Cancel")}
-                    </button>
-                  </footer>
-                </>
-              )}
-            </section>
-          </div>,
+          <CallEntryView
+            state={entryState}
+            onAction={handleEntryAction}
+            onHide={hideEntry}
+            localAvatarPreview={
+              localAvatar ? (
+                <NativeCallStage
+                  className="peer-call-single-avatar"
+                  layout="call"
+                  participants={participants}
+                />
+              ) : undefined
+            }
+          />,
           document.body,
         )}
     </>

@@ -6,7 +6,8 @@
     "auxiliary-screen-sharing-controls",
     "auxiliary-camera-preview",
     "auxiliary-screen-preview",
-    "auxiliary-call-resident"
+    "auxiliary-call-resident",
+    "auxiliary-call-controls"
   ],
   "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

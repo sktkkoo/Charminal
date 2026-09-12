@@ -12,6 +12,11 @@ export const AUXILIARY_ACTION_EVENT = "auxiliary-window-action";
 export function resolveWindowView(label: string, search: string) {
   if (label === "main") return "main";
   if (
+    label === "auxiliary-call-controls" &&
+    new URLSearchParams(search).get("auxiliary") === "call-controls"
+  )
+    return "call-controls";
+  if (
     label === "auxiliary-call-resident" &&
     new URLSearchParams(search).get("auxiliary") === "call-resident"
   )

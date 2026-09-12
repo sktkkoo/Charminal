@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requestControlSurface, subscribeControlSurface } from "./runtime/control-surface";
 import { ScreenSharingControl, type ScreenSharingControlProps } from "./screen-sharing-control";
 
 let panelHeight = 380;
@@ -49,6 +50,23 @@ function props(): ScreenSharingControlProps {
   };
 }
 describe("screen sharing control", () => {
+  it("switches away from sharing settings without stopping an active capture", () => {
+    const p = { ...props(), active: true, language: "en" };
+    const requested = vi.fn();
+    const unsubscribe = subscribeControlSurface(requested);
+    try {
+      render(<ScreenSharingControl {...p} />);
+      fireEvent.click(screen.getByRole("button", { name: "Screen sharing on" }));
+      expect(requested).toHaveBeenLastCalledWith("sharing");
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      act(() => requestControlSurface("call"));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(p.onStop).not.toHaveBeenCalled();
+      expect(p.onStart).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  });
   it.each([
     "screen",
     "camera",
