@@ -4232,7 +4232,7 @@ function App() {
   const screenSharingAvailable = codexVoiceAvailable && screenThreadId !== null;
   const screenSharing = useScreenSharing({
     available: screenSharingAvailable,
-    screenAvailable: /Mac/i.test(navigator.platform) && screenPointerSettings.ready,
+    screenAvailable: /Mac/i.test(navigator.platform),
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
     share: shareScreenObservation,
     onTiming: (timing) => {
@@ -4318,7 +4318,8 @@ function App() {
     error:
       screenSharing.error ??
       (screenSharing.sourceKind === "screen"
-        ? (screenPreviewWindow.error ?? screenPointerSettings.error)
+        ? (screenPreviewWindow.error ??
+          (screenSharing.screenSourceKind === "display" ? screenPointerSettings.error : undefined))
         : undefined),
     available: screenSharing.available,
     ownerKey: `${tabState.mainSessionId}:${screenThreadId ?? ""}`,
@@ -5951,10 +5952,17 @@ function App() {
               sourceId={screenSharing.sourceId}
               sourceKind={screenSharing.sourceKind}
               onSourceKindChange={screenSharing.setSourceKind}
+              screenSourceKind={screenSharing.screenSourceKind}
+              screenSelectionSupported={screenSharing.screenSelectionSupported}
+              region={screenSharing.region}
+              onScreenSourceKindChange={screenSharing.setScreenSourceKind}
               error={
                 screenSharing.error ??
                 (screenSharing.sourceKind === "screen"
-                  ? (screenPreviewWindow.error ?? screenPointerSettings.error)
+                  ? (screenPreviewWindow.error ??
+                    (screenSharing.screenSourceKind === "display"
+                      ? screenPointerSettings.error
+                      : undefined))
                   : undefined) ??
                 auxiliaryScreenSharing.error
               }

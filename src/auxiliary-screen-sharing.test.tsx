@@ -37,6 +37,7 @@ beforeEach(() => {
         { id: 2, name: "Display 2" },
       ],
       sourceId: 1,
+      screenSourceKind: "display",
       intervalSeconds: 30,
       hasError: false,
       lastObservedAt: null,
@@ -54,6 +55,87 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("independent screen-sharing controls", () => {
+  it("disables the action while region selection is pending", async () => {
+    state = { ...state, snapshot: { ...state.snapshot, screenSourceKind: "region", busy: true } };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    render(<AuxiliaryScreenSharing />);
+    const selecting = await screen.findByRole("button", { name: "Selecting region…" });
+    expect((selecting as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(selecting);
+    fireEvent.click(selecting);
+    expect(requestAuxiliaryAction).not.toHaveBeenCalled();
+  });
+
+  it("starts the first region drawing from Start without requiring a published rectangle", async () => {
+    state = {
+      ...state,
+      snapshot: {
+        ...state.snapshot,
+        screenSourceKind: "region",
+        region: null,
+        pointersReady: false,
+        sources: [],
+        sourceId: null,
+      },
+    };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    render(<AuxiliaryScreenSharing />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start sharing" }));
+    await waitFor(() => expect(requestAuxiliaryAction).toHaveBeenCalledWith(1, { type: "start" }));
+    expect(screen.queryByRole("button", { name: "Select region" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Agent pointing" })).toBeNull();
+  });
+
+  it("routes screen source type changes through the owner", async () => {
+    render(<AuxiliaryScreenSharing />);
+    fireEvent.click(await screen.findByRole("tab", { name: "Window" }));
+    await waitFor(() =>
+      expect(requestAuxiliaryAction).toHaveBeenCalledWith(1, {
+        type: "select-screen-source-kind",
+        screenSourceKind: "window",
+      }),
+    );
+  });
+
+  it("locks source modes while the active region frame stays adjustable on the desktop", async () => {
+    state = { ...state, snapshot: { ...state.snapshot, screenSourceKind: "region", active: true } };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    render(<AuxiliaryScreenSharing />);
+    await screen.findByRole("tab", { name: "Region" });
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Select region" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reselect region" })).toBeNull();
+    for (const tab of screen.getAllByRole("tab"))
+      expect((tab as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps legacy display controls usable without offering unsupported source tabs", async () => {
+    state = { ...state, snapshot: { ...state.snapshot, screenSourceKind: undefined } };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    render(<AuxiliaryScreenSharing />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start sharing" }));
+    expect(screen.queryByRole("tablist")).toBeNull();
+    await waitFor(() => expect(requestAuxiliaryAction).toHaveBeenCalledWith(1, { type: "start" }));
+  });
+
+  it("returns keyboard focus to the source chooser after Back", async () => {
+    state = { ...state, snapshot: { ...state.snapshot, sourceKind: "screen" } };
+    vi.mocked(readAuxiliarySnapshot).mockResolvedValue(state);
+    render(<AuxiliaryScreenSharing />);
+    fireEvent.click(await screen.findByRole("button", { name: "Share screen" }));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Start sharing" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    const back = screen.getByRole("button", { name: "Back" });
+    back.focus();
+    fireEvent.click(back);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Share screen" })),
+    );
+  });
+
   it("requests camera preview visibility while sharing remains active", async () => {
     state = {
       ...state,
@@ -121,6 +203,12 @@ describe("independent screen-sharing controls", () => {
       }),
     );
     expect(screen.getByLabelText("Camera")).toBeTruthy();
+    const back = screen.getByRole("button", { name: "Back" });
+    expect(back.textContent).toBe("");
+    expect(back.querySelector("svg.lucide-undo-2")).not.toBeNull();
+    expect(back.getAttribute("title")).toBe("Back");
+    expect(back.nextElementSibling).toBe(screen.getByRole("heading", { name: "Camera sharing" }));
+    expect(back.parentElement?.classList.contains("screen-sharing-heading")).toBe(true);
     expect(screen.queryByRole("switch", { name: "Agent pointing" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
     await waitFor(() => expect(requestAuxiliaryAction).toHaveBeenCalledWith(2, { type: "start" }));
@@ -204,8 +292,8 @@ describe("independent screen-sharing controls", () => {
     const interval = (await screen.findByRole("slider", {
       name: "Update interval",
     })) as HTMLInputElement;
-    expect(interval.min).toBe("20");
-    expect(interval.max).toBe("60");
+    expect(interval.min).toBe("10");
+    expect(interval.max).toBe("300");
     expect(interval.value).toBe("30");
     interval.focus();
     state = {
@@ -238,7 +326,7 @@ describe("independent screen-sharing controls", () => {
       }),
     );
     await act(async () => {});
-    fireEvent.click(screen.getByRole("button", { name: "Refresh displays" }));
+    fireEvent.pointerDown(screen.getByRole("combobox"));
     await waitFor(() =>
       expect(requestAuxiliaryAction).toHaveBeenLastCalledWith(1, { type: "refresh-sources" }),
     );

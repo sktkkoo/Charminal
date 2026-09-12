@@ -49,6 +49,127 @@ function props(): ScreenSharingControlProps {
   };
 }
 describe("screen sharing control", () => {
+  it("starts region selection from Start without a separate picker action", () => {
+    const p = {
+      ...props(),
+      language: "en",
+      screenSourceKind: "region" as const,
+      pointersReady: false,
+      sources: [],
+      sourceId: null,
+      onScreenSourceKindChange: vi.fn(),
+    };
+    const view = render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Screen sharing" }));
+    expect(screen.getByRole("tablist", { name: "Screen source type" })).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Start sharing" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(screen.queryByRole("button", { name: "Select region" })).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Agent pointing" })).toBeNull();
+    view.rerender(
+      <ScreenSharingControl
+        {...p}
+        region={{ x: 10, y: 10, width: 300, height: 200, displayWidth: 1920, displayHeight: 1080 }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
+    expect(p.onStart).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("tab", { name: "Window" }));
+    expect(p.onScreenSourceKindChange).toHaveBeenCalledWith("window");
+  });
+
+  it("navigates source tabs with arrow keys and Home/End", () => {
+    const p = { ...props(), language: "en", onScreenSourceKindChange: vi.fn() };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Screen sharing" }));
+    const display = screen.getByRole("tab", { name: "Display" });
+    expect(display.getAttribute("aria-selected")).toBe("true");
+    fireEvent.keyDown(display, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Window" }));
+    expect(display.tabIndex).toBe(-1);
+    expect(display.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Window" }).tabIndex).toBe(0);
+    expect(screen.getByRole("tab", { name: "Window" }).getAttribute("aria-selected")).toBe("false");
+    expect(p.onScreenSourceKindChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Window" }), { key: "End" });
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Region" }));
+    expect(p.onScreenSourceKindChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Region" }), { key: "Home" });
+    expect(document.activeElement).toBe(display);
+    expect(p.onScreenSourceKindChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("tabpanel", { name: "Display" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Window" }));
+    expect(p.onScreenSourceKindChange).toHaveBeenCalledExactlyOnceWith("window");
+  });
+
+  it("locks source modes while the active region is adjusted on the desktop", () => {
+    const p = {
+      ...props(),
+      language: "en",
+      active: true,
+      screenSourceKind: "region" as const,
+      onScreenSourceKindChange: vi.fn(),
+    };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Screen sharing on" }));
+    expect(screen.queryByRole("button", { name: "Select region" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reselect region" })).toBeNull();
+    for (const tab of screen.getAllByRole("tab"))
+      expect((tab as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Close sharing settings" }).getAttribute("title"),
+    ).toBe("Close sharing settings");
+  });
+
+  it("disables restricted source tabs on the old native backend while full display can start", () => {
+    const p = {
+      ...props(),
+      language: "en",
+      screenSelectionSupported: false,
+      onScreenSourceKindChange: vi.fn(),
+    };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Screen sharing" }));
+    expect((screen.getByRole("tab", { name: "Window" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("tab", { name: "Region" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("tab", { name: "Window" }).getAttribute("title")).toBe(
+      "Not available in the running app yet",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
+    expect(p.onStart).toHaveBeenCalledOnce();
+  });
+
+  it("returns keyboard focus to the source chooser after Back", async () => {
+    const p = { ...props(), language: "en", onSourceKindChange: vi.fn() };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sharing" }));
+    fireEvent.click(screen.getByRole("button", { name: "Share screen" }));
+    const back = screen.getByRole("button", { name: "Back" });
+    back.focus();
+    fireEvent.click(back);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Share screen" })),
+    );
+  });
+
+  it("allows window sharing without pointer setup", () => {
+    const p = {
+      ...props(),
+      language: "en",
+      screenSourceKind: "window" as const,
+      pointersReady: false,
+      onScreenSourceKindChange: vi.fn(),
+    };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "Screen sharing" }));
+    expect(screen.getByRole("combobox", { name: "Window" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start sharing" }));
+    expect(p.onStart).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("switch", { name: "Agent pointing" })).toBeNull();
+  });
+
   it("shows camera preview by default and allows hiding it while capture continues", () => {
     const p = {
       ...props(),
@@ -76,6 +197,12 @@ describe("screen sharing control", () => {
     fireEvent.click(screen.getByRole("button", { name: "共有" }));
     expect(screen.getByRole("button", { name: "画面を共有" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "カメラを共有" }));
+    const back = screen.getByRole("button", { name: "戻る" });
+    expect(back.textContent).toBe("");
+    expect(back.querySelector("svg.lucide-undo-2")).not.toBeNull();
+    expect(back.getAttribute("title")).toBe("戻る");
+    expect(back.nextElementSibling?.tagName).toBe("H2");
+    expect(back.parentElement?.classList.contains("screen-sharing-heading")).toBe(true);
     expect(p.onSourceKindChange).toHaveBeenCalledWith("camera");
     expect(p.onStart).not.toHaveBeenCalled();
     rerender(
@@ -104,15 +231,15 @@ describe("screen sharing control", () => {
     expect(p.onRetryPointers).toHaveBeenCalledOnce();
   });
 
-  it("shows the token warning before explicit start and supports a twenty-second interval", () => {
+  it("shows token guidance and supports the extended interval range", () => {
     const p = props();
     render(<ScreenSharingControl {...p} />);
     fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
     expect(screen.getByText("間隔が短いほどトークン消費が増えます。")).toBeTruthy();
     expect(p.onStart).not.toHaveBeenCalled();
     const interval = screen.getByRole("slider") as HTMLInputElement;
-    expect(interval.min).toBe("20");
-    expect(interval.max).toBe("60");
+    expect(interval.min).toBe("10");
+    expect(interval.max).toBe("300");
     expect(interval.value).toBe("30");
     fireEvent.change(interval, { target: { value: "20" } });
     expect(p.onIntervalChange).toHaveBeenCalledWith(20);
@@ -121,6 +248,18 @@ describe("screen sharing control", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+  it("does not turn repeated region Start clicks into cancellation", () => {
+    const p = { ...props(), busy: true, screenSourceKind: "region" as const };
+    render(<ScreenSharingControl {...p} />);
+    fireEvent.click(screen.getByRole("button", { name: "画面共有" }));
+    const selecting = screen.getByRole("button", { name: "範囲を選択中…" });
+    expect((selecting as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(selecting);
+    fireEvent.click(selecting);
+    expect(p.onStop).not.toHaveBeenCalled();
+    expect(p.onStart).not.toHaveBeenCalled();
+  });
+
   it("allows cancelling pending permission in a fitting inline panel", () => {
     const p = { ...props(), busy: true };
     render(<ScreenSharingControl {...p} />);

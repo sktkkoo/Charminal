@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   AUXILIARY_CONTROLS_LABEL,
+  createAuxiliarySnapshotPublisher,
   createScreenSharingSnapshot,
   latestAuxiliarySnapshot,
   type RoutedAuxiliaryAction,
@@ -51,6 +52,70 @@ function transport() {
 }
 
 describe("auxiliary window ownership", () => {
+  it("publishes restricted source state and allows Start to draw the first region", async () => {
+    const port = transport();
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    const current = {
+      ...model(),
+      screenSourceKind: "region" as const,
+      region: null,
+      pointersReady: false,
+      setScreenSourceKind: vi.fn(),
+      selectRegion: vi.fn(async () => {}),
+    };
+    host.update(current);
+    await host.open();
+    const snapshot = port.publish.mock.calls[0][0];
+    const request = (action: RoutedAuxiliaryAction["action"]) => ({
+      revision: snapshot.revision,
+      pointerRevision: snapshot.pointerRevision,
+      action,
+    });
+    expect(snapshot.screenSourceKind).toBe("region");
+    expect(await host.handleAction(request({ type: "start" }))).toBe(true);
+    expect(await host.handleAction(request({ type: "select-region" }))).toBe(true);
+    expect(current.selectRegion).toHaveBeenCalledOnce();
+    expect(
+      await host.handleAction(
+        request({ type: "select-screen-source-kind", screenSourceKind: "window" }),
+      ),
+    ).toBe(true);
+    expect(current.setScreenSourceKind).toHaveBeenCalledWith("window");
+    host.dispose();
+  });
+
+  it("rejects mode and camera switches while a region is active, even from a stale auxiliary UI", async () => {
+    const port = transport();
+    const host = new ScreenSharingAuxiliaryHost(vi.fn(), port);
+    const current = {
+      ...model(),
+      sourceKind: "screen" as const,
+      screenSourceKind: "region" as const,
+      active: true,
+      setSourceKind: vi.fn(),
+      setScreenSourceKind: vi.fn(),
+    };
+    host.update(current);
+    await host.open();
+    const snapshot = port.publish.mock.calls[0][0];
+    for (const action of [
+      { type: "select-source-kind", sourceKind: "camera" },
+      { type: "select-screen-source-kind", screenSourceKind: "window" },
+      { type: "select-screen-source-kind", screenSourceKind: "display" },
+    ] as const)
+      expect(
+        await host.handleAction({
+          revision: snapshot.revision,
+          pointerRevision: snapshot.pointerRevision,
+          action,
+        }),
+      ).toBe(false);
+    expect(current.stop).not.toHaveBeenCalled();
+    expect(current.setSourceKind).not.toHaveBeenCalled();
+    expect(current.setScreenSourceKind).not.toHaveBeenCalled();
+    host.dispose();
+  });
+
   it.each([
     "camera",
     "screen",
@@ -420,14 +485,14 @@ describe("auxiliary window ownership", () => {
     expect(await action({ type: "select-source", sourceId: 99 })).toBe(false);
     expect(await action({ type: "select-source", sourceId: 2 })).toBe(true);
     expect(current.setSourceId).toHaveBeenCalledWith(2);
-    for (const intervalSeconds of [5, 19, 20.5, 61]) {
+    for (const intervalSeconds of [5, 9, 20.5, 301]) {
       expect(await action({ type: "set-interval", intervalSeconds })).toBe(false);
     }
     expect(current.setIntervalSeconds).not.toHaveBeenCalled();
-    expect(await action({ type: "set-interval", intervalSeconds: 20 })).toBe(true);
-    expect(current.setIntervalSeconds).toHaveBeenLastCalledWith(20);
-    expect(await action({ type: "set-interval", intervalSeconds: 60 })).toBe(true);
-    expect(current.setIntervalSeconds).toHaveBeenLastCalledWith(60);
+    expect(await action({ type: "set-interval", intervalSeconds: 10 })).toBe(true);
+    expect(current.setIntervalSeconds).toHaveBeenLastCalledWith(10);
+    expect(await action({ type: "set-interval", intervalSeconds: 300 })).toBe(true);
+    expect(current.setIntervalSeconds).toHaveBeenLastCalledWith(300);
     expect(await action({ type: "clear-annotations" })).toBe(true);
     expect(current.clearAnnotations).toHaveBeenCalledOnce();
     expect(current.stop).not.toHaveBeenCalled();
@@ -524,5 +589,52 @@ describe("auxiliary window ownership", () => {
     const stale = { version: 2, snapshot: { ...current.snapshot, active: true } };
     expect(latestAuxiliarySnapshot(current, stale)).toBe(current);
     expect(latestAuxiliarySnapshot(null, current)).toBe(current);
+  });
+});
+
+describe("native snapshot compatibility", () => {
+  it.each([
+    "camera",
+    "screen",
+  ] as const)("keeps %s sharing usable with the previous native schema", async (sourceKind) => {
+    const publish = vi.fn(async (_snapshot: ScreenSharingSnapshot) => {});
+    publish.mockRejectedValueOnce(
+      "invalid args for command auxiliary_window_publish: unknown field `region`",
+    );
+    const send = createAuxiliarySnapshotPublisher(publish);
+    const snapshot = createScreenSharingSnapshot({ ...model(), sourceKind }, "revision");
+    await send(snapshot);
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(publish.mock.calls[1][0]).not.toHaveProperty("region");
+    expect(publish.mock.calls[1][0]).not.toHaveProperty("screenSourceKind");
+    expect(publish.mock.calls[1][0]).toMatchObject({ sourceKind, available: true, sourceId: 1 });
+    await send(snapshot);
+    expect(publish).toHaveBeenCalledTimes(3);
+    expect(publish.mock.calls[2][0]).not.toHaveProperty("region");
+  });
+  it("does not disguise restricted sources as full displays on older native versions", async () => {
+    const publish = vi.fn(async (_snapshot: ScreenSharingSnapshot) => {});
+    publish.mockRejectedValueOnce("unknown field `screenSourceKind`");
+    const send = createAuxiliarySnapshotPublisher(publish);
+    await send(createScreenSharingSnapshot({ ...model(), screenSourceKind: "region" }, "revision"));
+    expect(publish.mock.calls[1][0]).toMatchObject({
+      available: false,
+      sources: [],
+      sourceId: null,
+    });
+    expect(publish.mock.calls[1][0]).not.toHaveProperty("screenSourceKind");
+  });
+  it("preserves restricted state with current native versions and propagates unrelated errors", async () => {
+    const publish = vi.fn(async (_snapshot: ScreenSharingSnapshot) => {});
+    const send = createAuxiliarySnapshotPublisher(publish);
+    const snapshot = createScreenSharingSnapshot(
+      { ...model(), screenSourceKind: "window" },
+      "revision",
+    );
+    await send(snapshot);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(snapshot);
+    publish.mockRejectedValueOnce("window closed");
+    await expect(send(snapshot)).rejects.toBe("window closed");
+    expect(publish).toHaveBeenCalledTimes(2);
   });
 });

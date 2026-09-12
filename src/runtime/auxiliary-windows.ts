@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { ScreenCaptureRegion, ScreenSourceKind } from "../bindings/tauri-commands";
 import { getMediaPermissionKind, type MediaPermissionKind } from "./media-permissions";
+import { MAX_SHARING_INTERVAL_SECONDS, MIN_SHARING_INTERVAL_SECONDS } from "./sharing-interval";
 
 export const AUXILIARY_CONTROLS_LABEL = "auxiliary-screen-sharing-controls";
 export const AUXILIARY_STATE_EVENT = "auxiliary-window-state";
@@ -41,6 +43,8 @@ export interface ScreenSharingSnapshot {
   readonly pointersReady: boolean;
   readonly sources: readonly { readonly id: number; readonly name: string }[];
   readonly sourceKind?: "screen" | "camera";
+  readonly screenSourceKind?: ScreenSourceKind;
+  readonly region?: ScreenCaptureRegion | null;
   readonly sourceId: number | null;
   readonly intervalSeconds: number;
   readonly hasError: boolean;
@@ -57,6 +61,8 @@ export type ScreenSharingAuxiliaryAction =
   | { readonly type: "set-preview-visible"; readonly visible: boolean }
   | { readonly type: "start" | "stop" | "refresh-sources" | "clear-annotations" | "retry-pointers" }
   | { readonly type: "select-source-kind"; readonly sourceKind: "screen" | "camera" }
+  | { readonly type: "select-screen-source-kind"; readonly screenSourceKind: ScreenSourceKind }
+  | { readonly type: "select-region" }
   | { readonly type: "select-source"; readonly sourceId: number }
   | { readonly type: "set-pointers-enabled"; readonly enabled: boolean }
   | { readonly type: "set-interval"; readonly intervalSeconds: number };
@@ -82,6 +88,8 @@ export interface ScreenSharingAuxiliaryModel {
   readonly pointersReady: boolean;
   readonly sources: readonly { readonly id: number; readonly name: string }[];
   readonly sourceKind?: "screen" | "camera";
+  readonly screenSourceKind?: ScreenSourceKind;
+  readonly region?: ScreenCaptureRegion | null;
   readonly sourceId: number | null;
   readonly intervalSeconds: number;
   readonly error?: string;
@@ -94,6 +102,8 @@ export interface ScreenSharingAuxiliaryModel {
   readonly retryPointers: () => Promise<void>;
   readonly setPointersEnabled: (enabled: boolean) => Promise<void>;
   readonly setSourceKind?: (kind: "screen" | "camera") => void;
+  readonly setScreenSourceKind?: (kind: ScreenSourceKind) => void;
+  readonly selectRegion?: () => Promise<void>;
   readonly setSourceId: (id: number) => void;
   readonly setIntervalSeconds: (seconds: number) => void;
 }
@@ -116,6 +126,8 @@ export function createScreenSharingSnapshot(
     previewVisible: model.previewVisible ?? true,
     sources: model.sources.slice(0, 64).map(({ id, name }) => ({ id, name: name.slice(0, 200) })),
     sourceKind: model.sourceKind ?? "screen",
+    screenSourceKind: model.screenSourceKind ?? "display",
+    region: model.region ?? null,
     sourceId: model.sourceId,
     intervalSeconds: model.intervalSeconds,
     hasError: Boolean(model.error),
@@ -131,12 +143,38 @@ interface HostTransport {
   revision: () => string;
 }
 
+/** A hot-reloaded UI can run against an older native snapshot schema. */
+export function createAuxiliarySnapshotPublisher(
+  publish: (snapshot: ScreenSharingSnapshot) => Promise<void>,
+): (snapshot: ScreenSharingSnapshot) => Promise<void> {
+  let legacySchema = false;
+  const legacySnapshot = (snapshot: ScreenSharingSnapshot): ScreenSharingSnapshot => {
+    const { screenSourceKind, region: _region, ...legacy } = snapshot;
+    // A legacy auxiliary view must never offer a restricted selection as a display.
+    return snapshot.sourceKind !== "camera" && screenSourceKind && screenSourceKind !== "display"
+      ? { ...legacy, available: false, sources: [], sourceId: null }
+      : legacy;
+  };
+  return async (snapshot) => {
+    if (legacySchema) return publish(legacySnapshot(snapshot));
+    try {
+      await publish(snapshot);
+    } catch (error) {
+      if (!/unknown field [`'"](?:region|screenSourceKind)[`'"]/.test(String(error))) throw error;
+      legacySchema = true;
+      await publish(legacySnapshot(snapshot));
+    }
+  };
+}
+
 const nativeHostTransport: HostTransport = {
   listenAction: (callback) =>
     getCurrentWindow().listen<RoutedAuxiliaryAction>(AUXILIARY_ACTION_EVENT, (event) =>
       callback(event.payload),
     ),
-  publish: (snapshot) => invoke("auxiliary_window_publish", { snapshot }),
+  publish: createAuxiliarySnapshotPublisher((snapshot) =>
+    invoke("auxiliary_window_publish", { snapshot }),
+  ),
   open: () => invoke("auxiliary_window_open", { kind: "screen-sharing-controls" }),
   revision: () => crypto.randomUUID(),
 };
@@ -261,10 +299,13 @@ export class ScreenSharingAuxiliaryHost {
       case "start":
         if (
           !model.available ||
-          (model.sourceKind !== "camera" && !model.pointersReady) ||
+          (model.sourceKind !== "camera" &&
+            (model.screenSourceKind ?? "display") === "display" &&
+            !model.pointersReady) ||
           model.active ||
           model.busy ||
-          !model.sources.some((source) => source.id === model.sourceId)
+          ((model.sourceKind === "camera" || model.screenSourceKind !== "region") &&
+            !model.sources.some((source) => source.id === model.sourceId))
         )
           return false;
         await model.start();
@@ -277,27 +318,54 @@ export class ScreenSharingAuxiliaryHost {
         await model.refreshSources();
         break;
       case "clear-annotations":
-        if (model.sourceKind === "camera") return false;
+        if (model.sourceKind === "camera" || (model.screenSourceKind ?? "display") !== "display")
+          return false;
         await model.clearAnnotations();
         break;
       case "retry-pointers":
-        if (model.sourceKind === "camera") return false;
+        if (model.sourceKind === "camera" || (model.screenSourceKind ?? "display") !== "display")
+          return false;
         if (model.pointersReady || !model.error) return false;
         await model.retryPointers();
         break;
       case "set-pointers-enabled":
-        if (model.sourceKind === "camera") return false;
+        if (model.sourceKind === "camera" || (model.screenSourceKind ?? "display") !== "display")
+          return false;
         if (!model.pointersReady || typeof action.enabled !== "boolean") return false;
         await model.setPointersEnabled(action.enabled);
         break;
       case "select-source-kind":
         if (
+          model.active ||
+          model.busy ||
           !model.setSourceKind ||
           (action.sourceKind !== "screen" && action.sourceKind !== "camera")
         )
           return false;
         model.stop();
         model.setSourceKind(action.sourceKind);
+        break;
+      case "select-screen-source-kind":
+        if (
+          model.active ||
+          model.busy ||
+          !model.setScreenSourceKind ||
+          model.sourceKind === "camera" ||
+          !["display", "window", "region"].includes(action.screenSourceKind)
+        )
+          return false;
+        model.setScreenSourceKind(action.screenSourceKind);
+        break;
+      case "select-region":
+        if (
+          model.active ||
+          !model.selectRegion ||
+          model.sourceKind === "camera" ||
+          model.screenSourceKind !== "region" ||
+          model.busy
+        )
+          return false;
+        await model.selectRegion();
         break;
       case "select-source":
         if (
@@ -311,8 +379,8 @@ export class ScreenSharingAuxiliaryHost {
       case "set-interval":
         if (
           !Number.isInteger(action.intervalSeconds) ||
-          action.intervalSeconds < 20 ||
-          action.intervalSeconds > 60
+          action.intervalSeconds < MIN_SHARING_INTERVAL_SECONDS ||
+          action.intervalSeconds > MAX_SHARING_INTERVAL_SECONDS
         )
           return false;
         model.setIntervalSeconds(action.intervalSeconds);

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { listen } from "@tauri-apps/api/event";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -8,7 +9,10 @@ import {
   screenAnnotationEnd,
   screenCaptureFrame,
   screenCaptureListSources,
+  screenCaptureRegionFrameClose,
+  screenCaptureRegionFrameOpen,
   screenCaptureRequestPermission,
+  screenCaptureSelectRegion,
 } from "../../bindings/tauri-commands";
 import { listCameraSources, openCamera } from "./camera-capture";
 import type { ScreenObservationFrame } from "./screen-observation";
@@ -34,8 +38,13 @@ vi.mock("../../bindings/tauri-commands", () => ({
   screenAnnotationEnd: vi.fn(),
   screenCaptureFrame: vi.fn(),
   screenCaptureListSources: vi.fn(),
+  screenCaptureRegionFrameClose: vi.fn(),
+  screenCaptureRegionFrameOpen: vi.fn(),
   screenCaptureRequestPermission: vi.fn(),
+  screenCaptureSelectRegion: vi.fn(),
 }));
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 vi.mock("./camera-capture", () => ({ openCamera: vi.fn(), listCameraSources: vi.fn() }));
 
@@ -66,8 +75,11 @@ describe("useScreenSharing", () => {
     vi.resetModules();
     ({ useScreenSharing } = await import("./use-screen-sharing"));
     vi.mocked(screenCaptureListSources).mockResolvedValue([
-      { id: 1, name: "Display 1", width: 1920, height: 1080 },
+      { id: 1, kind: "display", name: "Display 1", width: 1920, height: 1080 },
     ]);
+    vi.mocked(listen).mockResolvedValue(vi.fn());
+    vi.mocked(screenCaptureRegionFrameOpen).mockResolvedValue(undefined);
+    vi.mocked(screenCaptureRegionFrameClose).mockResolvedValue(undefined);
     vi.mocked(screenCaptureRequestPermission).mockResolvedValue(true);
     vi.mocked(screenAnnotationDocument).mockResolvedValue("document-1");
     vi.mocked(screenAnnotationBegin).mockResolvedValue(undefined);
@@ -91,6 +103,612 @@ describe("useScreenSharing", () => {
     );
     return { ...hook, share };
   }
+
+  const region = { x: 10, y: 20, width: 400, height: 300, displayWidth: 1920, displayHeight: 1080 };
+
+  function emitRegion(name: string, payload: unknown) {
+    const callback = [...vi.mocked(listen).mock.calls]
+      .reverse()
+      .find(([event]) => event === name)?.[1];
+    if (!callback) throw new Error(`Missing ${name} listener`);
+    callback({ event: name, id: 1, payload });
+  }
+
+  async function startRegion() {
+    const hook = setup();
+    await act(async () => hook.result.current.refreshSources());
+    await act(async () => hook.result.current.setScreenSourceKind("region"));
+    vi.mocked(screenCaptureSelectRegion).mockResolvedValue({ sourceId: 1, region });
+    vi.mocked(screenCaptureFrame).mockResolvedValue({ ...frame, selectionKind: "region" });
+    await act(async () => hook.result.current.start());
+    const frameOwner = hook.result.current.screenShareKey;
+    if (!frameOwner) throw new Error("Region did not start");
+    return { ...hook, frameOwner };
+  }
+
+  it("serializes region pickers across rapid start, stop and restart", async () => {
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    vi.mocked(screenCaptureFrame).mockResolvedValue({ ...frame, selectionKind: "region" });
+    const first = deferred<{ sourceId: number; region: typeof region } | null>();
+    const second = deferred<{ sourceId: number; region: typeof region } | null>();
+    vi.mocked(screenCaptureSelectRegion)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    let starting!: Promise<void>;
+    let restarting!: Promise<void>;
+    await act(async () => {
+      starting = result.current.start();
+      void result.current.start();
+      void result.current.start();
+    });
+    expect(screenCaptureSelectRegion).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      result.current.stop();
+      restarting = result.current.start();
+      void result.current.start();
+    });
+    expect(screenCaptureSelectRegion).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      first.resolve({ sourceId: 1, region });
+      await starting;
+    });
+    expect(screenCaptureSelectRegion).toHaveBeenCalledTimes(2);
+    expect(screenCaptureRegionFrameOpen).not.toHaveBeenCalled();
+    expect(share).not.toHaveBeenCalled();
+    expect(result.current.busy).toBe(true);
+    await act(async () => {
+      second.resolve({ sourceId: 1, region });
+      await restarting;
+    });
+    expect(result.current.active).toBe(true);
+    expect(screenCaptureRegionFrameOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("draws the first rectangle across displays on Start and sends nothing until selected", async () => {
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    const selected = deferred<{ sourceId: number; region: typeof region } | null>();
+    vi.mocked(screenCaptureSelectRegion).mockReturnValue(selected.promise);
+    let starting!: Promise<void>;
+    await act(async () => {
+      starting = result.current.start();
+    });
+    expect(screenCaptureSelectRegion).toHaveBeenCalledWith();
+    expect(result.current.active).toBe(false);
+    expect(result.current.busy).toBe(true);
+    expect(screenCaptureRegionFrameOpen).not.toHaveBeenCalled();
+    expect(screenAnnotationBegin).not.toHaveBeenCalled();
+    expect(screenCaptureFrame).not.toHaveBeenCalled();
+    expect(share).not.toHaveBeenCalled();
+    vi.mocked(screenCaptureFrame).mockResolvedValue({
+      ...frame,
+      sourceId: 7,
+      selectionKind: "region",
+    });
+    await act(async () => {
+      selected.resolve({ sourceId: 7, region });
+      await starting;
+    });
+    expect(result.current.sourceId).toBe(7);
+    expect(result.current.active).toBe(true);
+    expect(screenCaptureRegionFrameOpen).toHaveBeenCalledWith(expect.any(String), 7, region);
+    expect(screenAnnotationBegin).toHaveBeenCalledWith(expect.any(String), 7, "document-1", {
+      kind: "region",
+      region,
+    });
+    expect(share).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    "cancel",
+    "stop",
+  ] as const)("never captures when initial drawing ends with %s", async (action) => {
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    const selected = deferred<{ sourceId: number; region: typeof region } | null>();
+    vi.mocked(screenCaptureSelectRegion).mockReturnValue(selected.promise);
+    let starting!: Promise<void>;
+    await act(async () => {
+      starting = result.current.start();
+    });
+    if (action === "stop") act(() => result.current.stop());
+    await act(async () => {
+      selected.resolve(action === "cancel" ? null : { sourceId: 1, region });
+      await starting;
+    });
+    expect(result.current.active).toBe(false);
+    expect(result.current.busy).toBe(false);
+    expect(screenCaptureRegionFrameOpen).not.toHaveBeenCalled();
+    expect(screenAnnotationBegin).not.toHaveBeenCalled();
+    expect(screenCaptureFrame).not.toHaveBeenCalled();
+    expect(share).not.toHaveBeenCalled();
+  });
+
+  it("keeps the old preview during a drag and immediately shares the committed crop using a new lease", async () => {
+    const { result, share, frameOwner } = await startRegion();
+    const preview = result.current.screenPreviewFrame;
+    await act(async () =>
+      emitRegion("screen-region-adjusting", { shareId: frameOwner, sourceId: 1 }),
+    );
+    await act(async () => result.current.captureNow());
+    expect(result.current.active).toBe(true);
+    expect(result.current.busy).toBe(true);
+    expect(result.current.screenPreviewFrame).toEqual(preview);
+    expect(share).toHaveBeenCalledOnce();
+    const moved = { ...region, x: 100, width: 350 };
+    vi.mocked(screenCaptureFrame).mockResolvedValue({
+      ...frame,
+      selectionKind: "region",
+      frameId: "moved",
+      dataUrl: "data:image/jpeg;base64,bW92ZWQ=",
+      width: 350,
+    });
+    await act(async () =>
+      emitRegion("screen-region-changed", { shareId: frameOwner, sourceId: 1, region: moved }),
+    );
+    expect(result.current.region).toEqual(moved);
+    expect(result.current.active).toBe(true);
+    expect(result.current.busy).toBe(false);
+    expect(result.current.screenShareKey).not.toBe(frameOwner);
+    expect(screenAnnotationEnd).toHaveBeenCalledWith(frameOwner);
+    expect(screenAnnotationBegin).toHaveBeenLastCalledWith(
+      result.current.screenShareKey,
+      1,
+      "document-1",
+      { kind: "region", region: moved },
+    );
+    expect(share).toHaveBeenCalledTimes(2);
+    expect(result.current.screenPreviewFrame?.imageDataUrl).toBe("data:image/jpeg;base64,bW92ZWQ=");
+    expect(screenCaptureRegionFrameOpen).toHaveBeenCalledOnce();
+    act(() => result.current.stop());
+    expect(screenCaptureRegionFrameClose).toHaveBeenCalledWith(frameOwner);
+  });
+
+  it("drains an already submitted old image before committing a new region, without prematurely aborting it", async () => {
+    const { result, share, frameOwner } = await startRegion();
+    const delivery = deferred<{ status: "shared"; capturedAt: string }>();
+    share.mockImplementationOnce(() => delivery.promise);
+    vi.mocked(screenCaptureFrame).mockResolvedValue({
+      ...frame,
+      selectionKind: "region",
+      frameId: "old-in-flight",
+    });
+    let capture!: Promise<void>;
+    await act(async () => {
+      capture = result.current.captureNow();
+    });
+    const oldSignal = share.mock.calls[1][1];
+    const moved = { ...region, x: 70 };
+    await act(async () => {
+      emitRegion("screen-region-adjusting", { shareId: frameOwner, sourceId: 1 });
+      emitRegion("screen-region-changed", { shareId: frameOwner, sourceId: 1, region: moved });
+    });
+    expect(oldSignal.aborted).toBe(false);
+    expect(result.current.region).toEqual(region);
+    expect(result.current.screenShareKey).toBe(frameOwner);
+    expect(screenAnnotationBegin).toHaveBeenCalledOnce();
+    vi.mocked(screenCaptureFrame).mockResolvedValue({
+      ...frame,
+      selectionKind: "region",
+      frameId: "new-crop",
+    });
+    await act(async () => {
+      delivery.resolve({ status: "shared", capturedAt: new Date(frame.capturedAt).toISOString() });
+      await capture;
+    });
+    expect(oldSignal.aborted).toBe(true);
+    expect(result.current.region).toEqual(moved);
+    expect(screenAnnotationBegin).toHaveBeenCalledTimes(2);
+    expect(share.mock.calls.map(([shared]) => shared.frameId)).toEqual([
+      "frame-1",
+      "old-in-flight",
+      "new-crop",
+    ]);
+  });
+
+  it("discards an old native capture finishing after a drag begins", async () => {
+    const { result, share, frameOwner } = await startRegion();
+    const captured = deferred<typeof frame & { selectionKind: "region" }>();
+    vi.mocked(screenCaptureFrame).mockReturnValueOnce(captured.promise);
+    let capture!: Promise<void>;
+    await act(async () => {
+      capture = result.current.captureNow();
+    });
+    await act(async () => {
+      emitRegion("screen-region-adjusting", { shareId: frameOwner, sourceId: 1 });
+      emitRegion("screen-region-changed", {
+        shareId: frameOwner,
+        sourceId: 1,
+        region: { ...region, y: 90 },
+      });
+    });
+    await act(async () => {
+      captured.resolve({ ...frame, frameId: "stale-native", selectionKind: "region" });
+      await capture;
+    });
+    expect(share.mock.calls.some(([shared]) => shared.frameId === "stale-native")).toBe(false);
+    expect(result.current.region?.y).toBe(90);
+    expect(result.current.active).toBe(true);
+  });
+
+  it("retains the original rectangle on Escape and accepts further drags through the stable frame owner", async () => {
+    const { result, frameOwner } = await startRegion();
+    await act(async () => {
+      emitRegion("screen-region-adjusting", { shareId: frameOwner, sourceId: 1 });
+      emitRegion("screen-region-changed", { shareId: frameOwner, sourceId: 1, region });
+    });
+    expect(result.current.region).toEqual(region);
+    expect(result.current.active).toBe(true);
+    expect(result.current.busy).toBe(false);
+    await act(async () =>
+      emitRegion("screen-region-changed", {
+        shareId: frameOwner,
+        sourceId: 1,
+        region: { ...region, x: 80 },
+      }),
+    );
+    expect(result.current.region?.x).toBe(80);
+    expect(screenCaptureRegionFrameOpen).toHaveBeenCalledOnce();
+  });
+
+  it("ignores stopped, mismatched-display and replaced-frame events", async () => {
+    const { result, frameOwner } = await startRegion();
+    await act(async () =>
+      emitRegion("screen-region-changed", {
+        shareId: frameOwner,
+        sourceId: 9,
+        region: { ...region, x: 80 },
+      }),
+    );
+    expect(result.current.region).toEqual(region);
+    act(() => result.current.stop());
+    await act(async () => result.current.start());
+    const newOwner = result.current.screenShareKey;
+    await act(async () => {
+      emitRegion("screen-region-adjusting", { shareId: frameOwner, sourceId: 1 });
+      emitRegion("screen-region-changed", {
+        shareId: frameOwner,
+        sourceId: 1,
+        region: { ...region, x: 80 },
+      });
+      emitRegion("screen-region-closed", { shareId: frameOwner, sourceId: 1 });
+    });
+    expect(result.current.screenShareKey).toBe(newOwner);
+    expect(result.current.region).toEqual(region);
+    expect(result.current.active).toBe(true);
+    expect(result.current.busy).toBe(false);
+    await act(async () => emitRegion("screen-region-closed", { shareId: newOwner, sourceId: 1 }));
+    expect(result.current.active).toBe(false);
+    expect(result.current.error).toContain("display changed");
+  });
+
+  it("does not resume a region update after Stop while the old image is draining", async () => {
+    const { result, share, frameOwner } = await startRegion();
+    const delivery = deferred<{ status: "shared"; capturedAt: string }>();
+    share.mockImplementationOnce(() => delivery.promise);
+    vi.mocked(screenCaptureFrame).mockResolvedValue({
+      ...frame,
+      selectionKind: "region",
+      frameId: "pending",
+    });
+    let capture!: Promise<void>;
+    await act(async () => {
+      capture = result.current.captureNow();
+    });
+    await act(async () =>
+      emitRegion("screen-region-changed", {
+        shareId: frameOwner,
+        sourceId: 1,
+        region: { ...region, x: 60 },
+      }),
+    );
+    act(() => result.current.stop());
+    await act(async () => {
+      delivery.resolve({ status: "shared", capturedAt: "" });
+      await capture;
+    });
+    expect(result.current.active).toBe(false);
+    expect(result.current.busy).toBe(false);
+    expect(screenAnnotationBegin).toHaveBeenCalledOnce();
+    expect(result.current.screenPreviewFrame).toBeNull();
+  });
+
+  it("closes a late initial frame open after Stop without beginning capture", async () => {
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    vi.mocked(screenCaptureSelectRegion).mockResolvedValue({ sourceId: 1, region });
+    const opened = deferred<void>();
+    vi.mocked(screenCaptureRegionFrameOpen).mockReturnValue(opened.promise);
+    let starting!: Promise<void>;
+    await act(async () => {
+      starting = result.current.start();
+    });
+    const frameOwner = vi.mocked(screenCaptureRegionFrameOpen).mock.calls[0][0];
+    act(() => result.current.stop());
+    await act(async () => {
+      opened.resolve();
+      await starting;
+    });
+    expect(screenCaptureRegionFrameClose).toHaveBeenLastCalledWith(frameOwner);
+    expect(screenAnnotationBegin).not.toHaveBeenCalled();
+    expect(share).not.toHaveBeenCalled();
+    expect(result.current.busy).toBe(false);
+  });
+
+  it("sends nothing when the persistent frame is unavailable", async () => {
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    vi.mocked(screenCaptureSelectRegion).mockResolvedValue({ sourceId: 1, region });
+    vi.mocked(screenCaptureRegionFrameOpen).mockRejectedValue(new Error("frame unavailable"));
+    await act(async () => result.current.start());
+    expect(screenAnnotationBegin).not.toHaveBeenCalled();
+    expect(screenCaptureFrame).not.toHaveBeenCalled();
+    expect(share).not.toHaveBeenCalled();
+    expect(result.current.active).toBe(false);
+    expect(result.current.error).toContain("frame unavailable");
+  });
+
+  it("keeps a drag in progress paused if the initial native begin finishes during it", async () => {
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    vi.mocked(screenCaptureSelectRegion).mockResolvedValue({ sourceId: 1, region });
+    vi.mocked(screenCaptureFrame).mockResolvedValue({ ...frame, selectionKind: "region" });
+    const begun = deferred<void>();
+    vi.mocked(screenAnnotationBegin).mockReturnValueOnce(begun.promise);
+    let starting!: Promise<void>;
+    await act(async () => {
+      starting = result.current.start();
+    });
+    const frameOwner = vi.mocked(screenCaptureRegionFrameOpen).mock.calls[0][0];
+    await act(async () =>
+      emitRegion("screen-region-adjusting", { shareId: frameOwner, sourceId: 1 }),
+    );
+    await act(async () => {
+      begun.resolve();
+      await starting;
+    });
+    expect(result.current.active).toBe(true);
+    expect(result.current.busy).toBe(true);
+    expect(share).not.toHaveBeenCalled();
+    await act(async () =>
+      emitRegion("screen-region-changed", { shareId: frameOwner, sourceId: 1, region }),
+    );
+    expect(result.current.busy).toBe(false);
+    expect(share).toHaveBeenCalledOnce();
+  });
+
+  it("serializes successive commits and only publishes the newest region", async () => {
+    const { result, share, frameOwner } = await startRegion();
+    const begun = deferred<void>();
+    vi.mocked(screenAnnotationBegin).mockReturnValueOnce(begun.promise);
+    await act(async () =>
+      emitRegion("screen-region-changed", {
+        shareId: frameOwner,
+        sourceId: 1,
+        region: { ...region, x: 50 },
+      }),
+    );
+    await act(async () =>
+      emitRegion("screen-region-changed", {
+        shareId: frameOwner,
+        sourceId: 1,
+        region: { ...region, x: 80 },
+      }),
+    );
+    expect(screenAnnotationBegin).toHaveBeenCalledTimes(2);
+    expect(share).toHaveBeenCalledOnce();
+    await act(async () => begun.resolve());
+    expect(screenAnnotationBegin).toHaveBeenCalledTimes(3);
+    expect(result.current.region?.x).toBe(80);
+    expect(result.current.busy).toBe(false);
+    expect(share).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed if an old submitted image times out during adjustment", async () => {
+    const { result, share, frameOwner } = await startRegion();
+    const delivery = deferred<{ status: "shared"; capturedAt: string }>();
+    share.mockImplementationOnce(async () => {
+      await delivery.promise;
+      throw new Error("Screen sharing timed out");
+    });
+    vi.mocked(screenCaptureFrame).mockResolvedValue({
+      ...frame,
+      selectionKind: "region",
+      frameId: "pending",
+    });
+    let capture!: Promise<void>;
+    await act(async () => {
+      capture = result.current.captureNow();
+    });
+    await act(async () =>
+      emitRegion("screen-region-changed", {
+        shareId: frameOwner,
+        sourceId: 1,
+        region: { ...region, x: 60 },
+      }),
+    );
+    await act(async () => {
+      delivery.resolve({ status: "shared", capturedAt: "" });
+      await capture;
+    });
+    expect(result.current.active).toBe(false);
+    expect(result.current.busy).toBe(false);
+    expect(result.current.error).toContain("timed out");
+    expect(screenAnnotationBegin).toHaveBeenCalledOnce();
+  });
+
+  it("lists windows only after explicit permission and freezes the window selection", async () => {
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    expect(screenCaptureRequestPermission).not.toHaveBeenCalled();
+    vi.mocked(screenCaptureListSources).mockResolvedValue([
+      { id: 1, kind: "window", name: "Editor", width: 800, height: 600 },
+    ]);
+    await act(async () => result.current.setScreenSourceKind("window"));
+    expect(screenCaptureRequestPermission).toHaveBeenCalledTimes(1);
+    expect(screenCaptureListSources).toHaveBeenLastCalledWith("window");
+    vi.mocked(screenCaptureFrame).mockResolvedValue({
+      ...frame,
+      selectionKind: "window",
+      pointersEnabled: false,
+      pointerFrameValid: false,
+    });
+    await act(async () => result.current.start());
+    expect(screenAnnotationBegin).toHaveBeenCalledWith(expect.any(String), 1, "document-1", {
+      kind: "window",
+    });
+    expect(share).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceKind: "screen", pointersEnabled: false }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("requires a picked region and previews the exact cropped bytes delivered to the agent", async () => {
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    await act(async () => result.current.start());
+    expect(screenAnnotationBegin).not.toHaveBeenCalled();
+    vi.mocked(screenCaptureSelectRegion).mockResolvedValue({ sourceId: 1, region });
+    await act(async () => result.current.selectRegion());
+    expect(screenCaptureSelectRegion).toHaveBeenCalledWith(1);
+    const cropped = {
+      ...frame,
+      width: 400,
+      height: 300,
+      selectionKind: "region" as const,
+      dataUrl: "data:image/jpeg;base64,Y3JvcA==",
+      pointersEnabled: false,
+      pointerFrameValid: false,
+    };
+    vi.mocked(screenCaptureFrame).mockResolvedValue(cropped);
+    await act(async () => result.current.start());
+    expect(screenAnnotationBegin).toHaveBeenCalledWith(expect.any(String), 1, "document-1", {
+      kind: "region",
+      region,
+    });
+    expect(result.current.screenPreviewFrame?.imageDataUrl).toBe(cropped.dataUrl);
+    expect(share).toHaveBeenCalledWith(
+      expect.objectContaining({ imageDataUrl: cropped.dataUrl, width: 400, height: 300 }),
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("discards a stale region picker result after changing source type", async () => {
+    const { result } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    const selected = deferred<{ sourceId: number; region: typeof region } | null>();
+    vi.mocked(screenCaptureSelectRegion).mockReturnValue(selected.promise);
+    let picking!: Promise<void>;
+    await act(async () => {
+      picking = result.current.selectRegion();
+    });
+    await act(async () => result.current.setScreenSourceKind("display"));
+    await act(async () => {
+      selected.resolve({ sourceId: 1, region });
+      await picking;
+    });
+    expect(result.current.region).toBeNull();
+    expect(result.current.busy).toBe(false);
+    expect(screenAnnotationBegin).not.toHaveBeenCalled();
+  });
+
+  it("treats region picker cancellation as a non-error and keeps sharing stopped", async () => {
+    const { result } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    vi.mocked(screenCaptureSelectRegion).mockResolvedValue(null);
+    await act(async () => result.current.selectRegion());
+    expect(result.current.region).toBeNull();
+    expect(result.current.error).toBeUndefined();
+    expect(result.current.active).toBe(false);
+    expect(result.current.busy).toBe(false);
+  });
+
+  it("does not enumerate windows after permission is denied or its source choice becomes stale", async () => {
+    const { result } = setup();
+    await act(async () => result.current.refreshSources());
+    vi.mocked(screenCaptureRequestPermission).mockResolvedValueOnce(false);
+    await act(async () => result.current.setScreenSourceKind("window"));
+    expect(screenCaptureListSources).not.toHaveBeenCalledWith("window");
+    expect(result.current.error).toContain("Screen Recording permission");
+    await act(async () => result.current.setScreenSourceKind("display"));
+    const permission = deferred<boolean>();
+    vi.mocked(screenCaptureRequestPermission).mockReturnValueOnce(permission.promise);
+    await act(async () => result.current.setScreenSourceKind("window"));
+    await act(async () => result.current.setScreenSourceKind("display"));
+    await act(async () => permission.resolve(true));
+    expect(screenCaptureListSources).not.toHaveBeenCalledWith("window");
+    expect(result.current.screenSourceKind).toBe("display");
+  });
+
+  it("does not offer displays returned by an older backend as windows", async () => {
+    const { result } = setup();
+    await act(async () => result.current.refreshSources());
+    vi.mocked(screenCaptureListSources).mockResolvedValue([
+      { id: 1, name: "Legacy display", width: 1920, height: 1080 },
+    ]);
+    await act(async () => result.current.setScreenSourceKind("window"));
+    expect(result.current.sources).toEqual([]);
+    expect(result.current.sourceId).toBeNull();
+    await act(async () => result.current.start());
+    expect(screenAnnotationBegin).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    undefined,
+    "display",
+    "window",
+  ] as const)("never delivers or previews a region frame with selectionKind %s", async (selectionKind) => {
+    const { result, share } = setup();
+    await act(async () => result.current.refreshSources());
+    await act(async () => result.current.setScreenSourceKind("region"));
+    vi.mocked(screenCaptureSelectRegion).mockResolvedValue({ sourceId: 1, region });
+    await act(async () => result.current.selectRegion());
+    vi.mocked(screenCaptureFrame).mockResolvedValue({ ...frame, selectionKind });
+    await act(async () => result.current.start());
+    expect(share).not.toHaveBeenCalled();
+    expect(result.current.screenPreviewFrame).toBeNull();
+    expect(result.current.active).toBe(false);
+    expect(result.current.error).toContain("could not be verified");
+    expect(screenAnnotationEnd).toHaveBeenCalled();
+  });
+
+  it("keeps legacy display sharing available while rejecting restricted sources", async () => {
+    const { result, share } = setup();
+    vi.mocked(screenCaptureListSources).mockResolvedValue([
+      { id: 1, name: "Legacy display", width: 1920, height: 1080 },
+    ]);
+    await act(async () => result.current.refreshSources());
+    expect(result.current.screenSelectionSupported).toBe(false);
+    await act(async () => result.current.setScreenSourceKind("region"));
+    await act(async () => result.current.selectRegion());
+    expect(result.current.screenSourceKind).toBe("display");
+    expect(screenCaptureSelectRegion).not.toHaveBeenCalled();
+    expect(screenCaptureRequestPermission).not.toHaveBeenCalled();
+    await act(async () => result.current.start());
+    expect(share).toHaveBeenCalled();
+  });
+
+  it("remembers native source support across an empty list and camera selection", async () => {
+    const { result } = setup();
+    await act(async () => result.current.refreshSources());
+    expect(result.current.screenSelectionSupported).toBe(true);
+    vi.mocked(screenCaptureListSources).mockResolvedValue([]);
+    await act(async () => result.current.refreshSources());
+    expect(result.current.screenSelectionSupported).toBe(true);
+    vi.mocked(listCameraSources).mockResolvedValue([]);
+    await act(async () => result.current.setSourceKind("camera"));
+    expect(result.current.screenSelectionSupported).toBe(true);
+  });
 
   it("previews only delivered screenshots and clears them when sharing stops", async () => {
     const { result, share } = setup();
@@ -320,14 +938,14 @@ describe("useScreenSharing", () => {
     });
   });
 
-  it("clamps periodic sampling to twenty seconds, deduplicates pixels, and stops on owner change", async () => {
+  it("clamps periodic sampling to ten seconds, deduplicates pixels, and stops on owner change", async () => {
     const { result, rerender, share } = setup();
     expect(result.current.intervalSeconds).toBe(30);
     await act(async () => {
       await result.current.refreshSources();
     });
     act(() => result.current.setIntervalSeconds(5));
-    expect(result.current.intervalSeconds).toBe(20);
+    expect(result.current.intervalSeconds).toBe(10);
     await act(async () => {
       await result.current.start();
     });
@@ -349,7 +967,7 @@ describe("useScreenSharing", () => {
     );
     expect(result.current.lastObservedAt).toBe(frame.capturedAt);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(19_999);
+      await vi.advanceTimersByTimeAsync(9_999);
     });
     expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
     await act(async () => vi.advanceTimersByTimeAsync(1));
@@ -370,11 +988,11 @@ describe("useScreenSharing", () => {
     retainedInterval.value = 5;
     try {
       const { result } = setup();
-      expect(result.current.intervalSeconds).toBe(20);
+      expect(result.current.intervalSeconds).toBe(10);
       await act(async () => result.current.refreshSources());
       await act(async () => result.current.start());
       expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
-      await act(async () => vi.advanceTimersByTimeAsync(19_999));
+      await act(async () => vi.advanceTimersByTimeAsync(9_999));
       expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
       await act(async () => vi.advanceTimersByTimeAsync(1));
       expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
@@ -446,13 +1064,13 @@ describe("useScreenSharing", () => {
     await act(async () => {
       await result.current.start();
     });
-    for (let value = 19; value <= 61; value++) {
+    for (let value = 9; value <= 301; value++) {
       act(() => result.current.setIntervalSeconds(value));
     }
-    expect(result.current.intervalSeconds).toBe(60);
+    expect(result.current.intervalSeconds).toBe(300);
     expect(screenCaptureFrame).toHaveBeenCalledTimes(1);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(300_000);
     });
     expect(screenCaptureFrame).toHaveBeenCalledTimes(2);
   });
@@ -576,7 +1194,8 @@ describe("useScreenSharing", () => {
     await act(async () => result.current.start());
     const firstShareId = vi.mocked(screenAnnotationBegin).mock.calls[0][0];
     act(() => result.current.setSourceId(2));
-    expect(result.current.sourceId).toBe(1);
+    expect(result.current.sourceId).toBe(2);
+    expect(result.current.active).toBe(false);
     act(() => result.current.stop());
     act(() => result.current.setSourceId(2));
     vi.mocked(screenCaptureFrame).mockResolvedValue({
