@@ -151,7 +151,7 @@ afterEach(() => {
 });
 
 describe("NativeCallAgent", () => {
-  it("selects distinct role defaults without depending on a local session slot", async () => {
+  it("selects distinct V3-supported role defaults without depending on a local session slot", async () => {
     const host = createAgent({ name: "こはる", publicDescription: "", startsConversation: true });
     await host.agent.start();
     expect(native.invoke).toHaveBeenCalledWith(
@@ -165,7 +165,7 @@ describe("NativeCallAgent", () => {
     await guest.agent.start();
     expect(native.invoke).toHaveBeenCalledWith(
       "peer_call_agent_start",
-      expect.objectContaining({ voice: "sage" }),
+      expect.objectContaining({ voice: "juniper" }),
     );
     guest.agent.stop();
     native.invoke.mockClear();

@@ -373,7 +373,7 @@ export function publicCallIdentity(value: string | CallResidentIdentity): CallRe
     publicDescription,
     ...(peerName ? { peerName } : {}),
     startsConversation,
-    voice: voice ?? (startsConversation ? "sol" : "sage"),
+    voice: voice ?? (startsConversation ? "sol" : "juniper"),
   });
 }
 

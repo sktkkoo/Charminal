@@ -23,7 +23,8 @@ const MAX_SDP: usize = 64 * 1024;
 const MAX_LINE: usize = 1024 * 1024;
 const MAX_AGENTS: usize = 2;
 const LIFETIME: Duration = Duration::from_secs(30 * 60);
-// Installed Codex 0.154.0 ThreadRealtimeStartParams.RealtimeVoice schema.
+// Installed Codex 0.154.0 ThreadRealtimeStartParams.RealtimeVoice schema spans versions.
+// Preserve explicit schema-valid choices; V3 reports unsupported configured voices below.
 const CALL_VOICES: &[&str] = &[
     "alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember",
     "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse",
@@ -183,8 +184,13 @@ fn resolve_call_voice(
             .copied()
             .find(|voice| *voice == value)
             .ok_or_else(|| "The configured resident voice is not supported by this Codex".into()),
+        // Both defaults are supported by V3. The schema's older `sage` voice is not.
         // Roles are shared across the call, unlike a process-local registry slot.
-        None => Ok(if starts_conversation { "sol" } else { "sage" }),
+        None => Ok(if starts_conversation {
+            "sol"
+        } else {
+            "juniper"
+        }),
     }
 }
 fn validate_offer(id: &str, label: &str, sdp: &str) -> Result<(), String> {
@@ -613,6 +619,9 @@ impl Rpc {
             self.write(json!({"id":value["id"],"error":{"code":-32601,"message":"Call agents cannot run tools"}})).await?;
             return Err("Call agents cannot run tools or delegate work".into());
         }
+        if let Some(message) = scoped_voice_provider_error(&value, self.thread_id.as_deref()) {
+            return Err(message.into());
+        }
         let params = &value["params"];
         if self.thread_id.is_none() || params["threadId"].as_str() != self.thread_id.as_deref() {
             return Ok(());
@@ -668,7 +677,6 @@ impl Rpc {
             "thread/realtime/outputAudio/delta" => {
                 self.emit_activity("responding")?;
             }
-            "thread/realtime/error" => return Err("The AI voice provider reported an error".into()),
             "thread/realtime/closed" => return Err("The AI voice session ended".into()),
             _ => {}
         }
@@ -723,6 +731,157 @@ impl Rpc {
             self.child_pid = 0;
         } // Never signal a reaped PID again from Drop.
         self.reader.abort();
+    }
+}
+
+/// The installed Codex 0.154.0 notification exposes only `threadId` and a free-text
+/// `message`, not a separately typed provider code. Never forward that untrusted text:
+/// it can contain request context, URLs, credentials or private paths. Return only
+/// application-owned diagnostic strings, and only for this agent's exact thread.
+fn scoped_voice_provider_error(value: &Value, thread_id: Option<&str>) -> Option<&'static str> {
+    if value.get("id").is_some()
+        || value["method"] != "thread/realtime/error"
+        || thread_id.is_none()
+        || value["params"]["threadId"].as_str() != thread_id
+    {
+        return None;
+    }
+    Some(voice_provider_error(value["params"]["message"].as_str()))
+}
+
+fn voice_provider_error(message: Option<&str>) -> &'static str {
+    // Bound work before allocating a normalized copy. Larger/malformed errors remain
+    // diagnosable as unknown, without retaining or exposing arbitrary provider content.
+    let message = message
+        .filter(|message| message.len() <= 8192)
+        .unwrap_or("");
+    let message = message.to_ascii_lowercase();
+    let has = |phrases: &[&str]| phrases.iter().any(|phrase| message.contains(phrase));
+    let code = |codes: &[&str]| {
+        message
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+            .any(|word| codes.contains(&word))
+    };
+    let http = |status: u16, reason: &str| {
+        // A status must be a complete token: "HTTP 42901" is not HTTP 429.
+        code(&[&status.to_string()])
+            && has(&[
+                &format!("http {status}"),
+                &format!("http/1.1 {status}"),
+                &format!("http/2 {status}"),
+                &format!("status {status}"),
+                &format!("status: {status}"),
+                &format!("status code {status}"),
+                &format!("status code: {status}"),
+                &format!("{status} {reason}"),
+            ])
+    };
+    if code(&[
+        "concurrent_session_limit",
+        "concurrent_sessions_limit",
+        "too_many_sessions",
+    ]) || has(&[
+        "too many concurrent sessions",
+        "too many simultaneous sessions",
+        "too many active realtime sessions",
+        "too many active voice sessions",
+        "maximum number of concurrent sessions",
+        "maximum concurrent sessions",
+        "concurrent session limit",
+        "already has an active realtime session",
+    ]) {
+        "The AI voice provider reported a simultaneous-session limit. End another voice session or wait before retrying."
+    } else if code(&[
+        "insufficient_quota",
+        "usage_limit_reached",
+        "quota_exceeded",
+    ]) || has(&[
+        "exceeded your current quota",
+        "usage limit reached",
+        "quota exceeded",
+    ]) {
+        "The AI voice provider reported a usage limit. Check your Codex usage allowance before retrying."
+    } else if code(&[
+        "rate_limit_exceeded",
+        "rate_limit_error",
+        "too_many_requests",
+    ]) || has(&["rate limit exceeded", "rate limit reached", "rate-limited"])
+        || http(429, "too many requests")
+    {
+        "The AI voice provider reported a rate limit. Wait before retrying; this alone does not identify a simultaneous-session limit."
+    } else if code(&[
+        "invalid_api_key",
+        "authentication_error",
+        "unauthenticated",
+        "token_expired",
+    ]) || has(&[
+        "authentication failed",
+        "invalid authentication",
+        "expired authentication token",
+    ]) || http(401, "unauthorized")
+    {
+        "The AI voice provider rejected authentication. Check your Codex sign-in before retrying."
+    } else if code(&["model_not_found", "unsupported_model"])
+        || has(&["unsupported model", "model is not available"])
+    {
+        "The AI voice provider reported that the requested model is unavailable. Check account access and compatibility with the installed Codex version."
+    } else if code(&["permission_denied", "access_denied"])
+        || has(&["does not have access to", "do not have access to"])
+        || http(403, "forbidden")
+    {
+        "The AI voice provider denied access to this voice service or model. Check your account access and Codex version."
+    } else if has(&["realtime voice `"]) && has(&["` is not supported for v3; supported voices:"]) {
+        "The selected resident voice is not supported by GPT Live v3. Choose juniper, maple, spruce, ember, vale, breeze, arbor, sol, or cove."
+    } else if code(&["unsupported_voice", "invalid_voice"])
+        || has(&[
+            "unsupported voice",
+            "voice is not supported",
+            "invalid voice",
+        ])
+    {
+        "The AI voice provider rejected the selected voice. Check the resident voice setting and Codex version."
+    } else if code(&[
+        "invalid_request_error",
+        "unsupported_parameter",
+        "immutable_field_update",
+    ]) || has(&[
+        "unsupported parameter",
+        "unknown parameter",
+        "invalid session configuration",
+    ]) || http(400, "bad request")
+    {
+        "The AI voice provider rejected the session settings. Check compatibility with the installed Codex version."
+    } else if code(&["session_expired", "session_duration_exceeded"])
+        || has(&["maximum session duration", "session has expired"])
+    {
+        "The AI voice session expired or reached its duration limit. Start a new voice session to continue."
+    } else if code(&["timeout", "timed_out", "etimedout"])
+        || has(&["timed out", "deadline exceeded"])
+        || http(408, "request timeout")
+        || http(504, "gateway timeout")
+    {
+        "The AI voice provider operation timed out. Check the connection before retrying."
+    } else if code(&["econnrefused", "econnreset", "enotfound", "network_error"])
+        || has(&[
+            "connection refused",
+            "connection reset",
+            "dns error",
+            "failed to lookup address",
+            "tls handshake",
+        ])
+    {
+        "The AI voice provider reported a network connection failure. Check the network connection before retrying."
+    } else if code(&[
+        "server_error",
+        "internal_server_error",
+        "service_unavailable",
+    ]) || http(500, "internal server error")
+        || http(502, "bad gateway")
+        || http(503, "service unavailable")
+    {
+        "The AI voice provider reported a service failure. Wait before retrying."
+    } else {
+        "The AI voice provider reported an error (reason unavailable)."
     }
 }
 
@@ -934,6 +1093,157 @@ async fn initialize_isolated_agent(rpc: &mut Rpc, directory: &Path) -> Result<()
 mod tests {
     use super::*;
     #[test]
+    fn realtime_provider_error_uses_the_installed_notification_schema_and_exact_thread() {
+        let event = json!({"method":"thread/realtime/error","params":{"threadId":"owned-call","message":"HTTP 429 Too Many Requests"}});
+        let error = scoped_voice_provider_error(&event, Some("owned-call")).unwrap();
+        assert!(error.contains("rate limit"));
+        assert!(!error.contains("simultaneous-session limit. End"));
+        assert_eq!(
+            scoped_voice_provider_error(&event, Some("other-call")),
+            None
+        );
+        assert_eq!(scoped_voice_provider_error(&event, None), None);
+        let mut unrelated = event.clone();
+        unrelated["method"] = json!("thread/realtime/transcript/done");
+        assert_eq!(
+            scoped_voice_provider_error(&unrelated, Some("owned-call")),
+            None
+        );
+        let mut server_request = event.clone();
+        server_request["id"] = json!(12);
+        assert_eq!(
+            scoped_voice_provider_error(&server_request, Some("owned-call")),
+            None
+        );
+        let mut malformed = event;
+        malformed["params"]["message"] = json!({"message":"private content"});
+        assert_eq!(
+            scoped_voice_provider_error(&malformed, Some("owned-call")),
+            Some("The AI voice provider reported an error (reason unavailable).")
+        );
+    }
+
+    #[test]
+    fn actual_v3_sage_rejection_has_safe_actionable_diagnostics() {
+        // Exact provider message captured from the failing Guest; the schema union
+        // accepts sage, but the V3 backend does not. No raw capture remains in production.
+        let actual = "realtime voice `sage` is not supported for v3; supported voices: juniper, maple, spruce, ember, vale, breeze, arbor, sol, cove";
+        let event = json!({"method":"thread/realtime/error","params":{"threadId":"owned-call","message":actual}});
+        let expected = "The selected resident voice is not supported by GPT Live v3. Choose juniper, maple, spruce, ember, vale, breeze, arbor, sol, or cove.";
+        assert_eq!(
+            scoped_voice_provider_error(&event, Some("owned-call")),
+            Some(expected)
+        );
+        assert_eq!(
+            scoped_voice_provider_error(&event, Some("another-call")),
+            None
+        );
+        assert!(expected.len() <= 180);
+        let private = format!("{actual}\nAuthorization: Bearer sk-secret /Users/private/project.txt PRIVATE_ROOM_UTTERANCE");
+        assert_eq!(voice_provider_error(Some(&private)), expected);
+        // Retain the caller's explicit schema-valid selection; do not silently change it.
+        assert_eq!(resolve_call_voice(Some("sage"), false).unwrap(), "sage");
+    }
+
+    #[test]
+    fn provider_diagnostics_distinguish_known_causes_without_claiming_contention() {
+        let cases = [
+            ("concurrent_sessions_limit", "simultaneous-session limit"),
+            (
+                "too many active realtime sessions",
+                "simultaneous-session limit",
+            ),
+            ("HTTP 429 Too Many Requests", "reported a rate limit"),
+            (
+                "request failed with status code 429",
+                "reported a rate limit",
+            ),
+            ("insufficient_quota", "usage limit"),
+            (
+                "WebSocket failed: HTTP/1.1 401 Unauthorized",
+                "authentication",
+            ),
+            ("request status: 403 Forbidden", "denied access"),
+            ("unsupported_voice", "selected voice"),
+            ("model_not_found", "requested model is unavailable"),
+            (
+                "WebSocket connection failed: HTTP 400 Bad Request",
+                "session settings",
+            ),
+            (
+                "{\"error\":{\"type\":\"invalid_request_error\",\"code\":null}}",
+                "session settings",
+            ),
+            ("session_duration_exceeded", "duration limit"),
+            ("error: deadline exceeded", "timed out"),
+            ("connection reset by peer", "network connection failure"),
+            (
+                "WebSocket connection failed: HTTP 503 Service Unavailable",
+                "service failure",
+            ),
+        ];
+        for (message, expected) in cases {
+            let diagnostic = voice_provider_error(Some(message));
+            assert!(
+                diagnostic.contains(expected),
+                "classification failed for {message}"
+            );
+            assert!(diagnostic.len() <= 180);
+            assert!(!diagnostic.chars().any(char::is_control));
+        }
+        for unknown in [
+            "another text conversation is open",
+            "too many concurrent requests",
+            "User identifier 42901",
+            "HTTP 42901",
+            "WebSocket connection failed",
+        ] {
+            assert_eq!(
+                voice_provider_error(Some(unknown)),
+                "The AI voice provider reported an error (reason unavailable)."
+            );
+        }
+    }
+
+    #[test]
+    fn provider_diagnostics_never_echo_credentials_paths_or_private_context() {
+        let secret = "Authorization: Bearer sk-test-secret /Users/private/work.txt C:\\private\\work.txt https://example.test/?token=secret user@example.test PRIVATE_ROOM_UTTERANCE\n\u{202e}";
+        for known in [
+            "",
+            "invalid_api_key",
+            "too_many_sessions",
+            "HTTP 429 Too Many Requests",
+            "unsupported_voice",
+        ] {
+            let message = format!("{known}: {secret}");
+            let event = json!({"method":"thread/realtime/error","params":{"threadId":"owned-call","message":message}});
+            let diagnostic = scoped_voice_provider_error(&event, Some("owned-call")).unwrap();
+            for private in [
+                "sk-test",
+                "/Users/",
+                "C:\\",
+                "https://",
+                "token=",
+                "example.test",
+                "PRIVATE_ROOM_UTTERANCE",
+                "\u{202e}",
+            ] {
+                assert!(!diagnostic.contains(private));
+            }
+            assert!(diagnostic.len() <= 180);
+        }
+        let oversized = format!("invalid_api_key {}", "秘密".repeat(5000));
+        assert_eq!(
+            voice_provider_error(Some(&oversized)),
+            "The AI voice provider reported an error (reason unavailable)."
+        );
+        assert_eq!(
+            voice_provider_error(None),
+            "The AI voice provider reported an error (reason unavailable)."
+        );
+    }
+
+    #[test]
     fn process_history_isolation_preserves_auth_and_cache_setup() {
         let profile = private_history_sandbox(Path::new("/home/call user/.codex")).unwrap();
         for name in [
@@ -983,7 +1293,7 @@ mod tests {
     fn default_voices_are_distinct_on_independent_hosts_and_stable_on_resume() {
         for _ in 0..3 {
             assert_eq!(resolve_call_voice(None, true).unwrap(), "sol");
-            assert_eq!(resolve_call_voice(None, false).unwrap(), "sage");
+            assert_eq!(resolve_call_voice(None, false).unwrap(), "juniper");
         }
         // A resident's explicit supported configuration takes priority over room role.
         assert_eq!(
