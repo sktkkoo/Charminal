@@ -357,12 +357,8 @@ export function PeerCallControl({
         aria-expanded={connected ? undefined : open}
         onClick={() => (connected ? leave() : open ? hideEntry() : showEntry())}
       >
-        {connected ? (
-          <PhoneOff size={15} aria-hidden="true" />
-        ) : (
-          <Phone size={15} aria-hidden="true" />
-        )}
-        {active && <span className="peer-call-dot" />}
+        <Phone size={15} aria-hidden="true" />
+        {active && <span className="peer-call-dot" aria-hidden="true" />}
       </button>
       {entryWindow.error && open && (
         <span className="peer-call-entry-window-error" role="alert">
