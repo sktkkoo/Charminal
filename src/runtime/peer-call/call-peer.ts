@@ -54,7 +54,7 @@ export class CallPeer {
   private micOperation = 0;
   private outputOperation = 0;
   private statsPending = false;
-  private lastBytes?: { bytes: number; time: number };
+  private lastBytes = new Map<string, { bytes: number; time: number }>();
   private tick = 0;
   private motionBudget = { tokens: 60, time: performance.now() };
   private controlBudget = { tokens: 40, time: performance.now() };
@@ -87,11 +87,14 @@ export class CallPeer {
         }
         changed();
       },
-      onRemoteStream: (stream) => {
+      onRemoteStream: (stream, kind) => {
         if (this.closed) return;
-        this.remoteAudio = stream;
+        // Product negotiation rejects unclassified/legacy mixed audio. Never
+        // route unknown sources into the avatar's AI-only analyser.
+        if (kind !== "agent" && kind !== "human") return;
         try {
-          this.audio.setRemote(stream);
+          this.audio.setRemote(kind, stream);
+          if (kind === "agent") this.remoteAudio = stream;
           this.notifyRemote();
         } catch {
           this.fail("受信音声を準備できませんでした。");
@@ -171,12 +174,16 @@ export class CallPeer {
   }
 
   async prepare(): Promise<void> {
-    const track = await this.audio.prepare();
+    const tracks = await this.audio.prepare();
     if (this.closed) {
-      track.stop();
+      tracks.human.stop();
+      tracks.agent.stop();
       throw new Error("通話は終了しました。");
     }
-    await this.connection.setAudioTrack(track);
+    await Promise.all([
+      this.connection.setAudioTrack(tracks.human, "human"),
+      this.connection.setAudioTrack(tracks.agent, "agent"),
+    ]);
     await this.audio.setOutput(this.outputEnabled);
     this.notifyRemote();
   }
@@ -264,6 +271,7 @@ export class CallPeer {
     this.changed();
   }
 
+  /** Remote AI output only; provider input should use onInputAudio for the full mix. */
   onRemoteAudio(listener: (stream: MediaStream | null) => void): () => void {
     if (!this.closed) this.remoteListeners.add(listener);
     listener(this.closed || !this.remote?.allowRemoteAi ? null : this.remoteAudio);
@@ -330,6 +338,7 @@ export class CallPeer {
     clearInterval(this.timer);
     this.remote = null;
     this.remoteAudio = null;
+    this.lastBytes.clear();
     this.audio.close();
     this.connection.close();
     this.motion.reset();
@@ -392,22 +401,35 @@ export class CallPeer {
       const stats = await this.connection.getStats();
       if (this.closed) return;
       const next: CallMetrics = {};
+      const currentBytes = new Map<string, { bytes: number; time: number }>();
+      let samples = 0;
+      let concealed = 0;
+      const codecs = new Set<string>();
       stats.forEach((entry) => {
         if (entry.type === "inbound-rtp" && entry.kind === "audio") {
           const current = { bytes: Number(entry.bytesReceived), time: Number(entry.timestamp) };
+          const previous = this.lastBytes.get(entry.id);
           if (
-            this.lastBytes &&
-            current.time > this.lastBytes.time &&
-            current.bytes >= this.lastBytes.bytes
+            previous &&
+            Number.isFinite(current.bytes) &&
+            Number.isFinite(current.time) &&
+            current.time > previous.time &&
+            current.bytes >= previous.bytes
           )
             next.receivedKbps =
-              ((current.bytes - this.lastBytes.bytes) * 8) / (current.time - this.lastBytes.time);
+              (next.receivedKbps ?? 0) +
+              ((current.bytes - previous.bytes) * 8) / (current.time - previous.time);
           if (Number.isFinite(current.bytes) && Number.isFinite(current.time))
-            this.lastBytes = current;
-          if (typeof entry.jitter === "number") next.jitterMs = entry.jitter * 1000;
-          if (entry.totalSamplesReceived > 0)
-            next.concealedPercent = (entry.concealedSamples / entry.totalSamplesReceived) * 100;
-          next.codec = stats.get(entry.codecId)?.mimeType;
+            currentBytes.set(entry.id, current);
+          // Show the worst track jitter and sample-weighted concealment across both sources.
+          if (Number.isFinite(entry.jitter))
+            next.jitterMs = Math.max(next.jitterMs ?? 0, entry.jitter * 1000);
+          if (entry.totalSamplesReceived > 0 && Number.isFinite(entry.concealedSamples)) {
+            samples += entry.totalSamplesReceived;
+            concealed += entry.concealedSamples;
+          }
+          const codec = stats.get(entry.codecId)?.mimeType;
+          if (typeof codec === "string") codecs.add(codec);
         }
         if (entry.type === "transport" && entry.selectedCandidatePairId) {
           const pair = stats.get(entry.selectedCandidatePairId);
@@ -420,6 +442,9 @@ export class CallPeer {
                 : "direct";
         }
       });
+      this.lastBytes = currentBytes;
+      if (samples > 0) next.concealedPercent = (concealed / samples) * 100;
+      if (codecs.size > 0) next.codec = [...codecs].sort().join(" / ");
       this.metrics = next;
       this.changed();
     } catch {

@@ -1,4 +1,5 @@
 import type { CallPeer } from "./call-peer";
+import { AudioProtocolVersionError } from "./peer-connection";
 
 const PROTOCOL = "yorishiro-room-v1";
 const MAX_MESSAGE_BYTES = 192 * 1024;
@@ -360,7 +361,13 @@ export class RoomSignaling {
         this.queued--;
         if (!this.closed) await this.receive(message);
       })
-      .catch(() => this.fail("通話を準備できませんでした。新しいルームでお試しください。"));
+      .catch((error: unknown) =>
+        this.fail(
+          error instanceof AudioProtocolVersionError
+            ? new AudioProtocolVersionError().message
+            : "通話を準備できませんでした。新しいルームでお試しください。",
+        ),
+      );
   }
 
   private async receive(value: unknown): Promise<void> {

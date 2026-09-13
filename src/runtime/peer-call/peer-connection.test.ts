@@ -3,6 +3,30 @@ import { PeerCallConnection, type PeerCallConnectionOptions } from "./peer-conne
 
 const SDP =
   "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n";
+function splitSdp(mids = ["human-mid", "agent-mid"]): string {
+  return `v=0\r\n${mids.map((mid) => `m=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:${mid}\r\n`).join("")}m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:data\r\n`;
+}
+function productSignal(type: "offer" | "answer", fields: Record<string, unknown> = {}): string {
+  return signal(type, {
+    version: 2,
+    sdp: splitSdp(),
+    audio: { human: "human-mid", agent: "agent-mid" },
+    ...fields,
+  });
+}
+function sdpAudioMids(sdp: string): (string | null)[] {
+  return sdp
+    .split(/\r?\n(?=m=)/)
+    .slice(1)
+    .filter((section) => section.startsWith("m=audio "))
+    .map(
+      (section) =>
+        section
+          .split(/\r?\n/)
+          .find((line) => line.startsWith("a=mid:"))
+          ?.slice(6) ?? null,
+    );
+}
 const ROOM = "12345678-1234-1234-1234-123456789012";
 const CODECS = [
   { mimeType: "audio/PCMU", clockRate: 8000 },
@@ -42,6 +66,7 @@ class FakeTrack {
 }
 
 class FakeTransceiver {
+  mid: string | null = null;
   direction: RTCRtpTransceiverDirection = "recvonly";
   receiver = { track: new FakeTrack().asTrack() };
   sender = {
@@ -79,7 +104,8 @@ class FakePC extends EventTarget {
   iceGatheringState: RTCIceGatheringState = "complete";
   localDescription: RTCSessionDescriptionInit | null = null;
   onconnectionstatechange: (() => void) | null = null;
-  ontrack: ((event: { track: MediaStreamTrack }) => void) | null = null;
+  ontrack: ((event: { track: MediaStreamTrack; transceiver?: FakeTransceiver }) => void) | null =
+    null;
   ondatachannel: ((event: { channel: FakeChannel }) => void) | null = null;
   transceivers: FakeTransceiver[] = [];
   channels: FakeChannel[] = [];
@@ -97,16 +123,34 @@ class FakePC extends EventTarget {
     return channel;
   });
   createOffer = vi.fn(
-    async (): Promise<RTCSessionDescriptionInit> => ({ type: "offer", sdp: SDP }),
+    async (): Promise<RTCSessionDescriptionInit> => ({
+      type: "offer",
+      sdp: this.transceivers.length === 2 ? splitSdp() : SDP,
+    }),
   );
   createAnswer = vi.fn(
-    async (): Promise<RTCSessionDescriptionInit> => ({ type: "answer", sdp: SDP }),
+    async (): Promise<RTCSessionDescriptionInit> => ({
+      type: "answer",
+      sdp:
+        this.transceivers.length === 2
+          ? splitSdp(this.transceivers.map((item) => item.mid ?? "missing"))
+          : SDP,
+    }),
   );
   setLocalDescription = vi.fn(async (description: RTCSessionDescriptionInit) => {
     this.localDescription = description;
+    sdpAudioMids(description.sdp ?? "").forEach((mid, index) => {
+      if (this.transceivers[index]) this.transceivers[index].mid = mid;
+    });
   });
   setRemoteDescription = vi.fn(async (description: RTCSessionDescriptionInit) => {
-    if (description.type === "offer") this.transceivers.push(new FakeTransceiver());
+    if (description.type === "offer") {
+      for (const mid of sdpAudioMids(description.sdp ?? "")) {
+        const transceiver = new FakeTransceiver();
+        transceiver.mid = mid;
+        this.transceivers.push(transceiver);
+      }
+    }
   });
   getStats = vi.fn(async () => new Map() as RTCStatsReport);
   close = vi.fn(() => {
@@ -502,6 +546,7 @@ describe("PeerCallConnection motion and events", () => {
     const onConnectionState = pc.onconnectionstatechange;
     onTrack?.({ track: remote.asTrack() });
     expect(onRemoteStream.mock.calls[0][0].getTracks()).toEqual([remote]);
+    expect(onRemoteStream.mock.calls[0][1]).toBe("unknown");
     pc.connectionState = "failed";
     onConnectionState?.();
     expect(onState.mock.calls.map(([state]) => state)).toEqual(["failed", "closed"]);
@@ -540,6 +585,157 @@ describe("native call consent transport", () => {
     expect(call.sendControl("{}")).toBe(false);
     call.close();
     expect(control.close).toHaveBeenCalledOnce();
+  });
+});
+
+describe("separate product audio sources", () => {
+  it("negotiates both senders initially and replaces or mutes either source independently", async () => {
+    const { connection: call, pc } = connection({ productCall: true });
+    const human = new FakeTrack();
+    const agent = new FakeTrack();
+    await Promise.all([
+      call.setAudioTrack(human.asTrack(), "human"),
+      call.setAudioTrack(agent.asTrack(), "agent"),
+    ]);
+    const offer = JSON.parse(await call.createOffer());
+    expect(offer).toMatchObject({ version: 2, audio: { human: "human-mid", agent: "agent-mid" } });
+    expect(pc.transceivers.map((item) => item.sender.track)).toEqual([human, agent]);
+    expect(pc.addTransceiver).toHaveBeenCalledTimes(2);
+    for (const transceiver of pc.transceivers) {
+      expect(transceiver.direction).toBe("sendrecv");
+      expect(transceiver.sender.replaceTrack.mock.invocationCallOrder[0]).toBeLessThan(
+        pc.createOffer.mock.invocationCallOrder[0],
+      );
+    }
+    const replacement = new FakeTrack();
+    await call.setAudioTrack(replacement.asTrack(), "agent");
+    expect(agent.stop).toHaveBeenCalledOnce();
+    await call.setAudioTrack(null, "human");
+    expect(human.stop).toHaveBeenCalledOnce();
+    expect(replacement.stop).not.toHaveBeenCalled();
+    expect(pc.transceivers.map((item) => item.sender.track)).toEqual([null, replacement]);
+    expect(pc.createOffer).toHaveBeenCalledOnce();
+    expect(pc.addTransceiver).toHaveBeenCalledTimes(2);
+    call.close();
+    expect(replacement.stop).toHaveBeenCalledOnce();
+    expect(pc.transceivers.every((item) => item.sender.track === null)).toBe(true);
+  });
+
+  it("routes track events during remote-description application by MID even when audio order is reversed", async () => {
+    const onRemoteStream = vi.fn();
+    const { connection: call, pc } = connection({ productCall: true, onRemoteStream });
+    const human = new FakeTrack();
+    const agent = new FakeTrack();
+    await call.setAudioTrack(human.asTrack(), "human");
+    await call.setAudioTrack(agent.asTrack(), "agent");
+    const applied = deferred<void>();
+    pc.setRemoteDescription.mockImplementationOnce(() => {
+      for (const mid of ["agent-mid", "human-mid"]) {
+        const transceiver = new FakeTransceiver();
+        transceiver.mid = mid;
+        pc.transceivers.push(transceiver);
+      }
+      // Arrival order differs from both m-section order and role ordering.
+      for (const transceiver of [...pc.transceivers].reverse()) {
+        pc.ontrack?.({ track: transceiver.receiver.track, transceiver });
+      }
+      return applied.promise;
+    });
+    const pending = call.acceptOffer(
+      productSignal("offer", { sdp: splitSdp(["agent-mid", "human-mid"]) }),
+    );
+    expect(onRemoteStream.mock.calls.map(([, kind]) => kind)).toEqual(["human", "agent"]);
+    expect(onRemoteStream.mock.calls[0][0].getTracks()).toEqual([
+      pc.transceivers[1].receiver.track,
+    ]);
+    applied.resolve();
+    const answer = JSON.parse(await pending);
+    expect(answer.audio).toEqual({ human: "human-mid", agent: "agent-mid" });
+    expect(pc.transceivers.map((item) => item.sender.track)).toEqual([agent, human]);
+    expect(pc.addTransceiver).not.toHaveBeenCalled();
+    call.close();
+    expect(pc.transceivers.every((item) => item.receiver.track.readyState === "ended")).toBe(true);
+  });
+
+  it("maps answer-side track callbacks before the remote answer promise resolves", async () => {
+    const onRemoteStream = vi.fn();
+    const { connection: call, pc } = connection({ productCall: true, onRemoteStream });
+    const offer = JSON.parse(await call.createOffer());
+    pc.setRemoteDescription.mockImplementationOnce(async () => {
+      for (const transceiver of [...pc.transceivers].reverse())
+        pc.ontrack?.({ track: transceiver.receiver.track, transceiver });
+    });
+    await call.acceptAnswer(productSignal("answer", { roomId: offer.roomId }));
+    expect(onRemoteStream.mock.calls.map(([, kind]) => kind)).toEqual(["agent", "human"]);
+  });
+
+  it("rejects legacy product audio and malformed or ambiguous MID mappings before native negotiation", async () => {
+    const { connection: call, pc } = connection({ productCall: true });
+    await expect(call.acceptOffer(signal("offer"))).rejects.toThrow("音声分離に対応した同じ版");
+    for (const fields of [
+      { audio: null },
+      { audio: { human: "human-mid" } },
+      { audio: { human: "human-mid", agent: "agent-mid", tool: "execute" } },
+      { audio: { human: "human-mid", agent: "human-mid" } },
+      { audio: { human: "human-mid", agent: "data" } },
+      { audio: { human: "human-mid", agent: "absent" } },
+      { audio: { human: "human-mid", agent: "a".repeat(65) } },
+      { sdp: splitSdp().replace("a=mid:agent-mid", "a=mid:human-mid") },
+      { sdp: splitSdp().replace("a=mid:agent-mid", "a=mid:agent-mid\r\na=mid:other") },
+      { sdp: splitSdp().replace("a=mid:agent-mid\r\n", "") },
+      { sdp: splitSdp().replace("m=audio ", "m=video ") },
+    ])
+      await expect(call.acceptOffer(productSignal("offer", fields))).rejects.toThrow();
+    expect(pc.setRemoteDescription).not.toHaveBeenCalled();
+  });
+
+  it("rejects an answer that swaps the offered human and AI roles", async () => {
+    const { connection: call, pc } = connection({ productCall: true });
+    const offer = JSON.parse(await call.createOffer());
+    await expect(
+      call.acceptAnswer(
+        productSignal("answer", {
+          roomId: offer.roomId,
+          audio: { human: "agent-mid", agent: "human-mid" },
+        }),
+      ),
+    ).rejects.toThrow("changed the negotiated audio sources");
+    expect(pc.setRemoteDescription).not.toHaveBeenCalled();
+    expect(pc.close).toHaveBeenCalledOnce();
+  });
+
+  it("never forwards an unknown product MID as either AI or human audio", async () => {
+    const onRemoteStream = vi.fn();
+    const { connection: call, pc } = connection({ productCall: true, onRemoteStream });
+    await call.acceptOffer(productSignal("offer"));
+    const transceiver = new FakeTransceiver();
+    transceiver.mid = "unidentified";
+    pc.ontrack?.({ track: transceiver.receiver.track, transceiver });
+    expect(transceiver.receiver.track.readyState).toBe("ended");
+    expect(onRemoteStream).not.toHaveBeenCalled();
+    expect(pc.close).toHaveBeenCalledOnce();
+  });
+
+  it("does not let muting a queued microphone update cancel AI output", async () => {
+    const { connection: call, pc } = connection({ productCall: true });
+    await call.createOffer();
+    const pending = deferred<void>();
+    pc.transceivers[0].sender.replaceTrack.mockReturnValueOnce(pending.promise);
+    const human = new FakeTrack();
+    const agent = new FakeTrack();
+    const superseded = expect(call.setAudioTrack(human.asTrack(), "human")).rejects.toThrow(
+      "superseded",
+    );
+    await flush();
+    await call.setAudioTrack(agent.asTrack(), "agent");
+    const mute = call.setAudioTrack(null, "human");
+    expect(human.stop).toHaveBeenCalledOnce();
+    expect(agent.stop).not.toHaveBeenCalled();
+    pending.resolve();
+    await Promise.all([mute, superseded]);
+    expect(pc.transceivers[1].sender.track).toBe(agent);
+    await expect(call.setAudioTrack(agent.asTrack(), "human")).rejects.toThrow("dedicated track");
+    expect(agent.stop).not.toHaveBeenCalled();
   });
 });
 

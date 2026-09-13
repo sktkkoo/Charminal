@@ -1,7 +1,9 @@
+export type PeerAudioKind = "agent" | "human";
+
 export interface PeerCallConnectionOptions {
   iceServers?: RTCIceServer[];
   onState?: (state: RTCPeerConnectionState) => void;
-  onRemoteStream?: (stream: MediaStream) => void;
+  onRemoteStream?: (stream: MediaStream, kind: PeerAudioKind | "unknown") => void;
   onMotion?: (data: ArrayBuffer) => void;
   onError?: (error: Error) => void;
   /** Product call negotiation uses a separate reliable channel for participant consent. */
@@ -14,10 +16,31 @@ export interface PeerCallConnectionOptions {
 }
 
 interface SignalEnvelope {
-  version: 1;
+  version: 1 | 2;
   roomId: string;
   type: "offer" | "answer";
   sdp: string;
+  audio?: Record<PeerAudioKind, string>;
+}
+
+interface AudioRoute {
+  transceiver: RTCRtpTransceiver | null;
+  local: MediaStreamTrack | null;
+  desired: MediaStreamTrack | null;
+  revision: number;
+  queue: Promise<void>;
+  owned: Set<MediaStreamTrack>;
+}
+
+function audioRoute(): AudioRoute {
+  return {
+    transceiver: null,
+    local: null,
+    desired: null,
+    revision: 0,
+    queue: Promise.resolve(),
+    owned: new Set(),
+  };
 }
 
 class SupersededAudioChoice extends Error {
@@ -33,12 +56,25 @@ const MAX_MOTION_BUFFER = 64 * 1024;
 const ICE_TIMEOUT_MS = 30_000;
 const MOTION_LABEL = "yorishiro-motion-v1";
 const ROOM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const AUDIO_KINDS: readonly PeerAudioKind[] = ["human", "agent"];
+
+/** A fixed local compatibility message, safe for the room UI to distinguish. */
+export class AudioProtocolVersionError extends Error {
+  constructor() {
+    super("音声分離に対応した同じ版で接続し直してください。");
+    this.name = "AudioProtocolVersionError";
+  }
+}
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
 
-function readSignal(serialized: string, type: SignalEnvelope["type"]): SignalEnvelope {
+function readSignal(
+  serialized: string,
+  type: SignalEnvelope["type"],
+  productCall = false,
+): SignalEnvelope {
   if (typeof serialized !== "string" || serialized.length > MAX_SIGNAL_LENGTH) {
     throw new Error("Invitation exceeds the size limit");
   }
@@ -52,9 +88,9 @@ function readSignal(serialized: string, type: SignalEnvelope["type"]): SignalEnv
     throw new Error("Invitation must be an object");
   }
   const envelope = value as Record<string, unknown>;
+  if (envelope.version !== (productCall ? 2 : 1)) throw new AudioProtocolVersionError();
   if (
-    Object.keys(envelope).length !== 4 ||
-    envelope.version !== 1 ||
+    Object.keys(envelope).length !== (productCall ? 5 : 4) ||
     envelope.type !== type ||
     typeof envelope.roomId !== "string" ||
     !ROOM_ID.test(envelope.roomId) ||
@@ -67,11 +103,41 @@ function readSignal(serialized: string, type: SignalEnvelope["type"]): SignalEnv
   }
   const media = envelope.sdp.split(/\r?\n/).filter((line) => line.startsWith("m="));
   if (
-    media.length !== 2 ||
-    media.filter((line) => line.startsWith("m=audio ")).length !== 1 ||
+    media.length !== (productCall ? 3 : 2) ||
+    media.filter((line) => line.startsWith("m=audio ")).length !== (productCall ? 2 : 1) ||
     media.filter((line) => line.startsWith("m=application ")).length !== 1
   ) {
-    throw new Error("A call accepts one audio stream and one data transport only");
+    throw new Error("A call accepts only its negotiated audio streams and one data transport");
+  }
+  if (productCall) {
+    const mapping = envelope.audio;
+    if (!mapping || typeof mapping !== "object" || Array.isArray(mapping))
+      throw new Error("Audio source mapping is missing");
+    const roles = mapping as Record<string, unknown>;
+    if (
+      Object.keys(roles).length !== 2 ||
+      !AUDIO_KINDS.every(
+        (kind) => typeof roles[kind] === "string" && /^[\w-]{1,64}$/.test(roles[kind]),
+      ) ||
+      roles.agent === roles.human
+    )
+      throw new Error("Audio source mapping is invalid");
+    // MIDs, not callback order or sender-controlled track labels, identify the two
+    // negotiated sources. Validate every media MID to exclude ambiguous mappings.
+    const sections = envelope.sdp.split(/\r?\n(?=m=)/).slice(1);
+    const mids = new Set<string>();
+    const audioMids = new Set<string>();
+    for (const section of sections) {
+      const values = section.split(/\r?\n/).filter((line) => line.startsWith("a=mid:"));
+      if (values.length !== 1) throw new Error("Media source MID is missing or ambiguous");
+      const mid = values[0].slice(6);
+      if (!/^[\w-]{1,64}$/.test(mid) || mids.has(mid))
+        throw new Error("Media source MID is invalid or duplicated");
+      mids.add(mid);
+      if (section.startsWith("m=audio ")) audioMids.add(mid);
+    }
+    if (!AUDIO_KINDS.every((kind) => audioMids.has(roles[kind] as string)))
+      throw new Error("Audio source mapping does not match the session description");
   }
   return envelope as unknown as SignalEnvelope;
 }
@@ -84,7 +150,11 @@ function readSignal(serialized: string, type: SignalEnvelope["type"]): SignalEnv
  */
 export class PeerCallConnection {
   private readonly pc: RTCPeerConnection;
-  private audio: RTCRtpTransceiver | null = null;
+  private readonly audio: Record<PeerAudioKind, AudioRoute> = {
+    human: audioRoute(),
+    agent: audioRoute(),
+  };
+  private remoteAudioKinds = new Map<string, PeerAudioKind>();
   private phase: "idle" | "negotiating" | "awaiting-answer" | "negotiated" = "idle";
   private closed = false;
   private roomId: string | null = null;
@@ -92,12 +162,7 @@ export class PeerCallConnection {
   private control: RTCDataChannel | null = null;
   private asset: RTCDataChannel | null = null;
   private readonly pending = new Set<(error: Error) => void>();
-  private readonly ownedTracks = new Set<MediaStreamTrack>();
   private readonly remoteTracks = new Set<MediaStreamTrack>();
-  private localTrack: MediaStreamTrack | null = null;
-  private desiredTrack: MediaStreamTrack | null = null;
-  private audioRevision = 0;
-  private audioQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: PeerCallConnectionOptions = {}) {
     this.pc = new RTCPeerConnection({ iceServers: options.iceServers ?? [] });
@@ -113,8 +178,14 @@ export class PeerCallConnection {
         event.track.stop();
         return;
       }
+      const kind = this.remoteAudioKinds.get(event.transceiver?.mid ?? "") ?? "unknown";
+      if (options.productCall && kind === "unknown") {
+        event.track.stop();
+        this.fail(new Error("受信音声の送信元を確認できませんでした。接続し直してください。"));
+        return;
+      }
       this.remoteTracks.add(event.track);
-      this.options.onRemoteStream?.(new MediaStream([event.track]));
+      this.options.onRemoteStream?.(new MediaStream([event.track]), kind);
     };
     this.pc.ondatachannel = (event) => {
       if (options.productCall && event.channel.label === "yorishiro-call-control-v1") {
@@ -130,7 +201,13 @@ export class PeerCallConnection {
     this.phase = "negotiating";
     try {
       this.roomId = crypto.randomUUID();
-      this.initializeAudio(this.pc.addTransceiver("audio", { direction: "sendrecv" }));
+      for (const kind of this.options.productCall ? AUDIO_KINDS : ["human" as const]) {
+        await this.initializeAudio(
+          kind,
+          this.pc.addTransceiver("audio", { direction: "sendrecv" }),
+        );
+        this.assertOpen();
+      }
       this.attachMotion(
         this.pc.createDataChannel(MOTION_LABEL, { ordered: false, maxRetransmits: 0 }),
       );
@@ -154,17 +231,27 @@ export class PeerCallConnection {
 
   async acceptOffer(serialized: string): Promise<string> {
     this.assertPhase("idle");
-    const offer = readSignal(serialized, "offer");
+    const offer = readSignal(serialized, "offer", this.options.productCall);
     this.phase = "negotiating";
     this.roomId = offer.roomId;
     try {
+      this.setRemoteAudioKinds(offer);
       await this.wait(this.pc.setRemoteDescription({ type: "offer", sdp: offer.sdp }));
       this.assertOpen();
       // JSEP associates an incoming offer with its own transceiver. A pre-created
       // addTransceiver() sender is not necessarily reused on the answering side.
-      const audio = this.pc.getTransceivers().find((item) => item.receiver.track.kind === "audio");
-      if (!audio) throw new Error("Remote offer did not create an audio transceiver");
-      this.initializeAudio(audio);
+      for (const kind of this.options.productCall ? AUDIO_KINDS : ["human" as const]) {
+        const audio = this.pc
+          .getTransceivers()
+          .find(
+            (item) =>
+              item.receiver.track.kind === "audio" &&
+              (!offer.audio || item.mid === offer.audio[kind]),
+          );
+        if (!audio) throw new Error("Remote offer did not create the expected audio transceiver");
+        await this.initializeAudio(kind, audio);
+        this.assertOpen();
+      }
       const answer = await this.wait(this.pc.createAnswer());
       this.assertOpen();
       await this.wait(this.pc.setLocalDescription(answer));
@@ -179,10 +266,16 @@ export class PeerCallConnection {
 
   async acceptAnswer(serialized: string): Promise<void> {
     this.assertPhase("awaiting-answer");
-    const answer = readSignal(serialized, "answer");
+    const answer = readSignal(serialized, "answer", this.options.productCall);
     if (answer.roomId !== this.roomId) throw new Error("Answer belongs to a different invitation");
     this.phase = "negotiating";
     try {
+      if (
+        answer.audio &&
+        !AUDIO_KINDS.every((kind) => answer.audio?.[kind] === this.audio[kind].transceiver?.mid)
+      )
+        throw new Error("Answer changed the negotiated audio sources");
+      this.setRemoteAudioKinds(answer);
       await this.wait(this.pc.setRemoteDescription({ type: "answer", sdp: answer.sdp }));
       this.assertOpen();
       this.phase = "negotiated";
@@ -196,37 +289,45 @@ export class PeerCallConnection {
    * Replaced/superseded tracks are stopped. Pass a dedicated track or clone, not a
    * shared microphone track. Passing null stops owned capture immediately.
    */
-  async setAudioTrack(track: MediaStreamTrack | null): Promise<void> {
+  async setAudioTrack(
+    track: MediaStreamTrack | null,
+    kind: PeerAudioKind = "human",
+  ): Promise<void> {
     this.assertOpen();
+    if (!AUDIO_KINDS.includes(kind) || (kind === "agent" && !this.options.productCall))
+      throw new Error("This call does not support the selected audio source");
     if (track && (track.kind !== "audio" || track.readyState !== "live")) {
       throw new Error("A live audio track is required");
     }
-    const revision = ++this.audioRevision;
-    this.desiredTrack = track;
-    if (track) this.ownedTracks.add(track);
-    else this.stopOwnedTracks();
-    const audio = this.audio;
+    if (track && AUDIO_KINDS.some((other) => other !== kind && this.audio[other].owned.has(track)))
+      throw new Error("Each audio source requires its own dedicated track");
+    const route = this.audio[kind];
+    const revision = ++route.revision;
+    route.desired = track;
+    if (track) route.owned.add(track);
+    else this.stopOwnedTracks(route);
+    const audio = route.transceiver;
     if (!audio) {
       // Before choosing caller/answerer, retain the explicit source without
       // creating an unassociated transceiver that would break answering.
-      this.releaseUnusedTracks();
+      this.releaseUnusedTracks(route);
       return;
     }
 
-    const operation = this.audioQueue.then(async () => {
+    const operation = route.queue.then(async () => {
       try {
         this.assertOpen();
-        if (revision !== this.audioRevision) throw new SupersededAudioChoice();
+        if (revision !== route.revision) throw new SupersededAudioChoice();
         await this.wait(audio.sender.replaceTrack(track));
         this.assertOpen();
-        this.localTrack = track;
-        if (revision !== this.audioRevision) throw new SupersededAudioChoice();
+        route.local = track;
+        if (revision !== route.revision) throw new SupersededAudioChoice();
       } finally {
-        if (revision === this.audioRevision) this.desiredTrack = this.localTrack;
-        this.releaseUnusedTracks();
+        if (revision === route.revision) route.desired = route.local;
+        this.releaseUnusedTracks(route);
       }
     });
-    this.audioQueue = operation.catch(() => {});
+    route.queue = operation.catch(() => {});
     return operation;
   }
 
@@ -361,12 +462,17 @@ export class PeerCallConnection {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    ++this.audioRevision;
+    for (const route of Object.values(this.audio)) ++route.revision;
     for (const cancel of this.pending) cancel(new Error("Peer connection is closed"));
     this.pending.clear();
-    this.stopOwnedTracks();
-    this.localTrack = null;
-    this.desiredTrack = null;
+    for (const route of Object.values(this.audio)) {
+      this.stopOwnedTracks(route);
+      route.local = null;
+      route.desired = null;
+      // Stopping tracks is immediate; sender detachment is best-effort.
+      void route.transceiver?.sender.replaceTrack(null).catch(() => {});
+    }
+    this.remoteAudioKinds.clear();
     for (const track of this.remoteTracks) track.stop();
     this.remoteTracks.clear();
     this.pc.ontrack = null;
@@ -392,23 +498,24 @@ export class PeerCallConnection {
       this.asset.close();
       this.asset = null;
     }
-    // Stopping tracks is immediate; detachment is best-effort before closing the PC.
-    void this.audio?.sender.replaceTrack(null).catch(() => {});
     this.pc.close();
     this.options.onState?.("closed");
   }
 
-  private initializeAudio(audio: RTCRtpTransceiver): void {
-    this.audio = audio;
+  private async initializeAudio(kind: PeerAudioKind, audio: RTCRtpTransceiver): Promise<void> {
+    const route = this.audio[kind];
+    route.transceiver = audio;
     audio.direction = "sendrecv";
     this.preferOpus(audio);
-    if (this.desiredTrack) {
-      void this.setAudioTrack(this.desiredTrack).catch((error: unknown) => {
-        if (!this.closed && !(error instanceof SupersededAudioChoice)) {
-          this.options.onError?.(asError(error));
-        }
-      });
-    }
+    if (route.desired) await this.setAudioTrack(route.desired, kind);
+  }
+
+  private setRemoteAudioKinds(signal: SignalEnvelope): void {
+    // Install before setRemoteDescription(), which can dispatch track events
+    // before its promise resolves. This metadata has no control/tool authority.
+    this.remoteAudioKinds = new Map(
+      signal.audio ? AUDIO_KINDS.map((kind) => [signal.audio?.[kind] as string, kind]) : [],
+    );
   }
 
   private preferOpus(audio: RTCRtpTransceiver): void {
@@ -472,12 +579,20 @@ export class PeerCallConnection {
       throw new Error("Local session description is unavailable");
     }
     const serialized = JSON.stringify({
-      version: 1,
+      version: this.options.productCall ? 2 : 1,
       roomId: this.roomId,
       type,
       sdp: description.sdp,
+      ...(this.options.productCall
+        ? {
+            audio: {
+              human: this.audio.human.transceiver?.mid,
+              agent: this.audio.agent.transceiver?.mid,
+            },
+          }
+        : {}),
     });
-    readSignal(serialized, type);
+    readSignal(serialized, type, this.options.productCall);
     return serialized;
   }
 
@@ -535,16 +650,16 @@ export class PeerCallConnection {
     if (this.phase !== phase) throw new Error("Unexpected or duplicate negotiation operation");
   }
 
-  private stopOwnedTracks(): void {
-    for (const track of this.ownedTracks) track.stop();
-    this.ownedTracks.clear();
+  private stopOwnedTracks(route: AudioRoute): void {
+    for (const track of route.owned) track.stop();
+    route.owned.clear();
   }
 
-  private releaseUnusedTracks(): void {
-    for (const track of this.ownedTracks) {
-      if (track !== this.localTrack && track !== this.desiredTrack) {
+  private releaseUnusedTracks(route: AudioRoute): void {
+    for (const track of route.owned) {
+      if (track !== route.local && track !== route.desired) {
         track.stop();
-        this.ownedTracks.delete(track);
+        route.owned.delete(track);
       }
     }
   }

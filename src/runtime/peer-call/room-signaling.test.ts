@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CallPeer } from "./call-peer";
+import { AudioProtocolVersionError } from "./peer-connection";
 import { RoomSignaling, readRoomIceServers, validateRoomSignalingEndpoint } from "./room-signaling";
 
 const ROOM_ID = "10000000-0000-4000-8000-000000000001";
@@ -111,6 +112,29 @@ function admitted(
   });
 }
 
+async function awaitingSignal(role: "host" | "guest") {
+  const f = role === "host" ? await hostStart() : fixture("guest");
+  if (role === "host") {
+    await hostRequest(f);
+    await f.room.accept();
+  } else {
+    const joining = f.room.join(INVITE);
+    f.socket.open();
+    f.socket.receive({
+      type: "requested",
+      hostName: "Host AI",
+      expiresAt: Date.now() + 300_000,
+      roomId: ROOM_ID,
+      localEndpointId: GUEST_ID,
+      remoteEndpointId: HOST_ID,
+    });
+    await joining;
+  }
+  admitted(f, role);
+  await flush();
+  return f;
+}
+
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
   for (const room of rooms.splice(0)) room.close();
@@ -118,6 +142,41 @@ afterEach(() => {
 });
 
 describe("room admission and automatic signaling", () => {
+  it.each([
+    "host",
+    "guest",
+  ] as const)("shows the fixed audio compatibility message when the %s rejects an incompatible signal", async (role) => {
+    const f = await awaitingSignal(role);
+    const error = new AudioProtocolVersionError();
+    // Even the recognized local error's mutable message is not an output channel.
+    error.message = "untrusted private SDP text";
+    const receive = role === "host" ? f.peer.complete : f.peer.accept;
+    receive.mockRejectedValueOnce(error);
+    const kind = role === "host" ? "answer" : "offer";
+    f.socket.receive({ type: "signal", kind, data: "incompatible opaque signal" });
+    await flush();
+    expect(f.room.error).toBe("音声分離に対応した同じ版で接続し直してください。");
+    expect(f.room.closed).toBe(true);
+    expect(f.peer.close).toHaveBeenCalledOnce();
+    expect(f.socket.sent[f.socket.sent.length - 1]).toEqual({ type: "leave" });
+    expect(f.socket.sent.some((message) => message.type === "ready")).toBe(false);
+    expect(f.room.error).not.toContain("private SDP");
+  });
+
+  it.each([
+    new Error("untrusted private SDP text"),
+    Object.assign(new Error("untrusted private SDP text"), { name: "AudioProtocolVersionError" }),
+    { name: "AudioProtocolVersionError", message: "untrusted private SDP text" },
+  ])("sanitizes generic or forged compatibility errors from negotiation: %j", async (error) => {
+    const f = await awaitingSignal("host");
+    f.peer.complete.mockRejectedValueOnce(error);
+    f.socket.receive({ type: "signal", kind: "answer", data: "opaque answer" });
+    await flush();
+    expect(f.room.error).toBe("通話を準備できませんでした。新しいルームでお試しください。");
+    expect(f.peer.close).toHaveBeenCalledOnce();
+    expect(f.room.error).not.toContain("private SDP");
+  });
+
   it("creates no media peer until admission, then exchanges the host offer and answer automatically", async () => {
     const f = await hostStart();
     expect(f.room.state).toBe("hosting");

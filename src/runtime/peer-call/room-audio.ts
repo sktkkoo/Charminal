@@ -1,20 +1,34 @@
-/** Owned call mixer. The microphone and AI output have independent lifetimes. */
+export type RoomAudioKind = "agent" | "human";
+
+export interface RoomAudioTracks {
+  readonly agent: MediaStreamTrack;
+  readonly human: MediaStreamTrack;
+}
+
+interface RemoteAudioNodes {
+  readonly source: MediaStreamAudioSourceNode;
+  readonly analyser: AnalyserNode | null;
+  readonly gain: GainNode;
+}
+
+/** Owned call audio. Human and AI senders stay separate throughout transport and playback. */
 export class RoomAudio {
   private context: AudioContext | null = null;
-  private destination: MediaStreamAudioDestinationNode | null = null;
+  private agentOutput: MediaStreamAudioDestinationNode | null = null;
+  private humanOutput: MediaStreamAudioDestinationNode | null = null;
+  private outputTracks: RoomAudioTracks | null = null;
   private agentInput: MediaStreamAudioDestinationNode | null = null;
   private agentInputMixer: DynamicsCompressorNode | null = null;
-  private mixer: DynamicsCompressorNode | null = null;
+  private agentMixer: DynamicsCompressorNode | null = null;
+  private humanMixer: DynamicsCompressorNode | null = null;
   private microphone: MediaStream | null = null;
   private micSource: MediaStreamAudioSourceNode | null = null;
   private agent: MediaStream | null = null;
   private agentSource: MediaStreamAudioSourceNode | null = null;
   private agentAnalyser: AnalyserNode | null = null;
   private agentMonitor: GainNode | null = null;
-  private remote: MediaStream | null = null;
-  private remoteSource: MediaStreamAudioSourceNode | null = null;
-  private remoteAnalyser: AnalyserNode | null = null;
-  private remoteGain: GainNode | null = null;
+  private readonly remoteStreams = new Map<RoomAudioKind, MediaStream>();
+  private readonly remoteNodes = new Map<RoomAudioKind, RemoteAudioNodes>();
   microphoneRequested = false;
   private microphoneRevision = 0;
   private agentRevision = 0;
@@ -26,16 +40,19 @@ export class RoomAudio {
 
   constructor(private readonly monitorAgent: boolean) {}
 
-  async prepare(): Promise<MediaStreamTrack> {
+  /** Stable silent tracks are negotiated before either input is enabled; no microphone prompt. */
+  async prepare(): Promise<RoomAudioTracks> {
     if (this.closed) throw new Error("Call audio is closed");
     if (!this.context) {
       const context = new AudioContext({ latencyHint: "interactive" });
       this.context = context;
-      this.destination = context.createMediaStreamDestination();
+      this.agentOutput = context.createMediaStreamDestination();
+      this.humanOutput = context.createMediaStreamDestination();
       this.agentInput = context.createMediaStreamDestination();
-      this.mixer = context.createDynamicsCompressor();
+      this.agentMixer = context.createDynamicsCompressor();
+      this.humanMixer = context.createDynamicsCompressor();
       this.agentInputMixer = context.createDynamicsCompressor();
-      for (const mixer of [this.mixer, this.agentInputMixer]) {
+      for (const mixer of [this.agentMixer, this.humanMixer, this.agentInputMixer]) {
         mixer.threshold.value = -3;
         mixer.knee.value = 6;
         mixer.ratio.value = 4;
@@ -43,8 +60,9 @@ export class RoomAudio {
         mixer.release.value = 0.1;
       }
       this.agentInputMixer.connect(this.agentInput);
-      this.mixer.connect(this.destination);
-      this.connectRemote();
+      this.agentMixer.connect(this.agentOutput);
+      this.humanMixer.connect(this.humanOutput);
+      for (const kind of this.remoteStreams.keys()) this.connectRemote(kind);
     }
     const context = this.context;
     if (context.state !== "running") {
@@ -68,9 +86,13 @@ export class RoomAudio {
       });
     }
     if (this.closed || context.state !== "running") throw new Error("Call audio is unavailable");
-    const track = this.destination?.stream.getAudioTracks()[0];
-    if (!track) throw new Error("Audio sender is unavailable");
-    return track;
+    if (!this.outputTracks) {
+      const agent = this.agentOutput?.stream.getAudioTracks()[0];
+      const human = this.humanOutput?.stream.getAudioTracks()[0];
+      if (!agent || !human) throw new Error("Audio sender is unavailable");
+      this.outputTracks = { agent, human };
+    }
+    return this.outputTracks;
   }
 
   async setMicrophone(enabled: boolean): Promise<void> {
@@ -96,9 +118,9 @@ export class RoomAudio {
         return;
       }
       this.microphone = stream;
-      const { context, mixer } = this.graph();
+      const { context, humanMixer } = this.graph();
       this.micSource = context.createMediaStreamSource(stream);
-      this.micSource.connect(mixer);
+      this.micSource.connect(humanMixer);
       if (this.agentInputMixer) this.micSource.connect(this.agentInputMixer);
     } catch (error) {
       if (revision === this.microphoneRevision) this.stopMicrophone();
@@ -114,7 +136,7 @@ export class RoomAudio {
     );
   }
 
-  /** Borrowed stream: human microphone + peer, never this resident's own output. */
+  /** Borrowed stream: local human + both peer voices, never this resident's own AI output. */
   getAgentInput(): MediaStream | null {
     return this.closed ? null : (this.agentInput?.stream ?? null);
   }
@@ -138,7 +160,7 @@ export class RoomAudio {
     if (!track) throw new Error("Agent did not provide live audio");
     const owned = track.clone();
     try {
-      const { context, mixer } = this.graph();
+      const { context, agentMixer } = this.graph();
       this.agent = new MediaStream([owned]);
       this.agentSource = context.createMediaStreamSource(this.agent);
       this.agentAnalyser = context.createAnalyser();
@@ -146,7 +168,7 @@ export class RoomAudio {
       this.agentMonitor = context.createGain();
       this.agentMonitor.gain.value = this.monitorAgent && this.outputEnabled ? 1 : 0;
       this.agentSource.connect(this.agentAnalyser);
-      this.agentAnalyser.connect(mixer);
+      this.agentAnalyser.connect(agentMixer);
       this.agentAnalyser.connect(this.agentMonitor);
       this.agentMonitor.connect(context.destination);
     } catch (error) {
@@ -168,11 +190,12 @@ export class RoomAudio {
     this.agentMonitor = null;
   }
 
-  setRemote(stream: MediaStream): void {
+  setRemote(kind: RoomAudioKind, stream: MediaStream | null): void {
     if (this.closed) return;
-    this.disconnectRemote();
-    this.remote = stream;
-    this.connectRemote();
+    this.disconnectRemote(kind);
+    if (stream) this.remoteStreams.set(kind, stream);
+    else this.remoteStreams.delete(kind);
+    this.connectRemote(kind);
   }
 
   async setOutput(enabled: boolean): Promise<void> {
@@ -192,7 +215,7 @@ export class RoomAudio {
     return this.sample(this.agentAnalyser);
   }
   sampleRemoteMouth(): number {
-    return this.sample(this.remoteAnalyser);
+    return this.sample(this.remoteNodes.get("agent")?.analyser ?? null);
   }
 
   close(): void {
@@ -203,51 +226,64 @@ export class RoomAudio {
     this.pending.clear();
     this.stopMicrophone();
     this.stopAgent();
-    this.disconnectRemote();
-    this.remote = null;
-    this.mixer?.disconnect();
+    for (const kind of this.remoteNodes.keys()) this.disconnectRemote(kind);
+    this.remoteStreams.clear();
+    this.agentMixer?.disconnect();
+    this.humanMixer?.disconnect();
     this.agentInputMixer?.disconnect();
-    for (const track of this.destination?.stream.getTracks() ?? []) track.stop();
+    for (const track of this.agentOutput?.stream.getTracks() ?? []) track.stop();
+    for (const track of this.humanOutput?.stream.getTracks() ?? []) track.stop();
     for (const track of this.agentInput?.stream.getTracks() ?? []) track.stop();
     if (this.context) void this.context.close().catch(() => {});
     this.context = null;
-    this.destination = null;
+    this.agentOutput = null;
+    this.humanOutput = null;
+    this.outputTracks = null;
     this.agentInput = null;
     this.agentInputMixer = null;
-    this.mixer = null;
+    this.agentMixer = null;
+    this.humanMixer = null;
   }
 
-  private graph(): { context: AudioContext; mixer: DynamicsCompressorNode } {
-    if (this.closed || !this.context || !this.mixer) throw new Error("Call audio is unavailable");
-    return { context: this.context, mixer: this.mixer };
+  private graph(): {
+    context: AudioContext;
+    agentMixer: DynamicsCompressorNode;
+    humanMixer: DynamicsCompressorNode;
+  } {
+    if (this.closed || !this.context || !this.agentMixer || !this.humanMixer)
+      throw new Error("Call audio is unavailable");
+    return { context: this.context, agentMixer: this.agentMixer, humanMixer: this.humanMixer };
   }
 
   private applyOutput(): void {
-    if (this.remoteGain) this.remoteGain.gain.value = this.outputEnabled ? 1 : 0;
+    for (const { gain } of this.remoteNodes.values()) gain.gain.value = this.outputEnabled ? 1 : 0;
     if (this.agentMonitor)
       this.agentMonitor.gain.value = this.outputEnabled && this.monitorAgent ? 1 : 0;
   }
 
-  private connectRemote(): void {
-    if (!this.context || !this.remote || this.remoteSource) return;
-    this.remoteSource = this.context.createMediaStreamSource(this.remote);
-    this.remoteAnalyser = this.context.createAnalyser();
-    this.remoteAnalyser.fftSize = 512;
-    this.remoteGain = this.context.createGain();
-    this.remoteSource.connect(this.remoteAnalyser);
-    if (this.agentInputMixer) this.remoteSource.connect(this.agentInputMixer);
-    this.remoteAnalyser.connect(this.remoteGain);
-    this.remoteGain.connect(this.context.destination);
+  private connectRemote(kind: RoomAudioKind): void {
+    const stream = this.remoteStreams.get(kind);
+    if (!this.context || !stream || this.remoteNodes.has(kind)) return;
+    const source = this.context.createMediaStreamSource(stream);
+    const analyser = kind === "agent" ? this.context.createAnalyser() : null;
+    const gain = this.context.createGain();
+    this.remoteNodes.set(kind, { source, analyser, gain });
+    if (analyser) {
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      analyser.connect(gain);
+    } else source.connect(gain);
+    if (this.agentInputMixer) source.connect(this.agentInputMixer);
+    gain.connect(this.context.destination);
     this.applyOutput();
   }
 
-  private disconnectRemote(): void {
-    this.remoteSource?.disconnect();
-    this.remoteAnalyser?.disconnect();
-    this.remoteGain?.disconnect();
-    this.remoteSource = null;
-    this.remoteAnalyser = null;
-    this.remoteGain = null;
+  private disconnectRemote(kind: RoomAudioKind): void {
+    const nodes = this.remoteNodes.get(kind);
+    nodes?.source.disconnect();
+    nodes?.analyser?.disconnect();
+    nodes?.gain.disconnect();
+    this.remoteNodes.delete(kind);
   }
 
   private sample(analyser: AnalyserNode | null): number {
