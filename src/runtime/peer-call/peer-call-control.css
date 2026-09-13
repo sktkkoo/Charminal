@@ -267,6 +267,24 @@
   background: var(--yorishiro-panel-bg, #202124);
   text-align: left;
 }
+.peer-call-ai-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--yorishiro-fg, #e8ebe7);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.peer-call-ai-heading svg {
+  flex-shrink: 0;
+}
+.peer-call-ai-disclosure > .peer-call-ai-reason {
+  margin: 7px 0 10px;
+  color: var(--yorishiro-fg, #e8ebe7);
+  font-size: 11px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
 .peer-call-ai-badges {
   display: flex;
   flex-wrap: wrap;
@@ -277,12 +295,17 @@
   align-items: center;
   gap: 5px;
   padding: 4px 7px;
-  border: 1px solid var(--yorishiro-accent-border, #ffffff20);
+  border: 1px solid var(--yorishiro-border, #ffffff20);
   border-radius: 6px;
   color: var(--yorishiro-fg, #e8ebe7);
-  background: var(--yorishiro-accent-soft, #ffffff08);
+  background: var(--yorishiro-input-bg, #ffffff08);
   font-size: 10px;
   line-height: 1.4;
+}
+.peer-call-ai-badges > .is-disabled {
+  color: color-mix(in srgb, #e5484d 70%, var(--yorishiro-fg, #e8ebe7));
+  border-color: color-mix(in srgb, currentColor 35%, transparent);
+  background: color-mix(in srgb, currentColor 8%, var(--yorishiro-panel-bg, #202124));
 }
 .peer-call-ai-badges svg {
   flex-shrink: 0;

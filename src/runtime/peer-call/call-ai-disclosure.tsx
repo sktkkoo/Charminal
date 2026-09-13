@@ -1,25 +1,38 @@
-import { MessageSquarePlus, Terminal, Unplug, Wrench } from "lucide-react";
+import { MessageSquarePlus, Shield, X } from "lucide-react";
 
 /** Describes the call configuration before startup; it is not a live verification result. */
 export function CallAiDisclosure({ language = "ja" }: { language?: string }) {
   const t = (jp: string, en: string) => (language.startsWith("ja") ? jp : en);
   return (
-    <section className="peer-call-ai-disclosure" aria-label={t("通話AIの設定", "Call AI setup")}>
+    <section
+      className="peer-call-ai-disclosure"
+      aria-label={t("通話中の保護設定", "Call safeguards")}
+    >
+      <div className="peer-call-ai-heading">
+        <Shield size={14} aria-hidden="true" />
+        <strong>{t("通話中の保護設定", "Call safeguards")}</strong>
+      </div>
+      <p className="peer-call-ai-reason">
+        {t(
+          "通話からこのPCのファイル操作やコマンド実行につながらないよう、ツール・MCP・シェルを無効にします。",
+          "Tools, MCP and shell are disabled to separate call conversation from local file access and command execution.",
+        )}
+      </p>
       <div className="peer-call-ai-badges">
         <span>
           <MessageSquarePlus size={13} aria-hidden="true" />
           {t("新規セッション", "New session")}
         </span>
-        <span>
-          <Wrench size={13} aria-hidden="true" />
+        <span className="is-disabled">
+          <X size={13} aria-hidden="true" />
           {t("ツール無効", "Tools off")}
         </span>
-        <span>
-          <Unplug size={13} aria-hidden="true" />
+        <span className="is-disabled">
+          <X size={13} aria-hidden="true" />
           {t("MCP無効", "MCP off")}
         </span>
-        <span>
-          <Terminal size={13} aria-hidden="true" />
+        <span className="is-disabled">
+          <X size={13} aria-hidden="true" />
           {t("シェル無効", "Shell off")}
         </span>
       </div>
