@@ -4043,6 +4043,19 @@ function App() {
     onCloseRequested: () => endCallRef.current?.(),
   });
   const callSessionActive = tabManager.isCallSession(tabState.activeSessionId);
+  const callComposerRef = useRef<HTMLTextAreaElement>(null);
+  const callComposerInline = !viewModeOwnsChrome && canMountTerminals && callSessionActive;
+  const handlePeerCallTopicRequested = useCallback(() => {
+    if (callComposerInline) {
+      setQuickChatOpen(false);
+      callComposerRef.current?.focus({ preventScroll: true });
+    } else {
+      setQuickChatOpen(true);
+    }
+  }, [callComposerInline]);
+  useEffect(() => {
+    if (callComposerInline) setQuickChatOpen(false);
+  }, [callComposerInline]);
   const quickChatDraft = useQuickChatDrafts(
     callSession.sessionId ?? (peerCall ? "peer-call" : null),
   );
@@ -5696,7 +5709,8 @@ function App() {
           peerCallRef.current ||
           tabManager.getState().sessions.some((id) => tabManager.isCallSession(id))
         ) {
-          setQuickChatOpen((value) => !value);
+          if (callComposerInline) handlePeerCallTopicRequested();
+          else setQuickChatOpen((value) => !value);
           return;
         }
         if (codexRealtimeState.status === "active") {
@@ -5730,9 +5744,11 @@ function App() {
           : undefined,
     });
   }, [
+    callComposerInline,
     codexRealtimeState.microphoneMuted,
     codexRealtimeState.status,
     conversationShortcutEnabled,
+    handlePeerCallTopicRequested,
     handleToggleVoice,
     isMac,
     quickChatOpen,
@@ -5748,7 +5764,7 @@ function App() {
     if (quickChatDraft.owner !== currentCallOwner) return;
     const prompt = quickChatDraft.value.trim();
     if (!quickChatEnabled || prompt.length === 0) return;
-    if (currentCallOwner !== null && !call?.connected) return;
+    if (currentCallOwner !== null && !call?.ready) return;
     if (call?.connected) {
       if (peerCallSubmitRef.current === call) return;
       peerCallSubmitRef.current = call;
@@ -6076,7 +6092,7 @@ function App() {
             onSessionStart={beginCallSession}
             controlsHost={peerCallControlsHost}
             onComposerHostChange={setPeerCallComposerHost}
-            onTopicRequested={() => setQuickChatOpen(true)}
+            onTopicRequested={handlePeerCallTopicRequested}
             onShowResident={
               peerCallSurfaces.show
                 ? () => void peerCallSurfaces.show?.()?.catch(() => {})
@@ -6248,7 +6264,12 @@ function App() {
               <CallSessionView
                 room={peerCall}
                 language={appLanguage.resolved}
-                onChat={() => setQuickChatOpen(true)}
+                draft={quickChatDraft.value}
+                onDraftChange={quickChatDraft.setValue}
+                onSubmit={handleQuickChatSubmit}
+                sending={peerCallSubmitting}
+                inputError={peerCallInputError}
+                composerRef={callComposerRef}
                 onEnd={() => endCallRef.current?.()}
               />
             )}
@@ -6263,10 +6284,11 @@ function App() {
           />
         ) : null}
       </div>
-      {quickChatOpen && quickChatEnabled ? (
+      {quickChatOpen && quickChatEnabled && !callComposerInline ? (
         <QuickChatInput
           portalTarget={callQuickChat && !peerCallControlsHost ? peerCallComposerHost : null}
-          busy={callQuickChat && (!peerCall?.connected || peerCallSubmitting)}
+          busy={callQuickChat && (!peerCall?.ready || peerCallSubmitting)}
+          submitOnControlEnter={callQuickChat}
           error={callQuickChat ? peerCallInputError : undefined}
           maxLength={callQuickChat ? 2000 : undefined}
           value={quickChatDraft.value}

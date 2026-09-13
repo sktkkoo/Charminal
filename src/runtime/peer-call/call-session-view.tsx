@@ -1,5 +1,5 @@
-import { MessageSquare, Phone, PhoneOff } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { ArrowUp, Phone, PhoneOff } from "lucide-react";
+import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 import type { RoomCall } from "./room-call";
 import "./peer-call-control.css";
 
@@ -7,17 +7,31 @@ import "./peer-call-control.css";
 export function CallSessionView({
   room,
   language,
-  onChat,
+  draft,
+  onDraftChange,
+  onSubmit,
+  sending,
+  inputError,
+  composerRef,
   onEnd,
 }: {
   room: RoomCall | null;
   language: string;
-  onChat(): void;
+  draft: string;
+  onDraftChange(text: string): void;
+  onSubmit(): void;
+  sending: boolean;
+  inputError?: string;
+  composerRef?: RefObject<HTMLTextAreaElement | null>;
   onEnd(): void;
 }) {
   const surfaceRef = useRef<HTMLElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const followsLatest = useRef(true);
+  const fallbackComposerRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = composerRef ?? fallbackComposerRef;
+  const composing = useRef(false);
+  const submittedDraft = useRef<string | null>(null);
   const lastTranscript = room?.transcripts[room.transcripts.length - 1];
   useEffect(() => {
     // A hidden xterm may still have had focus when the call tab was opened.
@@ -29,8 +43,33 @@ export function CallSessionView({
       messages.scrollTop = messages.scrollHeight;
     }
   }, [lastTranscript]);
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || textarea.value !== draft) return;
+    textarea.style.height = "0px";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 108)}px`;
+  }, [draft, textareaRef]);
+  useEffect(() => {
+    if (!sending || submittedDraft.current !== draft) submittedDraft.current = null;
+  }, [draft, sending]);
   const ja = language.startsWith("ja");
   const t = (jp: string, en: string) => (ja ? jp : en);
+  const canSend = !!room?.ready && !sending && draft.trim().length > 0 && draft.length <= 2000;
+  const submit = () => {
+    if (!canSend || composing.current || submittedDraft.current === draft) return;
+    submittedDraft.current = draft;
+    onSubmit();
+  };
+  const status = sending
+    ? t("送信中…", "Sending…")
+    : room?.paused
+      ? t("AIの会話を再開すると送信できます。", "Resume the AI conversation to send a message.")
+      : !room?.connected
+        ? t("接続後に送信できます。", "You can send once the call connects.")
+        : !room.ready
+          ? t("ふたりのAIが会話に参加するのを待っています。", "Waiting for both AIs to join.")
+          : null;
+  const error = inputError || room?.error;
   return (
     <section
       ref={surfaceRef}
@@ -97,12 +136,67 @@ export function CallSessionView({
           </p>
         )}
       </div>
-      <footer>
-        {room?.error && <p role="alert">{room.error}</p>}
-        <button type="button" onClick={onChat} disabled={!room?.connected}>
-          <MessageSquare size={16} aria-hidden="true" />
-          {t("ふたりに話しかける", "Talk to both residents")}
-        </button>
+      <footer className="call-session-composer">
+        {error && <p role="alert">{error}</p>}
+        {status && (
+          <p className="call-session-composer-status" role="status">
+            {status}
+          </p>
+        )}
+        <form
+          aria-label={t("通話へのメッセージ", "Call message")}
+          aria-busy={sending}
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit();
+          }}
+        >
+          <textarea
+            ref={textareaRef}
+            aria-label={t("ふたりに話しかける", "Talk to both residents")}
+            aria-invalid={!!error}
+            autoComplete="off"
+            disabled={sending}
+            maxLength={2000}
+            rows={1}
+            value={draft}
+            placeholder={t("ふたりに話しかける…", "Talk to both residents…")}
+            onChange={(event) => onDraftChange(event.currentTarget.value)}
+            onCompositionStart={() => {
+              composing.current = true;
+            }}
+            onCompositionEnd={() => {
+              composing.current = false;
+            }}
+            onKeyDown={(event) => {
+              if (
+                event.key !== "Enter" ||
+                !event.ctrlKey ||
+                event.metaKey ||
+                event.shiftKey ||
+                event.altKey ||
+                composing.current ||
+                event.nativeEvent.isComposing ||
+                event.nativeEvent.keyCode === 229
+              )
+                return;
+              event.preventDefault();
+              if (!event.repeat) submit();
+            }}
+          />
+          <button
+            className="call-session-send"
+            type="submit"
+            disabled={!canSend}
+            aria-label={t("送信", "Send")}
+            title={t("送信（Ctrl+Enter）", "Send (Ctrl+Enter)")}
+          >
+            <ArrowUp size={18} aria-hidden="true" />
+          </button>
+        </form>
+        <p className="call-session-composer-hint">
+          {t("Enterで改行 · Ctrl+Enterで送信", "Enter for a new line · Ctrl+Enter to send")}
+        </p>
       </footer>
     </section>
   );

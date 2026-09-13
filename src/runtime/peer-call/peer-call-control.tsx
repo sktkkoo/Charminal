@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { requestControlSurface, subscribeControlSurface } from "../control-surface";
 import { getThreeRuntime } from "../three-runtime/three-runtime";
 import { captureAvatarMotion } from "./avatar-motion";
+import { CallAiDisclosure } from "./call-ai-disclosure";
 import { type NativeCallAvatarProps, NativeCallStage } from "./call-avatar";
 import {
   type CallControlsAction,
@@ -528,6 +529,7 @@ export function PeerCallControl({
               <strong>{incoming.name}</strong>
               <p>{t("通話を希望しています", "Is calling you")}</p>
             </div>
+            <CallAiDisclosure language={language} />
             <div className="peer-call-actions">
               <button
                 type="button"
@@ -663,6 +665,7 @@ export function PeerCallControl({
                 <strong>{guest.name}</strong>
                 <p>{t("部屋への参加を希望しています", "Would like to join your room")}</p>
               </div>
+              <CallAiDisclosure language={language} />
               {incomingActions}
             </aside>
           ) : (

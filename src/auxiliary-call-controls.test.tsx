@@ -64,7 +64,7 @@ describe("detached call entry presentation", () => {
     const next = state(2);
     act(() => test.receive?.(next));
     expect(screen.getByRole("textbox", { name: "通話での名前" })).toHaveProperty("value", "Mafu");
-    fireEvent.click(screen.getByRole("button", { name: "部屋を作る" }));
+    fireEvent.click(screen.getByRole("button", { name: "新しい相手を招待" }));
     await waitFor(() =>
       expect(test.request).toHaveBeenCalledWith(2, { type: "create", name: "Mafu" }),
     );

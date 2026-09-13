@@ -110,6 +110,64 @@ describe("QuickChatInput", () => {
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
     expect(onClose).toHaveBeenCalledOnce();
   });
+
+  it("uses a multiline call editor and sends only with Ctrl+Enter, never plain Enter or Cmd+Enter", () => {
+    const onSubmit = vi.fn();
+    const onChange = vi.fn();
+    render(
+      <QuickChatInput
+        submitOnControlEnter
+        value={"first line\nsecond line"}
+        strings={strings}
+        onChange={onChange}
+        onSubmit={onSubmit}
+        onClose={vi.fn()}
+      />,
+    );
+    const textarea = screen.getByRole("textbox");
+    expect(textarea.tagName).toBe("TEXTAREA");
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea).toHaveProperty("value", "first line\nsecond line");
+    expect(screen.getByText("Ctrl+Enter")).toBeTruthy();
+    fireEvent.change(textarea, { target: { value: "edited\nmessage" } });
+    expect(onChange).toHaveBeenCalledWith("edited\nmessage");
+    expect(fireEvent.keyDown(textarea, { key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true })).toBe(true);
+    expect(fireEvent.keyDown(textarea, { key: "Enter", metaKey: true })).toBe(true);
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true, isComposing: true });
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true, keyCode: 229 });
+    fireEvent.compositionStart(textarea);
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+    fireEvent.compositionEnd(textarea);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true })).toBe(false);
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true, repeat: true });
+    fireEvent.click(screen.getByRole("button", { name: strings.send }));
+    expect(onSubmit).toHaveBeenCalledOnce();
+  });
+
+  it("supports the explicit call Send button and retry without clearing the draft", () => {
+    const options = {
+      submitOnControlEnter: true,
+      value: "Draft\ncontinued",
+      strings,
+      onChange: vi.fn(),
+      onSubmit: vi.fn(),
+      onClose: vi.fn(),
+    };
+    const view = render(<QuickChatInput {...options} />);
+    const send = screen.getByRole("button", { name: strings.send });
+    fireEvent.click(send);
+    view.rerender(<QuickChatInput {...options} busy />);
+    fireEvent.submit(screen.getByRole("dialog"));
+    expect(options.onSubmit).toHaveBeenCalledOnce();
+    view.rerender(<QuickChatInput {...options} error="Retry the message" />);
+    expect(screen.getByRole("textbox")).toHaveProperty("value", options.value);
+    fireEvent.click(send);
+    expect(options.onSubmit).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape" });
+    expect(options.onClose).toHaveBeenCalledOnce();
+  });
 });
 
 describe("QuickVoiceIndicator", () => {

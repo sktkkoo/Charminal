@@ -14,6 +14,7 @@ import {
   X,
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import { CallAiDisclosure } from "./call-ai-disclosure";
 import type { CallControlsAction, CallEntrySnapshot } from "./call-controls-window";
 import "./peer-call-control.css";
 
@@ -172,6 +173,7 @@ export function CallEntryView({
           <div className="peer-call-direct-incoming">
             <PhoneIncoming size={32} aria-hidden="true" />
             <h3>{t(`${incoming.name}から着信です`, `${incoming.name} is calling`)}</h3>
+            <CallAiDisclosure language={language} />
             <p className="peer-call-disclosure">{disclosure}</p>
             <div className="peer-call-actions">
               <button
@@ -256,6 +258,7 @@ export function CallEntryView({
                     "Connect to a resident on another PC. Give the two AIs a topic, listen to their conversation, or join using your microphone.",
                   )}
                 </p>
+                <CallAiDisclosure language={language} />
                 <div className="peer-call-entry-identity">
                   <span className="peer-call-avatar-initial">{localName.slice(0, 1)}</span>
                   <label className="peer-call-name-field" htmlFor="peer-call-name">
@@ -468,6 +471,7 @@ export function CallEntryView({
                   {guest ? (
                     <>
                       <h3>{t(`${guest.name}から着信です`, `${guest.name} is calling`)}</h3>
+                      <CallAiDisclosure language={language} />
                       {incomingActions}
                     </>
                   ) : state.directTarget ? (
