@@ -1,4 +1,4 @@
-import { MessageSquarePlus, Shield, X } from "lucide-react";
+import { LockKeyhole, MessageSquarePlus, Shield } from "lucide-react";
 
 /** Describes the call configuration before startup; it is not a live verification result. */
 export function CallAiDisclosure({ language = "ja" }: { language?: string }) {
@@ -14,8 +14,8 @@ export function CallAiDisclosure({ language = "ja" }: { language?: string }) {
       </div>
       <p className="peer-call-ai-reason">
         {t(
-          "通話からこのPCのファイル操作やコマンド実行につながらないよう、ツール・MCP・シェルを無効にします。",
-          "Tools, MCP and shell are disabled to separate call conversation from local file access and command execution.",
+          "このPCを保護するため、ツール・MCP・シェルを無効にします。通話からのファイル操作やコマンド実行を制限する設定です。",
+          "Tools, MCP and shell are disabled to protect this PC. These settings restrict file access and command execution from the call.",
         )}
       </p>
       <div className="peer-call-ai-badges">
@@ -23,16 +23,16 @@ export function CallAiDisclosure({ language = "ja" }: { language?: string }) {
           <MessageSquarePlus size={13} aria-hidden="true" />
           {t("新規セッション", "New session")}
         </span>
-        <span className="is-disabled">
-          <X size={13} aria-hidden="true" />
+        <span className="is-protected">
+          <LockKeyhole size={13} aria-hidden="true" />
           {t("ツール無効", "Tools off")}
         </span>
-        <span className="is-disabled">
-          <X size={13} aria-hidden="true" />
+        <span className="is-protected">
+          <LockKeyhole size={13} aria-hidden="true" />
           {t("MCP無効", "MCP off")}
         </span>
-        <span className="is-disabled">
-          <X size={13} aria-hidden="true" />
+        <span className="is-protected">
+          <LockKeyhole size={13} aria-hidden="true" />
           {t("シェル無効", "Shell off")}
         </span>
       </div>

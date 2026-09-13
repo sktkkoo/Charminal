@@ -302,10 +302,18 @@
   font-size: 10px;
   line-height: 1.4;
 }
-.peer-call-ai-badges > .is-disabled {
-  color: color-mix(in srgb, #e5484d 70%, var(--yorishiro-fg, #e8ebe7));
-  border-color: color-mix(in srgb, currentColor 35%, transparent);
-  background: color-mix(in srgb, currentColor 8%, var(--yorishiro-panel-bg, #202124));
+.peer-call-ai-badges > .is-protected {
+  color: var(--yorishiro-fg, #e8ebe7);
+  border-color: color-mix(
+    in srgb,
+    var(--yorishiro-accent, #9caf9d) 35%,
+    var(--yorishiro-border, #ffffff20)
+  );
+  background: color-mix(
+    in srgb,
+    var(--yorishiro-accent, #9caf9d) 12%,
+    var(--yorishiro-panel-bg, #202124)
+  );
 }
 .peer-call-ai-badges svg {
   flex-shrink: 0;
