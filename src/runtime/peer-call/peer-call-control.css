@@ -1118,7 +1118,7 @@
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  width: max-content;
+  width: 280px;
   max-width: calc(100vw - 20px);
   max-height: calc(100vh - 56px);
   overflow-y: auto;
@@ -1141,28 +1141,25 @@
 }
 .peer-call-session-strip {
   box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
   width: 100%;
   max-width: 100%;
   padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--yorishiro-border);
   border-radius: 14px;
-  background: rgba(23, 26, 34, 0.94);
-  color: #f2f4fa;
+  background: var(--yorishiro-panel-bg);
+  color: var(--yorishiro-fg);
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
   -webkit-app-region: no-drag;
   font-size: 12px;
 }
 .peer-call-session-status {
   display: grid;
-  flex: 1 1 150px;
   min-width: 0;
   max-width: 100%;
   gap: 2px;
-  margin-right: 8px;
 }
 .peer-call-session-status strong,
 .peer-call-session-partner-name {
@@ -1171,7 +1168,7 @@
   white-space: nowrap;
 }
 .peer-call-session-status small {
-  color: #bec6d7;
+  color: var(--yorishiro-fg-dim);
   font-size: 10px;
   overflow-wrap: anywhere;
 }
@@ -1188,26 +1185,51 @@
   flex-shrink: 1;
   min-width: 0;
 }
-.peer-call-session-strip button {
+.peer-call-session-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.peer-call-session-toolbar button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 30px;
-  min-width: 30px;
-  max-width: 100%;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   padding: 6px;
   border: 0;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.07);
-  color: inherit;
+  background: var(--yorishiro-button-bg);
+  color: var(--yorishiro-button-fg);
   cursor: pointer;
   font: inherit;
 }
-.peer-call-session-strip button:hover {
-  background: rgba(255, 255, 255, 0.16);
+.peer-call-session-toolbar button:hover {
+  background: color-mix(in srgb, var(--yorishiro-button-bg), var(--yorishiro-fg) 12%);
 }
-.peer-call-session-strip .peer-call-hangup {
-  background: #923b4d;
+.peer-call-session-toolbar button:focus-visible {
+  outline: 2px solid var(--yorishiro-accent);
+  outline-offset: 2px;
+}
+.peer-call-session-toolbar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.peer-call-session-toolbar .peer-call-hangup,
+.call-session-workspace .peer-call-hangup {
+  background: #bf3545;
+  border-color: transparent;
+  color: #fff;
+}
+.peer-call-session-toolbar .peer-call-hangup:hover,
+.call-session-workspace .peer-call-hangup:hover {
+  background: #a92d3b;
 }
 .peer-call-session-error {
   flex-basis: 100%;

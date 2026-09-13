@@ -6309,13 +6309,13 @@ function App() {
           strings={{
             placeholder: callQuickChat
               ? appLanguage.resolved.startsWith("ja")
-                ? "名前で呼んで、ふたりに話しかける"
-                : "Call a name and talk to both residents"
+                ? "話題や進め方を入力（例：順番に意見を聞かせて）"
+                : "Share a topic or direction (e.g. take turns sharing your ideas)"
               : strings.quickChatPlaceholder,
             inputLabel: callQuickChat
               ? appLanguage.resolved.startsWith("ja")
-                ? "ふたりに話しかける"
-                : "Talk to both residents"
+                ? "話題や進め方を渡す"
+                : "Share a topic or direction"
               : strings.quickChatInputLabel,
             send: strings.quickChatSend,
             close: strings.quickChatClose,

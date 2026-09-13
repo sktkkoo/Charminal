@@ -6,7 +6,6 @@ import {
   MicOff,
   Phone,
   PhoneIncoming,
-  PhoneOff,
   Plus,
   Settings2,
   Trash2,
@@ -16,7 +15,37 @@ import {
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { CallAiDisclosure } from "./call-ai-disclosure";
 import type { CallControlsAction, CallEntrySnapshot } from "./call-controls-window";
+import { CallEndIcon } from "./call-end-icon";
+import { callIdentityDiagnostic } from "./call-identity";
 import "./peer-call-control.css";
+
+function isLegacyCallEndpoint(endpoint: string) {
+  try {
+    return new URL(endpoint).pathname === "/rooms";
+  } catch {
+    return false;
+  }
+}
+
+const PRESENCE_ERRORS: Record<string, string> = {
+  "通話の識別情報を準備できませんでした。アプリを再起動してお試しください。":
+    "Could not prepare your call identity. Restart the app and try again.",
+  "通話サーバーとの通信形式を確認できませんでした。":
+    "Could not verify communication with the call server.",
+  "通話へのリクエストが多すぎます。しばらくしてからお試しください。":
+    "Too many call requests. Wait a while and try again.",
+  "通話の待受に接続できませんでした。": "Could not connect to receive calls.",
+  "通話の待受に接続できませんでした。アプリを再起動してお試しください。":
+    "Could not connect to receive calls. Restart the app and try again.",
+};
+
+function presenceErrorMessage(error: string | undefined, language: "ja" | "en") {
+  if (!error) return "";
+  const diagnostic = callIdentityDiagnostic(error) ?? "";
+  const message = diagnostic ? error.slice(0, -diagnostic.length) : error;
+  if (!Object.getOwnPropertyDescriptor(PRESENCE_ERRORS, message)) return "";
+  return (language === "ja" ? message : PRESENCE_ERRORS[message]) + diagnostic;
+}
 
 /** Presentation only. All room, media and admission operations belong to the main window. */
 export function CallEntryView({
@@ -56,6 +85,21 @@ export function CallEntryView({
     state.contacts?.some((contact) => contact.identityId === state.failedContactId);
   const incoming = state.incoming;
   const signal = { state: state.signalState, invitation: state.invitation, role: state.role };
+  const presenceStatus =
+    state.presenceState === "connecting"
+      ? t("通話サービスに接続中…", "Connecting to the call service…")
+      : state.presenceState === "offline"
+        ? t(
+            "通話の待受に接続できません。接続をやり直しています。",
+            "Cannot connect to receive calls. Reconnecting…",
+          )
+        : state.presenceState === "error"
+          ? presenceErrorMessage(state.presenceError, language) ||
+            t(
+              "通話の待受に接続できませんでした。アプリを再起動してお試しください。",
+              "Could not connect to receive calls. Restart the app and try again.",
+            )
+          : t("通話サービスに接続していません。", "Not connected to the call service.");
   useEffect(() => {
     if (!nameEdited.current) setCallName(state.name);
   }, [state.name]);
@@ -225,7 +269,7 @@ export function CallEntryView({
                   id="peer-call-endpoint"
                   value={endpointDraft}
                   onChange={(event) => setEndpointDraft(event.target.value)}
-                  placeholder="wss://example.com/rooms"
+                  placeholder="wss://example.com/v2/rooms"
                   autoComplete="off"
                   spellCheck={false}
                   maxLength={2048}
@@ -283,13 +327,13 @@ export function CallEntryView({
                   >
                     <h4>{t("通話した相手", "Contacts")}</h4>
                     {state.presenceState !== "online" && (
-                      <p role="status">
-                        {state.presenceState === "connecting"
-                          ? t("通話サービスに接続中…", "Connecting to the call service…")
-                          : t(
-                              "通話サービスに接続できません。再接続を待っています。",
-                              "Call service unavailable. Waiting to reconnect.",
-                            )}
+                      <p
+                        className={
+                          state.presenceState === "error" ? "peer-call-contact-error" : undefined
+                        }
+                        role={state.presenceState === "error" ? "alert" : "status"}
+                      >
+                        {presenceStatus}
                       </p>
                     )}
                     {!state.contacts?.length && state.presenceState === "online" && (
@@ -360,6 +404,19 @@ export function CallEntryView({
                       ))}
                     </ul>
                   </section>
+                )}
+                {isLegacyCallEndpoint(endpoint) && (
+                  <div className="peer-call-setup-notice" role="note">
+                    <span>
+                      {t(
+                        "現在の接続先は招待コード専用です。通話した相手は再発信用に保存されず、毎回招待コードが必要です。",
+                        "This connection uses invitation codes only. People you call are not saved for redial, so each call needs a new invitation code.",
+                      )}
+                    </span>
+                    <button type="button" onClick={() => setSettings(true)}>
+                      {t("接続先を確認", "Check connection")}
+                    </button>
+                  </div>
                 )}
                 {!endpoint && (
                   <div className="peer-call-setup-notice">
@@ -570,7 +627,7 @@ export function CallEntryView({
                 className="peer-call-hangup"
                 onClick={() => void request({ type: "cancel" })}
               >
-                <PhoneOff size={18} />
+                <CallEndIcon />
                 {t("キャンセル", "Cancel")}
               </button>
             </footer>

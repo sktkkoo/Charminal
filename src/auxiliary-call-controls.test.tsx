@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PublishedCallControls } from "./runtime/peer-call/call-controls-window";
 
@@ -53,6 +53,104 @@ afterEach(() => {
 });
 
 describe("detached call entry presentation", () => {
+  it.each([
+    "ja",
+    "en",
+  ] as const)("distinguishes terminal identity failure from network retry in %s", async (language) => {
+    const failed = state();
+    Object.assign(failed.snapshot, {
+      language,
+      endpoint: "wss://call.example.test/v2/rooms",
+      presenceState: "error",
+      presenceError: "通話の識別情報を準備できませんでした。アプリを再起動してお試しください。",
+    });
+    test.read.mockResolvedValue(failed);
+    render(<AuxiliaryCallControls />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      language === "ja"
+        ? failed.snapshot.presenceError
+        : "Could not prepare your call identity. Restart the app and try again.",
+    );
+    const offline = {
+      ...failed,
+      version: 2,
+      snapshot: { ...failed.snapshot, revision: "revision-2", presenceState: "offline" as const },
+    };
+    act(() => test.receive?.(offline));
+    expect(screen.queryByRole("alert")).toBeNull();
+    const contacts = screen.getByRole("region", {
+      name: language === "ja" ? "通話した相手" : "Contacts",
+    });
+    expect(within(contacts).getByRole("status").textContent).toBe(
+      language === "ja"
+        ? "通話の待受に接続できません。接続をやり直しています。"
+        : "Cannot connect to receive calls. Reconnecting…",
+    );
+  });
+
+  it.each([
+    undefined,
+    "unknown internal diagnostic",
+  ])("uses a terminal fallback for an omitted or unknown presence failure (%s)", async (presenceError) => {
+    const failed = state();
+    Object.assign(failed.snapshot, {
+      language: "en",
+      endpoint: "wss://call.example.test/v2/rooms",
+      presenceState: "error",
+      presenceError,
+    });
+    test.read.mockResolvedValue(failed);
+    render(<AuxiliaryCallControls />);
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Could not connect to receive calls. Restart the app and try again.",
+    );
+    expect(screen.queryByText("unknown internal diagnostic")).toBeNull();
+  });
+
+  it.each([
+    "ja",
+    "en",
+  ] as const)("explains invite-only calling in %s and lets the user review the unchanged connection", async (language) => {
+    const legacy = state();
+    legacy.snapshot.language = language;
+    test.read.mockResolvedValue(legacy);
+    render(<AuxiliaryCallControls />);
+    const notice = await screen.findByRole("note");
+    expect(notice.textContent).toContain(
+      language === "ja" ? "再発信用に保存されず" : "not saved for redial",
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: language === "ja" ? "接続先を確認" : "Check connection",
+      }),
+    );
+    const endpoint = screen.getByRole("textbox", {
+      name: language === "ja" ? "通話サーバー" : "Call server",
+    });
+    expect(endpoint).toHaveProperty("value", legacy.snapshot.endpoint);
+    expect(endpoint.getAttribute("placeholder")).toBe("wss://example.com/v2/rooms");
+    expect(test.request).not.toHaveBeenCalled();
+    const managedEndpoint = "wss://custom.example.test/v2/rooms";
+    fireEvent.change(endpoint, { target: { value: managedEndpoint } });
+    fireEvent.click(screen.getByRole("button", { name: language === "ja" ? "保存する" : "Save" }));
+    await waitFor(() =>
+      expect(test.request).toHaveBeenCalledExactlyOnceWith(1, {
+        type: "save-endpoint",
+        endpoint: managedEndpoint,
+      }),
+    );
+    const managed = state(2);
+    managed.snapshot.language = language;
+    managed.snapshot.endpoint = managedEndpoint;
+    managed.snapshot.presenceState = "online";
+    act(() => test.receive?.(managed));
+    expect(screen.queryByRole("note")).toBeNull();
+    expect(
+      screen.getByRole("heading", { name: language === "ja" ? "通話した相手" : "Contacts" }),
+    ).toBeTruthy();
+  });
+
   it("shows the existing disclosure and submits edited identity with the current published version", async () => {
     render(<AuxiliaryCallControls />);
     await screen.findByText("通話を始める");

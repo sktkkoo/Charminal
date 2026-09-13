@@ -1,6 +1,7 @@
 import {
   CALL_IDENTITY_ID,
   CallSocketAuthentication,
+  callIdentityErrorMessage,
   getCallIdentity,
   isManagedCallEndpoint,
   MANAGED_CALL_PROTOCOL,
@@ -385,8 +386,8 @@ export class RoomSignaling {
         endpoint = `${endpoint}/${this.roomId}`;
         this.authentication = new CallSocketAuthentication(identity, endpoint);
         this.firstMessage = message;
-      } catch {
-        this.fail("通話の識別情報を準備できませんでした。");
+      } catch (error) {
+        this.fail(callIdentityErrorMessage(error));
         throw new Error(this.error || CLOSED_MESSAGES.closed);
       }
     }

@@ -22,6 +22,7 @@ type Incoming = {
 type PresenceOptions = { endpoint: string; name: string; onChange(): void; onIncoming(): void };
 type TestPresence = {
   state: string;
+  error: string;
   contacts: { identityId: string; name: string; lastAcceptedAt: number }[];
   incoming: Incoming | null;
   options: PresenceOptions;
@@ -77,6 +78,7 @@ const test = vi.hoisted(() => ({
 vi.mock("./call-presence", () => ({
   CallPresence: class {
     state = "online";
+    error = "";
     contacts = [{ identityId: "A".repeat(43), name: "Mai", lastAcceptedAt: 1 }];
     incoming: Incoming | null = null;
     constructor(readonly options: PresenceOptions) {
@@ -332,6 +334,24 @@ describe("native room call experience", () => {
       false,
     );
     expect(test.rooms.every((room) => room.closed)).toBe(true);
+  });
+
+  it("publishes the static presence failure to the native entry window", async () => {
+    test.native = true;
+    test.endpoint = "wss://call.example.test/v2/rooms";
+    render(<PeerCallControl viewMode="companion" />);
+    open();
+    const message = "通話の識別情報を準備できませんでした。アプリを再起動してお試しください。";
+    act(() => {
+      test.presences[0].state = "error";
+      test.presences[0].error = message;
+      test.presences[0].options.onChange();
+    });
+    await waitFor(() =>
+      expect(test.nativeInvoke).toHaveBeenCalledWith("call_controls_publish", {
+        snapshot: expect.objectContaining({ presenceState: "error", presenceError: message }),
+      }),
+    );
   });
 
   it("shows a direct-call failure immediately underneath the called person", async () => {
@@ -597,7 +617,7 @@ describe("native room call experience", () => {
       />,
     );
     const room = await connectedRoom();
-    fireEvent.click(screen.getByRole("button", { name: "チャットを開く" }));
+    fireEvent.click(screen.getByRole("button", { name: "話題や進め方を渡す" }));
     expect(topic).toHaveBeenCalledOnce();
     expect(room.submitTopic).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox")).toBeNull();

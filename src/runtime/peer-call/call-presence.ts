@@ -3,6 +3,7 @@ import {
   CALL_ROOM_ID,
   type CallIdentity,
   CallSocketAuthentication,
+  callIdentityErrorMessage,
   getCallIdentity,
   MANAGED_CALL_PROTOCOL,
   managedCallEndpoint,
@@ -93,9 +94,14 @@ export class CallPresence {
     try {
       this.identity = await (this.options.getIdentity ?? getCallIdentity)(this.endpoint);
       if (!this.closed && generation === this.generation) this.connect();
-    } catch {
+    } catch (error) {
       if (!this.closed && generation === this.generation)
-        this.fail("通話の識別情報を準備できませんでした。アプリを再起動してお試しください。");
+        this.fail(
+          callIdentityErrorMessage(
+            error,
+            "通話の識別情報を準備できませんでした。アプリを再起動してお試しください。",
+          ),
+        );
     }
   }
   close(): void {

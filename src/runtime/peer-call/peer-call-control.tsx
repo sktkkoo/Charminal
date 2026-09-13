@@ -1,5 +1,5 @@
 import { isTauri } from "@tauri-apps/api/core";
-import { MessageSquare, Pause, Phone, PhoneIncoming, PhoneOff, UserRound } from "lucide-react";
+import { Phone, PhoneIncoming } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { requestControlSurface, subscribeControlSurface } from "../control-surface";
@@ -15,6 +15,7 @@ import {
 } from "./call-controls-window";
 import { CallEntryView } from "./call-entry-view";
 import { CallPresence } from "./call-presence";
+import { CallSessionToolbar } from "./call-session-toolbar";
 import { configuredRoomEndpoint, persistRoomEndpoint, RoomCall } from "./room-call";
 import "./peer-call-control.css";
 
@@ -410,6 +411,7 @@ export function PeerCallControl({
         }
       : null,
     presenceState: presence?.state,
+    presenceError: presence?.error,
     directTarget: active ? directTarget : "",
     failedContactId:
       !active &&
@@ -576,58 +578,22 @@ export function PeerCallControl({
                 </small>
                 <small>{status}</small>
               </span>
-              {onShowResident && layout !== "theater" && (
-                <button
-                  type="button"
-                  onClick={onShowResident}
-                  title={t("相手のウィンドウを表示", "Show resident window")}
-                  aria-label={t("相手のウィンドウを表示", "Show resident window")}
-                >
-                  <UserRound size={16} aria-hidden="true" />
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={onTopicRequested}
-                aria-label={t("チャットを開く", "Open chat")}
-                title={t("チャットを開く", "Open chat")}
-              >
-                <MessageSquare size={16} aria-hidden="true" />
-              </button>
-              {room.paused ? (
-                <button
-                  type="button"
-                  disabled={!!busy}
-                  onClick={() => void run("retry", () => room.resume())}
-                >
-                  {room.error
-                    ? t("AIの接続をやり直す", "Retry AI connection")
-                    : t("AIの会話を再開", "Resume AI conversation")}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    ++action.current;
-                    operationBusy.current = false;
-                    setBusy(null);
-                    room.pause();
-                  }}
-                  aria-label={t("AIの会話を止める", "Stop AI conversation")}
-                  title={t("AIの会話を止める", "Stop AI conversation")}
-                >
-                  <Pause size={16} aria-hidden="true" />
-                </button>
-              )}
-              <button
-                type="button"
-                className="peer-call-hangup"
-                onClick={leave}
-                aria-label={t("通話を終了", "End call")}
-                title={t("通話を終了", "End call")}
-              >
-                <PhoneOff size={16} aria-hidden="true" />
-              </button>
+              <CallSessionToolbar
+                language={language}
+                paused={room.paused}
+                retry={!!room.error}
+                busy={!!busy}
+                onTopic={onTopicRequested}
+                onShowResident={layout !== "theater" ? onShowResident : undefined}
+                onPause={() => {
+                  ++action.current;
+                  operationBusy.current = false;
+                  setBusy(null);
+                  room.pause();
+                }}
+                onResume={() => void run("retry", () => room.resume())}
+                onEnd={leave}
+              />
               <div
                 className="peer-call-sr-only"
                 role="log"

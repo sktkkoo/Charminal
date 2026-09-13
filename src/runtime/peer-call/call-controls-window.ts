@@ -29,6 +29,7 @@ export interface CallEntrySnapshot {
   contacts?: { identityId: string; name: string; lastAcceptedAt: number }[];
   incoming?: { roomId: string; identityId: string; name: string; expiresAt: number } | null;
   presenceState?: "idle" | "connecting" | "online" | "offline" | "error";
+  presenceError?: string;
   directTarget?: string;
   failedContactId?: string;
 }

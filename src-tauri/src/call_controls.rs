@@ -74,6 +74,8 @@ pub struct Snapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     presence_state: Option<PresenceState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    presence_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     direct_target: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     failed_contact_id: Option<String>,
@@ -93,6 +95,9 @@ impl Snapshot {
             || self.status.len() > 1024
             || self.error.len() > 8192
             || self.notice.len() > 2048
+            || self.presence_error.as_ref().is_some_and(|message| {
+                message.len() > 1024 || message.chars().any(char::is_control)
+            })
             || self.endpoint.len() > 8192
             || self.signal_state.len() > 40
             || self.role.len() > 16
@@ -428,6 +433,7 @@ mod tests {
                 contacts: None,
                 incoming: None,
                 presence_state: None,
+                presence_error: None,
                 direct_target: None,
                 failed_contact_id: None,
             },
@@ -542,6 +548,7 @@ mod tests {
         let old = serde_json::to_value(published().snapshot).unwrap();
         assert!(old.get("contacts").is_none());
         assert!(old.get("incoming").is_none());
+        assert!(old.get("presenceError").is_none());
         assert!(serde_json::from_value::<Snapshot>(old)
             .unwrap()
             .validate()
@@ -557,6 +564,25 @@ mod tests {
         assert_eq!(value["incoming"]["roomId"], ROOM);
         assert_eq!(value["presenceState"], "online");
         assert!(value["incoming"].get("invitation").is_none());
+    }
+
+    #[test]
+    fn presence_error_round_trips_and_rejects_unbounded_payloads() {
+        let mut snapshot = published().snapshot;
+        snapshot.presence_state = Some(PresenceState::Error);
+        snapshot.presence_error =
+            Some("通話の識別情報を準備できませんでした。アプリを再起動してお試しください。".into());
+        let value = serde_json::to_value(snapshot).unwrap();
+        let mut restored: Snapshot = serde_json::from_value(value).unwrap();
+        assert!(restored.validate().is_ok());
+        assert_eq!(
+            restored.presence_error.as_deref(),
+            Some("通話の識別情報を準備できませんでした。アプリを再起動してお試しください。")
+        );
+        restored.presence_error = Some("x".repeat(1025));
+        assert!(restored.validate().is_err());
+        restored.presence_error = Some("message\nraw diagnostic".into());
+        assert!(restored.validate().is_err());
     }
 
     #[test]

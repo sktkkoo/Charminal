@@ -1,5 +1,6 @@
-import { ArrowUp, Phone, PhoneOff } from "lucide-react";
+import { ArrowUp, Phone } from "lucide-react";
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
+import { CallEndIcon } from "./call-end-icon";
 import type { RoomCall } from "./room-call";
 import "./peer-call-control.css";
 
@@ -88,8 +89,8 @@ export function CallSessionView({
             )}
           </p>
         </div>
-        <button type="button" onClick={onEnd}>
-          <PhoneOff size={16} aria-hidden="true" />
+        <button type="button" className="peer-call-hangup" onClick={onEnd}>
+          <CallEndIcon />
           {t("通話を終了", "End call")}
         </button>
       </header>
@@ -129,8 +130,8 @@ export function CallSessionView({
           <p className="call-session-empty">
             {room?.connected
               ? t(
-                  "ふたりに話しかけて、会話を始めましょう。",
-                  "Talk to both residents to start the conversation.",
+                  "話題や進め方を渡して、ふたりの会話を始めましょう。",
+                  "Share a topic or direction to start their conversation.",
                 )
               : t("通話の接続を待っています。", "Waiting for the call to connect.")}
           </p>
@@ -153,14 +154,17 @@ export function CallSessionView({
         >
           <textarea
             ref={textareaRef}
-            aria-label={t("ふたりに話しかける", "Talk to both residents")}
+            aria-label={t("話題や進め方を渡す", "Share a topic or direction")}
             aria-invalid={!!error}
             autoComplete="off"
             disabled={sending}
             maxLength={2000}
             rows={1}
             value={draft}
-            placeholder={t("ふたりに話しかける…", "Talk to both residents…")}
+            placeholder={t(
+              "話題や進め方を入力（例：順番に意見を聞かせて）",
+              "Share a topic or direction (e.g. take turns sharing your ideas)",
+            )}
             onChange={(event) => onDraftChange(event.currentTarget.value)}
             onCompositionStart={() => {
               composing.current = true;
