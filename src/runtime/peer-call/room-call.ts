@@ -1,6 +1,6 @@
 import { getThreeRuntime } from "../three-runtime/three-runtime";
 import { getVrmCache } from "../vrm-cache";
-import { AvatarTransfer } from "./avatar-transfer";
+import { AvatarSizeLimitError, AvatarTransfer } from "./avatar-transfer";
 import { createCallAvatarUrl, revokeCallAvatarUrl } from "./call-avatar-url";
 import { CallPeer } from "./call-peer";
 import { type AgentActivity, NativeCallAgent, publicCallIdentity } from "./native-agent";
@@ -156,7 +156,6 @@ export class RoomCall {
 
   async resume(): Promise<void> {
     if (!this.connected || !this.paused) return;
-    this.error = "";
     this.applyEpoch({
       counter: this.epoch.counter + 1,
       owner: this.signaling.localEndpointId,
@@ -267,9 +266,12 @@ export class RoomCall {
       .then(async (bytes) => {
         if (!this.closed) await this.transfer?.send(bytes);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!this.closed) {
-          this.error = "アバターを共有できませんでした。音声の会話は続けられます。";
+          this.error =
+            error instanceof AvatarSizeLimitError
+              ? `アバターは50 MiBまで共有できます（現在 ${(error.actualBytes / 1024 / 1024).toFixed(2)} MiB）。音声の会話は続けられます。`
+              : "アバターを共有できませんでした。音声の会話は続けられます。";
           this.options.onChange();
         }
       });
@@ -369,6 +371,9 @@ export class RoomCall {
   private applyEpoch(epoch: Epoch): void {
     this.epoch = epoch;
     this.paused = epoch.paused;
+    // Either endpoint can resume. Retire the previous attempt's error locally as well
+    // when the peer initiates recovery, before displaying the new connection attempt.
+    if (!epoch.paused) this.error = "";
     this.remoteReady = false;
     this.stopAgent();
     if (this.pauseTimer) clearTimeout(this.pauseTimer);

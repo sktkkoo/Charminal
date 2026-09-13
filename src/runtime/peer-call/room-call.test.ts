@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AvatarSizeLimitError } from "./avatar-transfer";
 import { isIssuedCallAvatarUrl } from "./call-avatar-url";
 import type { CallPeer } from "./call-peer";
 import type { CallResidentIdentity, NativeAgentCallbacks } from "./native-agent";
@@ -150,7 +151,8 @@ vi.mock("./native-agent", async (importOriginal) => {
     },
   };
 });
-vi.mock("./avatar-transfer", () => ({
+vi.mock("./avatar-transfer", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./avatar-transfer")>()),
   AvatarTransfer: class {
     accept = vi.fn();
     send = vi.fn(async () => {});
@@ -263,6 +265,21 @@ afterEach(() => {
 });
 
 describe("admitted room lifecycle", () => {
+  it("explains an oversize avatar without ending or pausing the voice call", async () => {
+    const f = fixture("host", "avatar.vrm");
+    const peer = admit(f);
+    fakes.transfers[0].send.mockRejectedValue(new AvatarSizeLimitError(55 * 1024 * 1024));
+    connect(peer);
+    peer.assetReady?.();
+    await flush();
+    expect(f.call.error).toBe(
+      "アバターは50 MiBまで共有できます（現在 55.00 MiB）。音声の会話は続けられます。",
+    );
+    expect(f.call.connected).toBe(true);
+    expect(f.call.paused).toBe(false);
+    expect(f.call.closed).toBe(false);
+  });
+
   it("starts one local agent only after admission, media connection, and remote consent", async () => {
     const f = fixture();
     await f.call.create();
@@ -357,6 +374,30 @@ describe("admitted room lifecycle", () => {
     expect(f.host.call.transcripts).toHaveLength(0);
     expect(f.host.call.paused).toBe(false);
     expect(f.host.call.error).toBe("");
+  });
+
+  it.each([
+    "host",
+    "guest",
+  ] as const)("clears the %s's previous voice error when the other endpoint resumes", async (failedSide) => {
+    const f = await pair();
+    const failed = failedSide === "host" ? f.host : f.guest;
+    const recovering = failedSide === "host" ? f.guest : f.host;
+    const failedAgent = failedSide === "host" ? f.hostAgent : f.guestAgent;
+    failedAgent.callbacks.ended("The call AI process stopped.");
+    expect(failed.call.error).toBe("The call AI process stopped.");
+    expect(f.host.call.paused).toBe(true);
+    expect(f.guest.call.paused).toBe(true);
+    const resumed = recovering.call.resume();
+    // The accepted retry replaces the old error before the new agent is ready.
+    expect(failed.call.paused).toBe(false);
+    expect(failed.call.error).toBe("");
+    await resumed;
+    await flush();
+    expect(f.host.call.ready).toBe(true);
+    expect(f.guest.call.ready).toBe(true);
+    expect(f.host.call.error).toBe("");
+    expect(f.guest.call.error).toBe("");
   });
 
   it("fails closed if a pause cannot be delivered or acknowledged", async () => {

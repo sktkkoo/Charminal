@@ -22,6 +22,7 @@ const PROFILE: &str = "yorishiro_peer_call_voice";
 const MAX_SDP: usize = 64 * 1024;
 const MAX_LINE: usize = 1024 * 1024;
 const MAX_AGENTS: usize = 2;
+const PROCESS_ENDED: &str = "The call AI process stopped. Resume the AI conversation to reconnect.";
 const LIFETIME: Duration = Duration::from_secs(30 * 60);
 const BACKING_TURN_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTAINMENT_ERROR: &str = "The call agent could not stop its isolated background turn.";
@@ -657,7 +658,7 @@ impl Rpc {
         pid: Arc<AtomicU32>,
     ) -> Result<Self, String> {
         let binary = crate::resolve_command_path_impl("codex")
-            .ok_or("Install and sign in to Codex before starting a call agent")?;
+            .ok_or("Install Codex before starting a call agent")?;
         let home = crate::home_dir_or_err()?;
         let directory_text = directory.to_str().ok_or("Call directory is not UTF-8")?;
         let home_text = home.to_str().ok_or("Home directory is not UTF-8")?;
@@ -689,42 +690,9 @@ impl Rpc {
         let child_pid = child.id().ok_or("Call agent process has no PID")?;
         pid.store(child_pid, Ordering::SeqCst);
         let stdin = child.stdin.take().ok_or("Call agent stdin unavailable")?;
-        let mut stdout = child.stdout.take().ok_or("Call agent stdout unavailable")?;
+        let stdout = child.stdout.take().ok_or("Call agent stdout unavailable")?;
         let (sender, messages) = mpsc::channel(32);
-        let reader = tokio::spawn(async move {
-            let mut buffer = Vec::new();
-            let mut chunk = [0_u8; 8192];
-            loop {
-                let count = match stdout.read(&mut chunk).await {
-                    Ok(0) => break,
-                    Ok(count) => count,
-                    Err(_) => break,
-                };
-                for byte in &chunk[..count] {
-                    if *byte == b'\n' {
-                        if let Ok(value) = serde_json::from_slice::<Value>(&buffer) {
-                            if sender.send(Ok(value)).await.is_err() {
-                                return;
-                            }
-                        }
-                        buffer.clear();
-                    } else {
-                        buffer.push(*byte);
-                        if buffer.len() > MAX_LINE {
-                            let _ = sender
-                                .send(Err("Call agent response exceeded its size limit".into()))
-                                .await;
-                            return;
-                        }
-                    }
-                }
-            }
-            let _ = sender
-                .send(Err(
-                    "Call agent process exited. Update Codex and check your sign-in".into(),
-                ))
-                .await;
-        });
+        let reader = tokio::spawn(read_rpc_messages(stdout, sender));
         Ok(Self {
             child,
             stdin,
@@ -747,7 +715,7 @@ impl Rpc {
         tokio::time::timeout(Duration::from_secs(5), self.stdin.write_all(&data))
             .await
             .map_err(|_| "Call agent write timed out")?
-            .map_err(|_| "Call agent process closed".into())
+            .map_err(|_| PROCESS_ENDED.into())
     }
     async fn next(&mut self) -> Result<Value, String> {
         self.voice_only.check_deadline(Instant::now())?;
@@ -758,7 +726,7 @@ impl Rpc {
         } else {
             self.messages.recv().await
         };
-        message.ok_or_else(|| "Call agent process closed".to_string())?
+        message.ok_or_else(|| PROCESS_ENDED.to_string())?
     }
     fn emit_activity(&mut self, activity: &'static str) -> Result<(), String> {
         if self.activity == Some(activity) {
@@ -845,10 +813,7 @@ impl Rpc {
                 let message = self.next().await?;
                 if message["id"].as_u64() == Some(id) && message.get("method").is_none() {
                     if message.get("error").is_some() {
-                        // Provider errors can contain credentials/configuration; expose only our fixed method.
-                        return Err(format!(
-                            "Codex rejected {method}. Check your sign-in and CLI version."
-                        ));
+                        return Err(rpc_response_error(method, &message["error"]));
                     }
                     return Ok(message["result"].clone());
                 }
@@ -885,6 +850,53 @@ impl Rpc {
             self.child_pid = 0;
         } // Never signal a reaped PID again from Drop.
         self.reader.abort();
+    }
+}
+
+async fn read_rpc_messages(
+    mut stdout: impl tokio::io::AsyncRead + Unpin,
+    sender: mpsc::Sender<Result<Value, String>>,
+) {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 8192];
+    loop {
+        let count = match stdout.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(_) => break,
+        };
+        for byte in &chunk[..count] {
+            if *byte == b'\n' {
+                if let Ok(value) = serde_json::from_slice::<Value>(&buffer) {
+                    if sender.send(Ok(value)).await.is_err() {
+                        return;
+                    }
+                }
+                buffer.clear();
+            } else {
+                buffer.push(*byte);
+                if buffer.len() > MAX_LINE {
+                    let _ = sender
+                        .send(Err("Call agent response exceeded its size limit".into()))
+                        .await;
+                    return;
+                }
+            }
+        }
+    }
+    // EOF/read failure also follows ordinary termination or an external process stop.
+    // It provides no evidence of an account/authentication problem.
+    let _ = sender.send(Err(PROCESS_ENDED.into())).await;
+}
+
+fn rpc_response_error(method: &str, error: &Value) -> String {
+    // Never echo arbitrary RPC text or data; use the same bounded, fixed diagnostic
+    // vocabulary as realtime errors. Only an actual auth classification suggests sign-in.
+    let diagnostic = voice_provider_error(error["message"].as_str());
+    if diagnostic == "The AI voice provider reported an error (reason unavailable)." {
+        format!("Codex rejected {method}. Retry the AI conversation.")
+    } else {
+        diagnostic.into()
     }
 }
 
@@ -1246,6 +1258,65 @@ async fn initialize_isolated_agent(rpc: &mut Rpc, directory: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn process_output_ending_reports_reconnect_without_guessing_authentication() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        let (sender, mut messages) = mpsc::channel(4);
+        let task = tokio::spawn(read_rpc_messages(reader, sender));
+        writer
+            .write_all(b"{\"id\":1,\"result\":{}}\n")
+            .await
+            .unwrap();
+        writer.shutdown().await.unwrap();
+        assert_eq!(
+            messages.recv().await.unwrap().unwrap(),
+            json!({"id":1,"result":{}})
+        );
+        let diagnostic = messages.recv().await.unwrap().unwrap_err();
+        assert!(diagnostic.contains("Resume the AI conversation"));
+        assert!(!diagnostic.contains("sign-in"));
+        assert!(!diagnostic.contains("Update"));
+        task.await.unwrap();
+        assert!(messages.recv().await.is_none());
+    }
+
+    #[test]
+    fn rpc_failures_suggest_sign_in_only_for_reported_authentication_failures() {
+        for message in [
+            "invalid_api_key",
+            "authentication failed",
+            "HTTP 401 Unauthorized",
+        ] {
+            let diagnostic = rpc_response_error(
+                "thread/realtime/start",
+                &json!({"code":-32000,"message":message}),
+            );
+            assert!(diagnostic.contains("rejected authentication"));
+            assert!(diagnostic.contains("sign-in"));
+        }
+        for message in [
+            "process exited",
+            "connection reset by peer",
+            "invalid session configuration",
+            "unknown provider failure",
+        ] {
+            let diagnostic = rpc_response_error(
+                "thread/realtime/start",
+                &json!({"code":-32000,"message":message}),
+            );
+            assert!(!diagnostic.contains("sign-in"));
+        }
+        let private = json!({
+            "code":-32000,
+            "message":"unknown failure: Authorization Bearer sk-secret /Users/private/work.txt PRIVATE_ROOM_UTTERANCE",
+            "data":{"token":"private-token"}
+        });
+        assert_eq!(
+            rpc_response_error("thread/realtime/start", &private),
+            "Codex rejected thread/realtime/start. Retry the AI conversation."
+        );
+    }
 
     fn turn_event(method: &str, thread: &str, turn: &str, status: &str) -> Value {
         json!({"method":method,"params":{"threadId":thread,"turn":{"id":turn,"items":[],"status":status}}})
