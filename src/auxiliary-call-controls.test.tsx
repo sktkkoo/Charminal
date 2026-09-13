@@ -54,6 +54,53 @@ afterEach(() => {
 
 describe("detached call entry presentation", () => {
   it.each([
+    "presence",
+    "invitation",
+  ] as const)("explains protected key access failure without asking for repeated approval (%s)", async (source) => {
+    const failed = state();
+    const diagnostic = " [identity:native-interaction-required:UnknownError]";
+    const message = `通話の識別情報を準備できませんでした。${diagnostic}`;
+    Object.assign(failed.snapshot, {
+      language: "en",
+      endpoint: "wss://call.example.test/v2/rooms",
+      presenceState: source === "presence" ? "error" : "online",
+      presenceError: source === "presence" ? message : "",
+      error: source === "invitation" ? message : "",
+    });
+    test.read.mockResolvedValue(failed);
+    render(<AuxiliaryCallControls />);
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      `Connection stopped because the call key is unavailable. Access will not be retried automatically.${diagnostic}`,
+    );
+    const invite = screen.getByRole("button", { name: "Invite someone new" });
+    expect(invite).toHaveProperty("disabled", true);
+    fireEvent.click(invite);
+    const code = screen.getByRole("textbox", { name: "Invitation code" });
+    fireEvent.change(code, { target: { value: "yri2_test" } });
+    expect(screen.getByRole("button", { name: "Join" })).toHaveProperty("disabled", true);
+    const form = code.closest("form");
+    if (!form) throw new Error("Invitation form missing");
+    fireEvent.submit(form);
+    expect(test.request).not.toHaveBeenCalled();
+  });
+
+  it("explains a preserved legacy identity instead of suggesting restart", async () => {
+    const failed = state();
+    Object.assign(failed.snapshot, {
+      endpoint: "wss://call.example.test/v2/rooms",
+      presenceState: "error",
+      presenceError:
+        "通話の識別情報を準備できませんでした。 [identity:legacy-migration-required:UnknownError]",
+    });
+    test.read.mockResolvedValue(failed);
+    render(<AuxiliaryCallControls />);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("自動で読み出さず、移行待ちで停止しています。");
+    expect(alert.textContent).not.toContain("再起動");
+    expect(test.request).not.toHaveBeenCalled();
+  });
+
+  it.each([
     "ja",
     "en",
   ] as const)("distinguishes terminal identity failure from network retry in %s", async (language) => {

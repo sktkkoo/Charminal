@@ -39,8 +39,48 @@ const PRESENCE_ERRORS: Record<string, string> = {
     "Could not connect to receive calls. Restart the app and try again.",
 };
 
+function protectedIdentityFailure(error: string | undefined, language: "ja" | "en") {
+  if (!error) return "";
+  const diagnostic = callIdentityDiagnostic(error);
+  if (!diagnostic) return "";
+  const stage = diagnostic.split(":")[1];
+  let message: [string, string];
+  if (stage === "legacy-migration-required") {
+    message = [
+      "以前の通話用の鍵が見つかりました。識別情報を守るため、自動で読み出さず、移行待ちで停止しています。",
+      "An existing call key needs migration. It has not been read or replaced, to preserve your identity.",
+    ];
+  } else if (stage === "native-key-missing" || stage === "native-key-mismatch") {
+    message = [
+      "保存済みの通話用の鍵を確認できません。別の識別情報に置き換えず、接続を停止しました。",
+      "The saved call key could not be verified. Connection stopped without replacing your identity.",
+    ];
+  } else if (
+    [
+      "native-key-protection-unavailable",
+      "native-key-protection-attribute-missing",
+      "native-key-exportable",
+      "native-key-algorithm-invalid",
+      "native-key-access-invalid",
+    ].includes(stage)
+  ) {
+    message = [
+      "この環境では通話用の鍵の保護を確認できないため、接続を停止しました。",
+      "Connection stopped because call key protection could not be verified in this environment.",
+    ];
+  } else if (stage.startsWith("native-")) {
+    message = [
+      "通話用の鍵を利用できないため、接続を停止しました。繰り返し許可を求める処理は行いません。",
+      "Connection stopped because the call key is unavailable. Access will not be retried automatically.",
+    ];
+  } else return "";
+  return message[language === "ja" ? 0 : 1] + diagnostic;
+}
+
 function presenceErrorMessage(error: string | undefined, language: "ja" | "en") {
   if (!error) return "";
+  const protectedFailure = protectedIdentityFailure(error, language);
+  if (protectedFailure) return protectedFailure;
   const diagnostic = callIdentityDiagnostic(error) ?? "";
   const message = diagnostic ? error.slice(0, -diagnostic.length) : error;
   if (!Object.getOwnPropertyDescriptor(PRESENCE_ERRORS, message)) return "";
@@ -75,7 +115,12 @@ export function CallEntryView({
   const [requesting, setRequesting] = useState(false);
   const panel = useRef<HTMLElement>(null);
   const inviteInput = useRef<HTMLInputElement>(null);
-  const callError = error || state.error;
+  const callError =
+    protectedIdentityFailure(error || state.error, language) || error || state.error;
+  const identityBlocked = Boolean(
+    protectedIdentityFailure(error || state.error, language) ||
+      (state.presenceState === "error" && protectedIdentityFailure(state.presenceError, language)),
+  );
   const contactFailure =
     !active &&
     !state.incoming &&
@@ -434,7 +479,9 @@ export function CallEntryView({
                 <button
                   type="button"
                   className="peer-call-primary peer-call-create"
-                  disabled={requesting || !!busy || !endpoint || !callName.trim()}
+                  disabled={
+                    identityBlocked || requesting || !!busy || !endpoint || !callName.trim()
+                  }
                   onClick={() => void request({ type: "create", name: callName.trim() })}
                 >
                   <Plus size={17} aria-hidden="true" />
@@ -450,7 +497,13 @@ export function CallEntryView({
                   className="peer-call-join"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    if (invitation.trim() && endpoint && callName.trim() && !busy)
+                    if (
+                      !identityBlocked &&
+                      invitation.trim() &&
+                      endpoint &&
+                      callName.trim() &&
+                      !busy
+                    )
                       void request({
                         type: "join",
                         name: callName.trim(),
@@ -473,7 +526,12 @@ export function CallEntryView({
                   <button
                     type="submit"
                     disabled={
-                      requesting || !!busy || !endpoint || !callName.trim() || !invitation.trim()
+                      identityBlocked ||
+                      requesting ||
+                      !!busy ||
+                      !endpoint ||
+                      !callName.trim() ||
+                      !invitation.trim()
                     }
                   >
                     {t("参加する", "Join")}

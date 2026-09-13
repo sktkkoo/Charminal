@@ -2,6 +2,7 @@ pub mod attach;
 mod auxiliary_windows;
 mod bundled_examples_gen;
 mod call_controls;
+mod call_identity;
 mod camera_preview;
 mod history;
 mod journal;
@@ -3907,6 +3908,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            call_identity::peer_call_identity_supported,
+            call_identity::peer_call_identity_prepare,
+            call_identity::peer_call_identity_authenticate,
             peer_call_agent::peer_call_agent_start,
             peer_call_agent::peer_call_agent_text,
             peer_call_agent::peer_call_agent_stop,

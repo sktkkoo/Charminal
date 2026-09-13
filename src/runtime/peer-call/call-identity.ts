@@ -72,6 +72,25 @@ const IDENTITY_STAGES = [
   "key-validate",
   "public-export",
   "identity-digest",
+  "legacy-migration-required",
+  "native-context-invalid",
+  "native-key-invalid",
+  "native-key-missing",
+  "native-key-mismatch",
+  "native-interaction-required",
+  "native-key-protection-unavailable",
+  "native-key-protection-attribute-missing",
+  "native-key-exportable",
+  "native-key-algorithm-invalid",
+  "native-key-access-invalid",
+  "native-key-create-invalid-parameters",
+  "native-key-create-interaction-required",
+  "native-key-create-duplicate",
+  "native-key-create-unsupported",
+  "native-key-create-unavailable",
+  "native-signature-invalid",
+  "native-unavailable",
+  "native-signing-unavailable",
 ] as const;
 export type CallIdentityStage = (typeof IDENTITY_STAGES)[number];
 const IDENTITY_ERROR_NAMES = [
@@ -157,8 +176,13 @@ let database: Promise<IDBDatabase> | null = null;
 function openDatabase(): Promise<IDBDatabase> {
   if (!database)
     database = new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("yorishiro-call-identity", 1);
-      request.onupgradeneeded = () => request.result.createObjectStore("identities");
+      const request = indexedDB.open("yorishiro-call-identity", 2);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains("identities"))
+          request.result.createObjectStore("identities");
+        if (!request.result.objectStoreNames.contains("native-descriptors"))
+          request.result.createObjectStore("native-descriptors");
+      };
       request.onsuccess = () => {
         request.result.onversionchange = () => {
           request.result.close();
@@ -219,6 +243,87 @@ const persistentStore: CallIdentityStore = {
 };
 const identities = new WeakMap<CallIdentityStore, Map<string, Promise<CallIdentity>>>();
 
+/** Never read a CryptoKey value on macOS: WebKit can display an OS prompt during deserialization. */
+export const nativeDescriptorStore: NativeCallIdentityStore = {
+  async reserve(endpoint) {
+    const db = await openDatabase();
+    return identityStage(
+      "storage-read",
+      () =>
+        new Promise<NativeIdentityReservation>((resolve, reject) => {
+          const tx = db.transaction(["identities", "native-descriptors"], "readwrite");
+          const legacy = tx.objectStore("identities").count(endpoint);
+          const markers = tx.objectStore("native-descriptors");
+          const marker = markers.get(endpoint);
+          let selected: NativeIdentityReservation;
+          const fail = (error: unknown) => {
+            reject(error);
+            try {
+              tx.abort();
+            } catch {}
+          };
+          marker.onsuccess = () => {
+            try {
+              // Requests execute in transaction order. count observes presence without cloning key data.
+              if (legacy.result !== 0)
+                return fail(new CallIdentityError("legacy-migration-required"));
+              if (marker.result === undefined) {
+                markers.add({ version: 1, descriptor: null }, endpoint);
+                selected = { allowCreate: true, descriptor: null };
+              } else {
+                const record = marker.result;
+                if (!record || record.version !== 1 || !("descriptor" in record))
+                  return fail(new CallIdentityError("native-key-invalid"));
+                selected = { allowCreate: false, descriptor: record.descriptor };
+              }
+            } catch (error) {
+              fail(new CallIdentityError("storage-write", error));
+            }
+          };
+          tx.oncomplete = () => resolve(selected);
+          tx.onabort = tx.onerror = () => reject(new CallIdentityError("storage-read", tx.error));
+        }),
+    );
+  },
+  async pin(endpoint, descriptor) {
+    const db = await openDatabase();
+    return identityStage(
+      "storage-write",
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const tx = db.transaction("native-descriptors", "readwrite");
+          const markers = tx.objectStore("native-descriptors");
+          const marker = markers.get(endpoint);
+          marker.onsuccess = () => {
+            try {
+              const record = marker.result;
+              if (
+                !record ||
+                record.version !== 1 ||
+                !("descriptor" in record) ||
+                (record.descriptor !== null &&
+                  (record.descriptor.publicKey !== descriptor.publicKey ||
+                    record.descriptor.identityId !== descriptor.identityId))
+              ) {
+                reject(new CallIdentityError("native-key-mismatch"));
+                tx.abort();
+                return;
+              }
+              markers.put({ version: 1, descriptor }, endpoint);
+            } catch (error) {
+              reject(new CallIdentityError("storage-write", error));
+              try {
+                tx.abort();
+              } catch {}
+            }
+          };
+          tx.oncomplete = () => resolve();
+          tx.onabort = tx.onerror = () => reject(new CallIdentityError("storage-write", tx.error));
+        }),
+    );
+  },
+};
+
 /** One stable, endpoint-scoped identity. Storage failure never silently replaces the identity. */
 export function getCallIdentity(
   endpoint: string,
@@ -233,7 +338,17 @@ export function getCallIdentity(
   }
   const existing = cached.get(normalized);
   if (existing) return existing;
+  let nativePath = false;
   const pending = (async (): Promise<CallIdentity> => {
+    if (store === persistentStore && isTauri()) {
+      nativePath = true;
+      const { supportsNativeCallIdentity, loadNativeCallIdentity } = await import(
+        "./native-call-identity"
+      );
+      if (await supportsNativeCallIdentity())
+        return loadNativeCallIdentity(normalized, nativeDescriptorStore);
+      nativePath = false;
+    }
     if (!webCrypto?.subtle) throw new CallIdentityError("crypto-unavailable");
     let keys = await identityStage("storage-read", () => store.load(normalized));
     if (!keys) {
@@ -303,7 +418,8 @@ export function getCallIdentity(
   })();
   cached.set(normalized, pending);
   void pending.catch(() => {
-    if (cached.get(normalized) === pending) cached.delete(normalized);
+    // Native failures stay latched for this app process: retries must not retrigger OS access.
+    if (!nativePath && cached.get(normalized) === pending) cached.delete(normalized);
   });
   return pending;
 }
@@ -348,3 +464,6 @@ export class CallSocketAuthentication {
     return false;
   }
 }
+
+import { isTauri } from "@tauri-apps/api/core";
+import type { NativeCallIdentityStore, NativeIdentityReservation } from "./native-call-identity";
