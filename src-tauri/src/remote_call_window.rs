@@ -1051,7 +1051,7 @@ pub fn remote_call_window_publish(
                     .lock()
                     .map_err(|_| "Resident state unavailable")?;
                 if state.require_lease(&lease).is_err()
-                    || !state.frame.as_ref().is_some_and(|frame| frame.mode == mode)
+                    || state.frame.as_ref().is_none_or(|frame| frame.mode != mode)
                 {
                     return Ok(());
                 }

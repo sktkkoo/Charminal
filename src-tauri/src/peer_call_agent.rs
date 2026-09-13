@@ -230,6 +230,8 @@ fn valid_sdp(sdp: &str) -> bool {
 }
 
 #[tauri::command]
+// Keep the existing named IPC arguments, including Tauri's injected state and event channel.
+#[allow(clippy::too_many_arguments)]
 pub async fn peer_call_agent_start(
     window: WebviewWindow,
     state: State<'_, PeerCallAgentState>,
@@ -1121,6 +1123,8 @@ fn verify_thread(result: &Value, directory: &str) -> Result<String, String> {
     Ok(id.into())
 }
 
+// These channels separately own cancellation, input, startup reply, events, and process cleanup.
+#[allow(clippy::too_many_arguments)]
 async fn run_agent(
     voice: &str,
     identity: &CallIdentity,
