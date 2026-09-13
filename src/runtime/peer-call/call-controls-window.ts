@@ -26,6 +26,11 @@ export interface CallEntrySnapshot {
   role: string;
   invitation: string;
   guest: { name: string; requestId: string } | null;
+  contacts?: { identityId: string; name: string; lastAcceptedAt: number }[];
+  incoming?: { roomId: string; identityId: string; name: string; expiresAt: number } | null;
+  presenceState?: "idle" | "connecting" | "online" | "offline" | "error";
+  directTarget?: string;
+  failedContactId?: string;
 }
 export interface PublishedCallControls {
   version: number;
@@ -36,6 +41,9 @@ export type CallControlsAction =
   | { type: "join"; name: string; invitation: string }
   | { type: "save-endpoint"; endpoint: string }
   | { type: "accept" | "decline"; requestId: string }
+  | { type: "call-contact"; name: string; identityId: string }
+  | { type: "answer-contact" | "decline-contact"; roomId: string }
+  | { type: "remove-contact"; identityId: string }
   | { type: "cancel" | "hide" };
 export interface RoutedCallControlsAction {
   revision: string;
@@ -52,6 +60,18 @@ export function callControlsActionAllowed(state: CallEntrySnapshot, action: Call
       state.active && state.signalState === "pending" && state.guest?.requestId === action.requestId
     );
   if (state.active) return false;
+  if (action.type === "answer-contact" || action.type === "decline-contact")
+    return (
+      !!state.incoming &&
+      state.incoming.roomId === action.roomId &&
+      state.incoming.expiresAt > Date.now()
+    );
+  if (state.incoming) return false;
+  if (action.type === "remove-contact")
+    return (
+      state.presenceState === "online" &&
+      !!state.contacts?.some((contact) => contact.identityId === action.identityId)
+    );
   if (action.type === "save-endpoint")
     return action.endpoint.trim().length > 0 && action.endpoint.length <= 2048;
   if (
@@ -63,8 +83,14 @@ export function callControlsActionAllowed(state: CallEntrySnapshot, action: Call
   )
     return false;
   return (
+    (action.type === "call-contact" &&
+      state.presenceState === "online" &&
+      !!state.contacts?.some((contact) => contact.identityId === action.identityId)) ||
     action.type === "create" ||
-    (action.type === "join" && /^yri1_[A-Za-z0-9_-]{22}$/.test(action.invitation))
+    (action.type === "join" &&
+      /^(?:yri1_[A-Za-z0-9_-]{22}|yri2_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}_[A-Za-z0-9_-]{22})$/.test(
+        action.invitation,
+      ))
   );
 }
 

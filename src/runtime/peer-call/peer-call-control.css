@@ -1162,3 +1162,134 @@ html[data-window-view="call-controls"] #root {
   font-size: 12px;
   line-height: 1.6;
 }
+.peer-call-contacts {
+  width: 100%;
+  text-align: left;
+  margin: 4px 0 16px;
+}
+.peer-call-contacts h4 {
+  margin: 0 0 8px;
+}
+.peer-call-contacts p {
+  font-size: 12px;
+  opacity: 0.75;
+}
+.peer-call-contacts ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+}
+.peer-call-contacts li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+.peer-call-contact-copy {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+.peer-call-contact-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.peer-call-contact-error {
+  color: #ff8c8c;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.peer-call-room .peer-call-remove-contact {
+  color: #b8bfcc;
+}
+.peer-call-room .peer-call-remove-contact:hover {
+  color: #ffaaaa;
+  border-color: #ff8c8c66;
+  background: #ff8c8c12;
+}
+.peer-call-direct-incoming {
+  padding: 28px 24px;
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.peer-call-direct-incoming h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.call-session-workspace {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #171b23;
+  color: #e9edf5;
+  padding: 24px;
+  font-family: inherit;
+}
+.call-session-workspace header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-bottom: 1px solid #ffffff18;
+  padding-bottom: 18px;
+}
+.call-session-workspace header > div {
+  flex: 1;
+}
+.call-session-workspace h2 {
+  font-size: 18px;
+  margin: 0 0 8px;
+}
+.call-session-workspace header p {
+  color: #abb4c5;
+  font-size: 12px;
+  margin: 0;
+}
+.call-session-workspace button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #ffffff28;
+  border-radius: 9px;
+  background: #25312d;
+  color: inherit;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.call-session-workspace button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.call-session-messages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 0;
+}
+.call-session-messages p {
+  display: grid;
+  gap: 7px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.call-session-messages strong {
+  color: #a8e8ce;
+  font-size: 12px;
+}
+.call-session-empty {
+  color: #abb4c5;
+}
+.call-session-workspace footer [role="alert"] {
+  color: #ff8c8c;
+}

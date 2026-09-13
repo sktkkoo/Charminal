@@ -4,6 +4,12 @@
 
 import type { SessionId } from "../sessions/types";
 
+/** Presentation-only call tab: it never owns a terminal, PTY, or working context. */
+export interface CallSessionTab {
+  readonly sessionId: SessionId;
+  readonly returnToSessionId: SessionId;
+}
+
 /**
  * タブの並び順 + active + 保護対象を表す immutable state。
  * React 側は useSyncExternalStore でこれを subscribe する。

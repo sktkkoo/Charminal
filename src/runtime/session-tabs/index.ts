@@ -12,4 +12,4 @@ export type {
   SessionTabManagerDeps,
 } from "./session-tab-manager";
 export { SessionTabManager } from "./session-tab-manager";
-export type { SessionTabListener, SessionTabState } from "./types";
+export type { CallSessionTab, SessionTabListener, SessionTabState } from "./types";

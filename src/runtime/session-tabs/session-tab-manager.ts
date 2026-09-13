@@ -6,7 +6,7 @@
 import { sessionDestroy } from "../../bindings/tauri-commands";
 import type { SessionDescriptor, SessionId } from "../sessions/types";
 import { disposeTerminalRuntime, getTerminalRuntime } from "../terminal-runtime";
-import type { SessionTabListener, SessionTabState } from "./types";
+import type { CallSessionTab, SessionTabListener, SessionTabState } from "./types";
 
 /** 短命 exit の連続回数上限。これを超えると respawn しない。 */
 const RESPAWN_MAX = 3;
@@ -41,6 +41,7 @@ export class SessionTabManager {
   private readonly sessionCwds = new Map<SessionId, string | null>();
   private readonly sessionStartedAts = new Map<SessionId, number | null>();
   private readonly restoredSessionIds = new Set<SessionId>();
+  private callSession: CallSessionTab | null = null;
   private listeners = new Set<SessionTabListener>();
   private counter = 0;
   private respawnCount = 0;
@@ -97,6 +98,40 @@ export class SessionTabManager {
     return sessionId;
   }
 
+  /** Open fresh call UI without creating or borrowing a working terminal session. */
+  openCallSession(): SessionId {
+    if (this.callSession) throw new Error("A call session is already open.");
+    const sessionId = `call-${crypto.randomUUID()}`;
+    this.callSession = { sessionId, returnToSessionId: this.state.activeSessionId };
+    this.setState({
+      ...this.state,
+      sessions: [...this.state.sessions, sessionId],
+      activeSessionId: sessionId,
+    });
+    this.emitEvent("session-opened", { sessionId, kind: "call" });
+    return sessionId;
+  }
+
+  isCallSession(sessionId: SessionId): boolean {
+    return this.callSession?.sessionId === sessionId;
+  }
+
+  /** Release only the call tab; preserve any more recent manual focus choice. */
+  closeCallSession(sessionId: SessionId): void {
+    if (this.callSession?.sessionId !== sessionId) return;
+    const { returnToSessionId } = this.callSession;
+    this.callSession = null;
+    const remaining = this.state.sessions.filter((id) => id !== sessionId);
+    const activeSessionId =
+      this.state.activeSessionId === sessionId
+        ? remaining.includes(returnToSessionId)
+          ? returnToSessionId
+          : this.state.mainSessionId
+        : this.state.activeSessionId;
+    this.setState({ ...this.state, sessions: remaining, activeSessionId });
+    this.emitEvent("session-closed", { sessionId, kind: "call" });
+  }
+
   /**
    * Rust registry に残っている session descriptor から tab state を復元する。
    * WebView reload では PTY は Rust 側に残るため、JS の tab state だけ復元する。
@@ -117,6 +152,7 @@ export class SessionTabManager {
     this.sessionCwds.clear();
     this.sessionStartedAts.clear();
     this.restoredSessionIds.clear();
+    this.callSession = null;
     const persisted = new Map(
       (this.cwdPersistence?.load() ?? []).map((snapshot) => [snapshot.sessionId, snapshot]),
     );
@@ -163,6 +199,7 @@ export class SessionTabManager {
 
   updateSessionCwd(sessionId: SessionId, cwd: string): void {
     if (!this.state.sessions.includes(sessionId)) return;
+    if (this.isCallSession(sessionId)) return;
     if (this.sessionCwds.get(sessionId) === cwd) return;
     this.sessionCwds.set(sessionId, cwd);
     this.setState({ ...this.state, sessions: [...this.state.sessions] });
@@ -178,6 +215,10 @@ export class SessionTabManager {
   close(sessionId: SessionId): void {
     if (sessionId === this.state.mainSessionId) return;
     if (!this.state.sessions.includes(sessionId)) return;
+    if (this.isCallSession(sessionId)) {
+      this.closeCallSession(sessionId);
+      return;
+    }
 
     disposeTerminalRuntime(sessionId);
     void sessionDestroy({ sessionId });
@@ -211,7 +252,11 @@ export class SessionTabManager {
     this.emitEvent("session-switched", {
       from: prevActive,
       to: sessionId,
-      toKind: sessionId === this.state.mainSessionId ? "agent" : "shell",
+      toKind: this.isCallSession(sessionId)
+        ? "call"
+        : sessionId === this.state.mainSessionId
+          ? "agent"
+          : "shell",
     });
   }
 
@@ -248,6 +293,7 @@ export class SessionTabManager {
    * main session だけは従来どおり auto-respawn する。
    */
   handleSessionExit(sessionId: SessionId, exitCode: number): void {
+    if (this.isCallSession(sessionId)) return;
     if (sessionId !== this.state.mainSessionId) {
       if (this.state.sessions.includes(sessionId)) {
         this.emitEvent("session-exited", { sessionId, exitCode });

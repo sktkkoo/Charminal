@@ -265,6 +265,19 @@ afterEach(() => {
 });
 
 describe("admitted room lifecycle", () => {
+  it("passes a direct-call target to signaling without creating media or an AI before admission", async () => {
+    const targetIdentityId = "g".repeat(43);
+    const f = fixture("host", undefined, {
+      endpoint: "wss://calls.example.test/v2/rooms",
+      targetIdentityId,
+    });
+    await f.call.create();
+    expect(f.signal.options.targetIdentityId).toBe(targetIdentityId);
+    expect(f.signal.options.endpoint).toBe("wss://calls.example.test/v2/rooms");
+    expect(fakes.peers).toHaveLength(0);
+    expect(fakes.agents).toHaveLength(0);
+  });
+
   it("explains an oversize avatar without ending or pausing the voice call", async () => {
     const f = fixture("host", "avatar.vrm");
     const peer = admit(f);

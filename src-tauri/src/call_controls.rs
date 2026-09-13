@@ -1,6 +1,8 @@
 //! Pre-admission presentation only. Call ownership, voice and agents stay in main.
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 const MAIN: &str = "main";
@@ -13,6 +15,34 @@ const ACTION_EVENT: &str = "call-controls-action";
 pub struct Guest {
     name: String,
     request_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Contact {
+    identity_id: String,
+    name: String,
+    last_accepted_at: u64,
+}
+
+/// Public caller metadata only. The main window retains the invitation and identity keys.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Incoming {
+    room_id: String,
+    identity_id: String,
+    name: String,
+    expires_at: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PresenceState {
+    Idle,
+    Connecting,
+    Online,
+    Offline,
+    Error,
 }
 
 /// No paths, avatars, persona, credentials, audio or transcript payloads.
@@ -37,6 +67,16 @@ pub struct Snapshot {
     role: String,
     invitation: String,
     guest: Option<Guest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contacts: Option<Vec<Contact>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    incoming: Option<Incoming>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    presence_state: Option<PresenceState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    direct_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failed_contact_id: Option<String>,
 }
 
 impl Snapshot {
@@ -61,6 +101,32 @@ impl Snapshot {
                 guest.name.chars().count() > 64
                     || guest.request_id.is_empty()
                     || guest.request_id.len() > 80
+            })
+            || self.direct_target.as_ref().is_some_and(|name| {
+                name.encode_utf16().count() > 64 || name.chars().any(char::is_control)
+            })
+            || self.failed_contact_id.as_ref().is_some_and(|id| {
+                !id.is_empty()
+                    && (!valid_identity(id)
+                        || !self.contacts.as_ref().is_some_and(|contacts| {
+                            contacts.iter().any(|contact| &contact.identity_id == id)
+                        }))
+            })
+            || self.contacts.as_ref().is_some_and(|contacts| {
+                let mut ids = HashSet::new();
+                contacts.len() > 100
+                    || contacts.iter().any(|contact| {
+                        !valid_identity(&contact.identity_id)
+                            || !ids.insert(&contact.identity_id)
+                            || !valid_name(&contact.name)
+                            || contact.last_accepted_at > MAX_TIMESTAMP
+                    })
+            })
+            || self.incoming.as_ref().is_some_and(|incoming| {
+                !valid_room(&incoming.room_id)
+                    || !valid_identity(&incoming.identity_id)
+                    || !valid_name(&incoming.name)
+                    || incoming.expires_at > MAX_TIMESTAMP
             })
         {
             return Err("Invalid call controls state".into());
@@ -89,6 +155,23 @@ pub enum Action {
     Decline {
         #[serde(rename = "requestId")]
         request_id: String,
+    },
+    CallContact {
+        name: String,
+        #[serde(rename = "identityId")]
+        identity_id: String,
+    },
+    AnswerContact {
+        #[serde(rename = "roomId")]
+        room_id: String,
+    },
+    DeclineContact {
+        #[serde(rename = "roomId")]
+        room_id: String,
+    },
+    RemoveContact {
+        #[serde(rename = "identityId")]
+        identity_id: String,
     },
     Cancel,
     Hide,
@@ -130,13 +213,37 @@ fn valid_name(name: &str) -> bool {
         && !name.chars().any(|c| c < ' ' || c == '\u{7f}')
 }
 fn valid_invitation(value: &str) -> bool {
-    value.len() == 27
-        && value.starts_with("yri1_")
-        && value[5..]
+    if let Some(token) = value.strip_prefix("yri1_") {
+        return valid_base64url(token, 22);
+    }
+    value
+        .strip_prefix("yri2_")
+        .and_then(|value| value.split_once('_'))
+        .is_some_and(|(room, token)| valid_room(room) && valid_base64url(token, 22))
+}
+const MAX_TIMESTAMP: u64 = 9_007_199_254_740_991;
+fn valid_base64url(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
+fn valid_identity(value: &str) -> bool {
+    valid_base64url(value, 43)
+}
+fn valid_room(value: &str) -> bool {
+    uuid::Uuid::parse_str(value)
+        .is_ok_and(|id| id.get_version_num() == 4 && id.to_string() == value)
+}
 fn allowed(published: &Published, request: &Request) -> bool {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(u64::MAX, |value| {
+            value.as_millis().min(u64::MAX as u128) as u64
+        });
+    allowed_at(published, request, now)
+}
+fn allowed_at(published: &Published, request: &Request, now: u64) -> bool {
     let state = &published.snapshot;
     if request.version != published.version || !state.enabled || state.connected {
         return false;
@@ -151,6 +258,30 @@ fn allowed(published: &Published, request: &Request) -> bool {
         return false;
     }
     match &request.action {
+        Action::CallContact { name, identity_id } => {
+            !state.active
+                && !state.endpoint.is_empty()
+                && valid_name(name)
+                && state.contacts.as_ref().is_some_and(|contacts| {
+                    contacts
+                        .iter()
+                        .any(|contact| &contact.identity_id == identity_id)
+                })
+        }
+        Action::RemoveContact { identity_id } => {
+            !state.active
+                && state.contacts.as_ref().is_some_and(|contacts| {
+                    contacts
+                        .iter()
+                        .any(|contact| &contact.identity_id == identity_id)
+                })
+        }
+        Action::AnswerContact { room_id } | Action::DeclineContact { room_id } => {
+            !state.active
+                && state.incoming.as_ref().is_some_and(|incoming| {
+                    &incoming.room_id == room_id && incoming.expires_at > now
+                })
+        }
         Action::Accept { request_id } | Action::Decline { request_id } => {
             state.active
                 && state.signal_state == "pending"
@@ -255,6 +386,23 @@ pub fn close_owned_windows(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const ID: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const ROOM: &str = "12345678-1234-4234-8234-123456789012";
+    fn contact() -> Contact {
+        Contact {
+            identity_id: ID.into(),
+            name: "Mai".into(),
+            last_accepted_at: 1_000,
+        }
+    }
+    fn incoming() -> Incoming {
+        Incoming {
+            room_id: ROOM.into(),
+            identity_id: ID.into(),
+            name: "Mai".into(),
+            expires_at: 2_000,
+        }
+    }
     fn published() -> Published {
         Published {
             version: 4,
@@ -277,6 +425,11 @@ mod tests {
                 role: "".into(),
                 invitation: "".into(),
                 guest: None,
+                contacts: None,
+                incoming: None,
+                presence_state: None,
+                direct_target: None,
+                failed_contact_id: None,
             },
         }
     }
@@ -382,5 +535,256 @@ mod tests {
         snapshot.error = "x".repeat(8193);
         assert!(snapshot.validate().is_err());
         assert!(serde_json::from_value::<Request>(serde_json::json!({"version":4,"action":{"type":"accept","requestId":"current","url":"https://example.com"}})).is_err());
+    }
+
+    #[test]
+    fn managed_snapshot_accepts_public_metadata_and_legacy_omissions() {
+        let old = serde_json::to_value(published().snapshot).unwrap();
+        assert!(old.get("contacts").is_none());
+        assert!(old.get("incoming").is_none());
+        assert!(serde_json::from_value::<Snapshot>(old)
+            .unwrap()
+            .validate()
+            .is_ok());
+        let mut snapshot = published().snapshot;
+        snapshot.contacts = Some(vec![contact()]);
+        snapshot.incoming = Some(incoming());
+        snapshot.presence_state = Some(PresenceState::Online);
+        snapshot.direct_target = Some("Mai".into());
+        assert!(snapshot.validate().is_ok());
+        let value = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(value["contacts"][0]["identityId"], ID);
+        assert_eq!(value["incoming"]["roomId"], ROOM);
+        assert_eq!(value["presenceState"], "online");
+        assert!(value["incoming"].get("invitation").is_none());
+    }
+
+    #[test]
+    fn contact_error_is_only_attached_to_a_current_contact() {
+        let mut snapshot = published().snapshot;
+        snapshot.failed_contact_id = Some(String::new());
+        assert!(snapshot.validate().is_ok());
+        snapshot.failed_contact_id = Some(ID.into());
+        assert!(snapshot.validate().is_err());
+        snapshot.contacts = Some(vec![contact()]);
+        assert!(snapshot.validate().is_ok());
+        snapshot.failed_contact_id = Some("B".repeat(43));
+        assert!(snapshot.validate().is_err());
+        snapshot.failed_contact_id = Some("private-error-text".into());
+        assert!(snapshot.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_secret_or_unknown_fields_and_invalid_presence() {
+        let mut state = published().snapshot;
+        state.contacts = Some(vec![contact()]);
+        state.incoming = Some(incoming());
+        let value = serde_json::to_value(state).unwrap();
+        for field in ["invitation", "privateKey", "signature", "publicKey"] {
+            let mut bad = value.clone();
+            bad["incoming"][field] = serde_json::json!("secret");
+            assert!(serde_json::from_value::<Snapshot>(bad).is_err());
+            let mut bad = value.clone();
+            bad["contacts"][0][field] = serde_json::json!("secret");
+            assert!(serde_json::from_value::<Snapshot>(bad).is_err());
+        }
+        let mut bad = value.clone();
+        bad["presenceState"] = serde_json::json!("authenticated-with-private-key");
+        assert!(serde_json::from_value::<Snapshot>(bad).is_err());
+        for timestamp in [serde_json::json!(-1), serde_json::json!(1.5)] {
+            let mut bad = value.clone();
+            bad["incoming"]["expiresAt"] = timestamp;
+            assert!(serde_json::from_value::<Snapshot>(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn bounds_contacts_identifiers_names_and_timestamps() {
+        let mut state = published().snapshot;
+        let contacts = (0..100)
+            .map(|index| Contact {
+                identity_id: format!("{:043}", index),
+                ..contact()
+            })
+            .collect::<Vec<_>>();
+        state.contacts = Some(contacts.clone());
+        assert!(state.validate().is_ok());
+        state.contacts.as_mut().unwrap().push(Contact {
+            identity_id: format!("{:043}", 100),
+            ..contact()
+        });
+        assert!(state.validate().is_err());
+        state.contacts = Some(vec![contact(), contact()]);
+        assert!(state.validate().is_err());
+        for id in [
+            "short".to_owned(),
+            "A".repeat(44),
+            format!("{}=", "A".repeat(42)),
+            "あ".repeat(43),
+        ] {
+            state.contacts = Some(vec![Contact {
+                identity_id: id,
+                ..contact()
+            }]);
+            assert!(state.validate().is_err());
+        }
+        for name in [
+            "".to_owned(),
+            "Mai\nsecret".to_owned(),
+            "a".repeat(65),
+            "😀".repeat(33),
+        ] {
+            state.contacts = Some(vec![Contact { name, ..contact() }]);
+            assert!(state.validate().is_err());
+        }
+        state.contacts = Some(vec![Contact {
+            name: "😀".repeat(32),
+            last_accepted_at: MAX_TIMESTAMP,
+            ..contact()
+        }]);
+        assert!(state.validate().is_ok());
+        state.contacts.as_mut().unwrap()[0].last_accepted_at += 1;
+        assert!(state.validate().is_err());
+        state.contacts = None;
+        state.incoming = Some(Incoming {
+            room_id: "12345678-1234-1234-8234-123456789012".into(),
+            ..incoming()
+        });
+        assert!(state.validate().is_err());
+        state.incoming = Some(Incoming {
+            expires_at: MAX_TIMESTAMP + 1,
+            ..incoming()
+        });
+        assert!(state.validate().is_err());
+        state.incoming = None;
+        state.direct_target = Some("😀".repeat(33));
+        assert!(state.validate().is_err());
+    }
+
+    #[test]
+    fn contact_actions_require_current_contact_and_idle_state() {
+        let mut state = published();
+        let actions = [
+            Action::CallContact {
+                name: "より".into(),
+                identity_id: ID.into(),
+            },
+            Action::RemoveContact {
+                identity_id: ID.into(),
+            },
+        ];
+        for action in actions {
+            let request = Request { version: 4, action };
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.snapshot.contacts = Some(vec![contact()]);
+            assert!(allowed_at(&state, &request, 1_000));
+            state.snapshot.contacts = Some(vec![Contact {
+                identity_id: "B".repeat(43),
+                ..contact()
+            }]);
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.snapshot.contacts = Some(vec![contact()]);
+            state.snapshot.active = true;
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.snapshot.active = false;
+            state.snapshot.busy = Some("ringing".into());
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.snapshot.busy = None;
+            state.snapshot.connected = true;
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.snapshot.connected = false;
+            state.version = 5;
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.version = 4;
+            state.snapshot.contacts = None;
+        }
+        state.snapshot.contacts = Some(vec![contact()]);
+        assert!(!allowed_at(
+            &state,
+            &Request {
+                version: 4,
+                action: Action::CallContact {
+                    name: "\n".into(),
+                    identity_id: ID.into()
+                }
+            },
+            1_000
+        ));
+    }
+
+    #[test]
+    fn incoming_actions_require_exact_unexpired_current_room_and_idle_state() {
+        for action in [
+            Action::AnswerContact {
+                room_id: ROOM.into(),
+            },
+            Action::DeclineContact {
+                room_id: ROOM.into(),
+            },
+        ] {
+            let mut state = published();
+            let request = Request { version: 4, action };
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.snapshot.incoming = Some(incoming());
+            assert!(allowed_at(&state, &request, 1_999));
+            assert!(!allowed_at(&state, &request, 2_000));
+            state.snapshot.incoming.as_mut().unwrap().room_id = uuid::Uuid::new_v4().to_string();
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.snapshot.incoming = Some(incoming());
+            state.snapshot.active = true;
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.snapshot.active = false;
+            state.snapshot.busy = Some("answering".into());
+            assert!(!allowed_at(&state, &request, 1_000));
+            state.snapshot.busy = None;
+            state.snapshot.connected = true;
+            assert!(!allowed_at(&state, &request, 1_000));
+        }
+    }
+
+    #[test]
+    fn managed_invitation_and_action_wire_shapes_are_strict() {
+        let token = "A".repeat(22);
+        let invitation = format!("yri2_{ROOM}_{token}");
+        assert!(valid_invitation(&invitation));
+        assert!(valid_invitation(&format!("yri1_{token}")));
+        assert!(!valid_invitation(&format!(
+            "yri2_{ROOM}_{}",
+            "A".repeat(23)
+        )));
+        assert!(!valid_invitation(&format!(
+            "yri2_{}_{}",
+            "あ".repeat(12),
+            token
+        )));
+        assert!(!valid_invitation(&format!(
+            "yri2_{}_{}",
+            ROOM.replace("4234", "1234"),
+            token
+        )));
+        assert!(!valid_invitation(&format!("https://host/{invitation}")));
+        assert!(allowed_at(
+            &published(),
+            &Request {
+                version: 4,
+                action: Action::Join {
+                    name: "より".into(),
+                    invitation
+                }
+            },
+            1_000
+        ));
+        for value in [
+            serde_json::json!({"type":"call-contact","name":"より","identityId":ID}),
+            serde_json::json!({"type":"remove-contact","identityId":ID}),
+            serde_json::json!({"type":"answer-contact","roomId":ROOM}),
+            serde_json::json!({"type":"decline-contact","roomId":ROOM}),
+        ] {
+            let action: Action = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(action).unwrap(), value);
+            let mut bad = value;
+            bad["invitation"] = serde_json::json!("private-token");
+            assert!(serde_json::from_value::<Action>(bad).is_err());
+        }
     }
 }

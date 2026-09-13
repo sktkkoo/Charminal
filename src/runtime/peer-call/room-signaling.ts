@@ -1,3 +1,11 @@
+import {
+  CALL_IDENTITY_ID,
+  CallSocketAuthentication,
+  getCallIdentity,
+  isManagedCallEndpoint,
+  MANAGED_CALL_PROTOCOL,
+  managedInvitationRoom,
+} from "./call-identity";
 import type { CallPeer } from "./call-peer";
 import { AudioProtocolVersionError } from "./peer-connection";
 
@@ -16,9 +24,14 @@ const CLOSED_MESSAGES: Record<string, string> = {
   rate_limited: "リクエストが多すぎます。少し待ってから新しいルームでお試しください。",
   capacity: "通話サーバーが混み合っています。少し待ってからお試しください。",
   participant_left: "相手がルームを退出しました。",
+  disconnected: "相手がルームを退出しました。",
+  left: "相手がルームを退出しました。",
   timeout: "通話の接続が時間内に完了しませんでした。",
   protocol: "通話サーバーとの通信形式を確認できませんでした。",
   closed: "ルームは終了しました。",
+  offline: "相手に接続できませんでした。時間をおいておかけ直しください。",
+  "no-answer": "相手が応答しませんでした。",
+  "not-contact": "この相手に発信できません。新しい招待で接続してください。",
 };
 
 function closedMessage(value: unknown): string {
@@ -41,11 +54,14 @@ export interface PendingRoomGuest {
   requestId: string;
   endpointId: string;
   name: string;
+  identityId?: string;
 }
 
 export interface RoomSignalingOptions {
   endpoint: string;
   name: string;
+  targetIdentityId?: string;
+  getIdentity?: typeof getCallIdentity;
   /** Called only after admission, with room/endpoint identities already populated. */
   createPeer: () => CallPeer;
   onChange: () => void;
@@ -162,6 +178,59 @@ export function readRoomIceServers(
   return servers;
 }
 
+/** Managed TURN uses provider-issued credentials, not legacy coturn's username/HMAC grammar. */
+export function readManagedRoomIceServers(value: unknown): RTCIceServer[] | null {
+  if (!Array.isArray(value) || value.length > 8) return null;
+  const result: RTCIceServer[] = [];
+  for (const entry of value) {
+    if (
+      !record(entry) ||
+      !Array.isArray(entry.urls) ||
+      entry.urls.length < 1 ||
+      entry.urls.length > 8
+    )
+      return null;
+    let turn = false;
+    let stun = false;
+    const urls: string[] = [];
+    for (const url of entry.urls) {
+      if (typeof url !== "string" || url.length > 256) return null;
+      const match =
+        /^(stun|stuns|turn|turns):(stun\.cloudflare\.com|turn\.cloudflare\.com)(?::([0-9]{1,5}))?(?:\?transport=(udp|tcp))?$/.exec(
+          url,
+        );
+      if (!match || (match[3] && (Number(match[3]) < 1 || Number(match[3]) > 65535))) return null;
+      if (match[1].startsWith("stun")) {
+        if (match[4]) return null;
+        stun = true;
+      } else turn = true;
+      if (urls.includes(url)) return null;
+      urls.push(url);
+    }
+    if (turn && stun) return null;
+    if (turn) {
+      if (
+        !shape(entry, ["urls", "username", "credential"]) ||
+        typeof entry.username !== "string" ||
+        !entry.username ||
+        entry.username.length > 1024 ||
+        typeof entry.credential !== "string" ||
+        !entry.credential ||
+        entry.credential.length > 2048 ||
+        Array.from(entry.username + entry.credential).some(
+          (character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127,
+        )
+      )
+        return null;
+      result.push({ urls, username: entry.username, credential: entry.credential });
+    } else {
+      if (!shape(entry, ["urls"])) return null;
+      result.push({ urls });
+    }
+  }
+  return result;
+}
+
 /** No credentials or invitation in the URL; insecure transport is local development only. */
 export function validateRoomSignalingEndpoint(endpoint: string): string {
   if (!endpoint.trim()) throw new Error("通話サーバーが設定されていません。");
@@ -187,7 +256,7 @@ export function validateRoomSignalingEndpoint(endpoint: string): string {
     url.password ||
     url.search ||
     url.hash ||
-    url.pathname !== "/rooms" ||
+    !(url.pathname === "/rooms" || url.pathname === "/v2/rooms") ||
     !(url.protocol === "wss:" || (url.protocol === "ws:" && local))
   )
     throw new Error("通話サーバーには認証情報を含まない wss://…/rooms を指定してください。");
@@ -206,7 +275,12 @@ export class RoomSignaling {
   localEndpointId = "";
   remoteEndpointId = "";
   remoteName = "";
+  remoteIdentityId = "";
+  localIdentityId = "";
   role: "host" | "guest" | null = null;
+  private readonly managed: boolean;
+  private authentication: CallSocketAuthentication | null = null;
+  private firstMessage: object | null = null;
   private admittedIceServers: RTCIceServer[] = [];
   private ws: WebSocket | null = null;
   private phase: "none" | "offer" | "answer" | "ready" | "active" = "none";
@@ -222,6 +296,12 @@ export class RoomSignaling {
 
   constructor(private readonly options: RoomSignalingOptions) {
     if (!name(options.name)) throw new Error("参加者名は1〜64文字で入力してください。");
+    this.managed = isManagedCallEndpoint(options.endpoint);
+    if (
+      options.targetIdentityId &&
+      (!this.managed || !CALL_IDENTITY_ID.test(options.targetIdentityId))
+    )
+      throw new Error("通話相手を確認してください。");
   }
 
   get closed(): boolean {
@@ -239,13 +319,21 @@ export class RoomSignaling {
   async create(): Promise<void> {
     this.assertUnused();
     this.role = "host";
-    await this.start({ type: "create", name: this.options.name.trim() });
+    if (this.managed) this.roomId = crypto.randomUUID();
+    await this.start({
+      type: "create",
+      name: this.options.name.trim(),
+      ...(this.options.targetIdentityId ? { targetIdentityId: this.options.targetIdentityId } : {}),
+    });
   }
 
   async join(invitation: string): Promise<void> {
     this.assertUnused();
     const code = invitation.trim();
-    if (!INVITATION.test(code)) throw new Error("短いルーム招待コードを確認してください。");
+    const managedRoom = managedInvitationRoom(code);
+    if (this.managed ? !managedRoom : !INVITATION.test(code))
+      throw new Error("この接続先の招待コードを確認してください。");
+    if (managedRoom) this.roomId = managedRoom;
     this.role = "guest";
     await this.start({ type: "join", name: this.options.name.trim(), invitation: code });
   }
@@ -284,11 +372,24 @@ export class RoomSignaling {
     if (this.state !== "idle") throw new Error("新しいルームを作ってください。");
   }
 
-  private start(message: object): Promise<void> {
-    const endpoint = validateRoomSignalingEndpoint(this.options.endpoint);
+  private async start(message: object): Promise<void> {
+    let endpoint = validateRoomSignalingEndpoint(this.options.endpoint);
     this.state = "connecting";
     this.changed();
     if (this.closed) return Promise.reject(new Error(CLOSED_MESSAGES.closed));
+    if (this.managed) {
+      try {
+        const identity = await (this.options.getIdentity ?? getCallIdentity)(endpoint);
+        if (this.closed) throw new Error(CLOSED_MESSAGES.closed);
+        this.localIdentityId = identity.identityId;
+        endpoint = `${endpoint}/${this.roomId}`;
+        this.authentication = new CallSocketAuthentication(identity, endpoint);
+        this.firstMessage = message;
+      } catch {
+        this.fail("通話の識別情報を準備できませんでした。");
+        throw new Error(this.error || CLOSED_MESSAGES.closed);
+      }
+    }
     return new Promise((resolve, reject) => {
       this.starting = {
         resolve,
@@ -296,15 +397,16 @@ export class RoomSignaling {
         timer: setTimeout(() => this.fail(CLOSED_MESSAGES.timeout), 15_000),
       };
       try {
+        const protocol = this.managed ? MANAGED_CALL_PROTOCOL : PROTOCOL;
         const ws = this.options.createWebSocket
-          ? this.options.createWebSocket(endpoint, PROTOCOL)
-          : new WebSocket(endpoint, PROTOCOL);
+          ? this.options.createWebSocket(endpoint, protocol)
+          : new WebSocket(endpoint, protocol);
         this.ws = ws;
         ws.onopen = () => {
           if (this.closed) ws.close();
           else {
             try {
-              this.send(message);
+              if (!this.managed) this.send(message);
             } catch {
               this.fail("通話サーバーへ送信できませんでした。");
             }
@@ -373,17 +475,33 @@ export class RoomSignaling {
   private async receive(value: unknown): Promise<void> {
     if (!record(value)) throw new Error("Invalid room message");
     if (
+      this.authentication &&
+      (await this.authentication.receive(value, (reply) => {
+        if (!this.closed) this.send(reply);
+      }))
+    ) {
+      if (this.authentication.authenticated && this.firstMessage && !this.closed) {
+        const message = this.firstMessage;
+        this.firstMessage = null;
+        this.send(message);
+      }
+      return;
+    }
+    if (
       value.type === "created" &&
       shape(value, ["type", "invitation", "expiresAt", "roomId", "localEndpointId"]) &&
       this.role === "host" &&
       this.state === "connecting" &&
       typeof value.invitation === "string" &&
-      INVITATION.test(value.invitation) &&
+      (this.managed
+        ? managedInvitationRoom(value.invitation) === this.roomId
+        : INVITATION.test(value.invitation)) &&
       expiration(value.expiresAt) &&
       id(value.roomId) &&
+      (!this.managed || value.roomId === this.roomId) &&
       id(value.localEndpointId)
     ) {
-      this.invitation = value.invitation;
+      this.invitation = this.options.targetIdentityId ? "" : value.invitation;
       this.expiresAt = value.expiresAt;
       this.roomId = value.roomId;
       this.localEndpointId = value.localEndpointId;
@@ -400,6 +518,7 @@ export class RoomSignaling {
         "roomId",
         "localEndpointId",
         "remoteEndpointId",
+        ...(this.managed ? ["identityId"] : []),
       ]) &&
       this.role === "guest" &&
       this.state === "connecting" &&
@@ -407,8 +526,14 @@ export class RoomSignaling {
       expiration(value.expiresAt) &&
       id(value.roomId) &&
       id(value.localEndpointId) &&
-      id(value.remoteEndpointId)
+      id(value.remoteEndpointId) &&
+      (!this.managed ||
+        (value.roomId === this.roomId &&
+          typeof value.identityId === "string" &&
+          CALL_IDENTITY_ID.test(value.identityId) &&
+          value.identityId !== this.localIdentityId))
     ) {
+      this.remoteIdentityId = this.managed ? (value.identityId as string) : "";
       this.remoteName = value.hostName;
       this.expiresAt = value.expiresAt;
       this.roomId = value.roomId;
@@ -420,21 +545,35 @@ export class RoomSignaling {
     }
     if (
       value.type === "request" &&
-      shape(value, ["type", "requestId", "name", "endpointId"]) &&
+      shape(value, [
+        "type",
+        "requestId",
+        "name",
+        "endpointId",
+        ...(this.managed ? ["identityId"] : []),
+      ]) &&
       this.role === "host" &&
       this.state === "hosting" &&
       name(value.name) &&
       typeof value.requestId === "string" &&
       REQUEST_ID.test(value.requestId) &&
-      id(value.endpointId)
+      id(value.endpointId) &&
+      (!this.managed ||
+        (typeof value.identityId === "string" &&
+          CALL_IDENTITY_ID.test(value.identityId) &&
+          value.identityId !== this.localIdentityId))
     ) {
+      if (this.options.targetIdentityId && value.identityId !== this.options.targetIdentityId)
+        throw new Error("Unexpected direct caller identity");
       this.pendingGuest = {
         requestId: value.requestId,
         name: value.name,
         endpointId: value.endpointId,
+        ...(this.managed ? { identityId: value.identityId as string } : {}),
       };
       this.state = "pending";
-      this.changed();
+      if (this.options.targetIdentityId) await this.accept();
+      else this.changed();
       return;
     }
     if (
@@ -462,12 +601,18 @@ export class RoomSignaling {
         "localEndpointId",
         "remoteEndpointId",
         "iceServers",
+        ...(this.managed ? ["identityId"] : []),
       ]) &&
       value.role === this.role &&
       value.roomId === this.roomId &&
       value.localEndpointId === this.localEndpointId &&
       id(value.remoteEndpointId) &&
       name(value.name) &&
+      (!this.managed ||
+        (typeof value.identityId === "string" &&
+          CALL_IDENTITY_ID.test(value.identityId) &&
+          value.identityId ===
+            (this.role === "host" ? this.pendingGuest?.identityId : this.remoteIdentityId))) &&
       ((this.role === "host" &&
         this.state === "negotiating" &&
         this.decisionPending &&
@@ -476,13 +621,16 @@ export class RoomSignaling {
           this.state === "requesting" &&
           value.remoteEndpointId === this.remoteEndpointId))
     ) {
-      const iceServers = readRoomIceServers(value.iceServers, {
-        roomId: this.roomId,
-        endpointId: this.localEndpointId,
-      });
+      const iceServers = this.managed
+        ? readManagedRoomIceServers(value.iceServers)
+        : readRoomIceServers(value.iceServers, {
+            roomId: this.roomId,
+            endpointId: this.localEndpointId,
+          });
       if (!iceServers) throw new Error("Invalid room ICE configuration");
       this.admittedIceServers = iceServers;
       this.remoteEndpointId = value.remoteEndpointId;
+      this.remoteIdentityId = this.managed ? (value.identityId as string) : "";
       this.remoteName = value.name;
       this.state = "negotiating";
       this.phase = "offer";
@@ -588,6 +736,7 @@ export class RoomSignaling {
     this.invitation = "";
     this.pendingGuest = null;
     this.admittedIceServers = [];
+    this.firstMessage = null;
     if (this.starting) {
       clearTimeout(this.starting.timer);
       this.starting.reject(new Error(this.error || CLOSED_MESSAGES.closed));

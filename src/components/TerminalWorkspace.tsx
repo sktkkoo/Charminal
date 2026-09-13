@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { SpawnSpec } from "../bindings/tauri-commands";
 import type { Perception } from "../core/perception";
 import type { SessionId } from "../runtime/sessions";
@@ -5,6 +6,7 @@ import type { InterruptProtectionMode } from "../runtime/terminal-runtime";
 import Terminal from "../terminal";
 
 interface TerminalWorkspaceProps {
+  readonly children?: ReactNode;
   readonly sessions: ReadonlyArray<SessionId>;
   readonly activeSessionId: SessionId;
   readonly cwd: string | null;
@@ -20,6 +22,7 @@ interface TerminalWorkspaceProps {
 }
 
 export default function TerminalWorkspace({
+  children,
   sessions,
   activeSessionId,
   cwd,
@@ -53,6 +56,7 @@ export default function TerminalWorkspace({
   return (
     <div className="terminal-workspace">
       {sessions.map((sessionId) => renderTerminal(sessionId, sessionId === activeSessionId))}
+      {children}
     </div>
   );
 }

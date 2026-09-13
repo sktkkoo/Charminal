@@ -13,6 +13,7 @@ import {
   useCallControlsWindow,
 } from "./call-controls-window";
 import { CallEntryView } from "./call-entry-view";
+import { CallPresence } from "./call-presence";
 import { configuredRoomEndpoint, persistRoomEndpoint, RoomCall } from "./room-call";
 import "./peer-call-control.css";
 
@@ -27,6 +28,7 @@ interface Props {
   onRoomChange?: (room: RoomCall | null) => void;
   onTopicRequested?: () => void;
   onShowResident?: () => void;
+  onSessionStart?: (ownerKey: string, endCall: () => void) => void;
 }
 
 type Layout = "theater" | "call" | "portrait";
@@ -42,6 +44,13 @@ function sampleLocalPose() {
     return vrm ? captureAvatarMotion(vrm, 0, performance.now()).pose : null;
   } catch {
     return null;
+  }
+}
+function usesManagedCalls(endpoint: string) {
+  try {
+    return new URL(endpoint).pathname === "/v2/rooms";
+  } catch {
+    return false;
   }
 }
 
@@ -99,6 +108,7 @@ export function PeerCallControl({
   onRoomChange,
   onTopicRequested,
   onShowResident,
+  onSessionStart,
 }: Props) {
   const ja = language.startsWith("ja");
   const t = (jp: string, en: string) => (ja ? jp : en);
@@ -112,6 +122,9 @@ export function PeerCallControl({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [endpoint, setEndpoint] = useState(configuredRoomEndpoint);
+  const [presence, setPresence] = useState<CallPresence | null>(null);
+  const [directTarget, setDirectTarget] = useState("");
+  const [directIdentityId, setDirectIdentityId] = useState("");
   const owned = useRef<RoomCall | null>(null);
   const entryOwner = useRef(crypto.randomUUID());
   const mounted = useRef(true);
@@ -119,6 +132,8 @@ export function PeerCallControl({
   const operationBusy = useRef(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const identity = useRef({ name, avatarUrl });
+  const presenceName = useRef(name);
+  presenceName.current = name;
   const activeCallback = useRef(onActiveChange);
   activeCallback.current = onActiveChange;
 
@@ -147,6 +162,42 @@ export function PeerCallControl({
   useEffect(() => {
     setCallName(name);
   }, [name]);
+  useEffect(() => {
+    // A legacy/custom broker can still be used explicitly. Managed presence lives
+    // in the main window, independently of dialogs and display modes.
+    if (!usesManagedCalls(endpoint)) {
+      setPresence(null);
+      return;
+    }
+    let disposed = false;
+    const next = new CallPresence({
+      endpoint,
+      name: presenceName.current,
+      onChange: () => {
+        if (!disposed && mounted.current) refresh((value) => value + 1);
+      },
+      onIncoming: () => {
+        if (disposed || !mounted.current) return;
+        if ((owned.current && !owned.current.closed) || operationBusy.current) {
+          if (next.incoming) next.decline(next.incoming.roomId);
+          return;
+        }
+        requestControlSurface("call");
+        setOpen(true);
+      },
+    });
+    setPresence(next);
+    void next.start().catch(() => {
+      if (!disposed && mounted.current) refresh((value) => value + 1);
+    });
+    const close = () => next.close();
+    window.addEventListener("pagehide", close);
+    return () => {
+      disposed = true;
+      window.removeEventListener("pagehide", close);
+      next.close();
+    };
+  }, [endpoint]);
   useEffect(
     () =>
       subscribeControlSurface((surface) => {
@@ -167,33 +218,46 @@ export function PeerCallControl({
   const active = !!room && !room.closed;
   const connected = active && room.connected;
   useEffect(() => {
+    presence?.setPresence(callName.trim() || name, active || !!busy);
+  }, [presence, callName, name, active, busy]);
+  const incoming = !active ? presence?.incoming : null;
+  useEffect(() => {
     if (connected) setOpen(false);
   }, [connected]);
   const signal = room?.signaling;
   const guest = active ? signal?.pendingGuest : null;
   const requestId = signal?.state === "pending" ? guest?.requestId : undefined;
-  useIncomingRing(requestId);
+  useIncomingRing(requestId || incoming?.roomId);
   const localName = active ? identity.current.name : callName.trim() || name;
   const localAvatar = active ? identity.current.avatarUrl : avatarUrl;
-  const remoteName = signal?.remoteName || guest?.name || t("相手のYorishiro", "Other resident");
+  const remoteName =
+    signal?.remoteName ||
+    guest?.name ||
+    incoming?.name ||
+    directTarget ||
+    t("相手のYorishiro", "Other resident");
   const callError = error || room?.error || signal?.error;
-  const status = !active
-    ? t("招待するか招待コードで参加してください", "Invite someone or enter an invitation code")
-    : guest
-      ? t("着信中", "Incoming call")
-      : connected
-        ? room.error && room.paused
-          ? t("AIに接続できませんでした", "AI connection failed")
-          : room.paused
-            ? t("AIの会話は停止中", "AI conversation stopped")
-            : room.ready
-              ? t("通話中", "In call")
-              : t("AIに接続中", "Connecting to the AIs")
-        : signal?.state === "hosting"
-          ? t("開室中 · 相手を待っています", "Room open · Waiting for a guest")
-          : signal?.state === "requesting"
-            ? t("呼び出し中", "Calling")
-            : t("接続中", "Connecting");
+  const status = incoming
+    ? t("着信中", "Incoming call")
+    : !active
+      ? t("相手を選んで通話できます", "Choose someone to call")
+      : guest
+        ? t("着信中", "Incoming call")
+        : connected
+          ? room.error && room.paused
+            ? t("AIに接続できませんでした", "AI connection failed")
+            : room.paused
+              ? t("AIの会話は停止中", "AI conversation stopped")
+              : room.ready
+                ? t("通話中", "In call")
+                : t("AIに接続中", "Connecting to the AIs")
+          : signal?.state === "hosting"
+            ? directTarget
+              ? t("呼び出し中", "Calling")
+              : t("招待中 · 相手を待っています", "Invitation open · Waiting for a guest")
+            : signal?.state === "requesting"
+              ? t("呼び出し中", "Calling")
+              : t("接続中", "Connecting");
 
   function leave() {
     entryOwner.current = crypto.randomUUID();
@@ -202,6 +266,8 @@ export function PeerCallControl({
     owned.current?.leave();
     owned.current = null;
     setRoom(null);
+    setDirectTarget("");
+    setDirectIdentityId("");
     roomCallback.current?.(null);
     setBusy(null);
     setError("");
@@ -232,32 +298,74 @@ export function PeerCallControl({
     }
   }
 
-  function begin(kind: "create" | "join", selectedName: string, invitation = "") {
+  function begin(
+    kind: "create" | "join",
+    selectedName: string,
+    invitation = "",
+    targetIdentityId?: string,
+  ) {
     void run(kind, async () => {
-      entryOwner.current = crypto.randomUUID();
       owned.current?.leave();
+      const ownerKey = crypto.randomUUID();
+      entryOwner.current = ownerKey;
       setCallName(selectedName);
+      setDirectIdentityId(targetIdentityId || "");
+      setDirectTarget(
+        targetIdentityId
+          ? presence?.contacts.find((contact) => contact.identityId === targetIdentityId)?.name ||
+              ""
+          : "",
+      );
       identity.current = { name: selectedName, avatarUrl };
-      const next = new RoomCall({
-        endpoint,
-        name: selectedName,
-        publicDescription,
-        avatarUrl,
-        getVoice,
-        onChange: changed,
-        onActiveChange: (value) => activeCallback.current?.(value),
-      });
-      owned.current = next;
-      setRoom(next);
-      roomCallback.current?.(next);
-      if (kind === "create") await next.create();
-      else await next.join(invitation.trim());
+      let next: RoomCall | null = null;
+      try {
+        onSessionStart?.(ownerKey, () => {
+          if (entryOwner.current === ownerKey) leave();
+        });
+        next = new RoomCall({
+          endpoint,
+          name: selectedName,
+          publicDescription,
+          avatarUrl,
+          getVoice,
+          targetIdentityId,
+          onChange: changed,
+          onActiveChange: (value) => activeCallback.current?.(value),
+        });
+        owned.current = next;
+        setRoom(next);
+        roomCallback.current?.(next);
+        if (kind === "create") await next.create();
+        else await next.join(invitation.trim());
+      } catch (error) {
+        if (next && !next.closed) next.leave();
+        // Setup can fail before a RoomCall exists. Restore the work session in
+        // that case too, without closing a newer call after cancellation.
+        if (mounted.current && entryOwner.current === ownerKey) {
+          owned.current = null;
+          setRoom(null);
+          roomCallback.current?.(null);
+        }
+        throw error;
+      }
     });
   }
 
   function answer() {
     showEntry();
     void run("accept", () => room?.accept());
+  }
+
+  function answerContact(roomId: string) {
+    if (active || operationBusy.current || !presence) return;
+    const invitation = presence.takeIncoming(roomId);
+    if (!invitation) return;
+    showEntry();
+    begin("join", callName.trim() || name, invitation);
+  }
+  function declineContact(roomId: string) {
+    if (active || operationBusy.current || presence?.incoming?.roomId !== roomId) return;
+    presence.decline(roomId);
   }
 
   const participants: NativeCallAvatarProps[] = localAvatar
@@ -285,8 +393,25 @@ export function PeerCallControl({
     endpoint,
     signalState: signal?.state || "idle",
     role: signal?.role || "",
-    invitation: signal?.invitation || "",
+    invitation: directTarget ? "" : signal?.invitation || "",
     guest: guest ? { name: guest.name, requestId: guest.requestId } : null,
+    contacts: presence?.contacts,
+    incoming: incoming
+      ? {
+          roomId: incoming.roomId,
+          identityId: incoming.identityId,
+          name: incoming.name,
+          expiresAt: incoming.expiresAt,
+        }
+      : null,
+    presenceState: presence?.state,
+    directTarget: active ? directTarget : "",
+    failedContactId:
+      !active &&
+      callError &&
+      presence?.contacts.some((contact) => contact.identityId === directIdentityId)
+        ? directIdentityId
+        : "",
   };
   function handleEntryAction(intent: CallControlsAction, ownerKey: string = entryOwner.current) {
     if (ownerKey !== entryOwner.current) return;
@@ -297,6 +422,22 @@ export function PeerCallControl({
     }
     if (intent.type === "cancel") {
       leave();
+      return;
+    }
+    if (intent.type === "call-contact") {
+      begin("create", intent.name.trim(), "", intent.identityId);
+      return;
+    }
+    if (intent.type === "answer-contact") {
+      answerContact(intent.roomId);
+      return;
+    }
+    if (intent.type === "decline-contact") {
+      declineContact(intent.roomId);
+      return;
+    }
+    if (intent.type === "remove-contact") {
+      presence?.removeContact(intent.identityId);
       return;
     }
     if (intent.type === "create" || intent.type === "join") {
@@ -370,6 +511,40 @@ export function PeerCallControl({
             : entryWindow.error}
         </span>
       )}
+      {incoming &&
+        !open &&
+        createPortal(
+          <aside
+            className="peer-call-incoming-toast"
+            aria-label={t("着信", "Incoming call")}
+            aria-live="polite"
+          >
+            <PhoneIncoming size={21} aria-hidden="true" />
+            <div>
+              <strong>{incoming.name}</strong>
+              <p>{t("通話を希望しています", "Is calling you")}</p>
+            </div>
+            <div className="peer-call-actions">
+              <button
+                type="button"
+                className="peer-call-secondary"
+                disabled={!!busy}
+                onClick={() => declineContact(incoming.roomId)}
+              >
+                {t("拒否", "Decline")}
+              </button>
+              <button
+                type="button"
+                className="peer-call-primary"
+                disabled={!!busy}
+                onClick={() => answerContact(incoming.roomId)}
+              >
+                {t("通話に出る", "Answer")}
+              </button>
+            </div>
+          </aside>,
+          document.body,
+        )}
       {connected &&
         createPortal(
           <aside
@@ -488,7 +663,7 @@ export function PeerCallControl({
             >
               <Phone size={15} aria-hidden="true" />
               <span>
-                <strong>{t("あなたの部屋", "Your room")}</strong>
+                <strong>{directTarget || t("通話", "Call")}</strong>
                 <small>{status}</small>
               </span>
             </button>

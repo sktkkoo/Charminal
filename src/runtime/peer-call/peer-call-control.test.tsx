@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Options = {
+  targetIdentityId?: string;
   endpoint: string;
   name: string;
   publicDescription: string;
@@ -10,6 +11,25 @@ type Options = {
   getVoice?: () => Promise<string | undefined>;
   onChange: () => void;
   onActiveChange: (active: boolean) => void;
+};
+type Incoming = {
+  roomId: string;
+  identityId: string;
+  name: string;
+  expiresAt: number;
+  invitation: string;
+};
+type PresenceOptions = { endpoint: string; name: string; onChange(): void; onIncoming(): void };
+type TestPresence = {
+  state: string;
+  contacts: { identityId: string; name: string; lastAcceptedAt: number }[];
+  incoming: Incoming | null;
+  options: PresenceOptions;
+  close: ReturnType<typeof vi.fn>;
+  setPresence: ReturnType<typeof vi.fn>;
+  decline: ReturnType<typeof vi.fn>;
+  removeContact: ReturnType<typeof vi.fn>;
+  ring(incoming: Incoming): void;
 };
 type TestRoom = {
   options: Options;
@@ -38,19 +58,54 @@ type TestRoom = {
   pause: ReturnType<typeof vi.fn>;
   resume: ReturnType<typeof vi.fn>;
   setMicrophone: ReturnType<typeof vi.fn>;
-  leave: ReturnType<typeof vi.fn>;
+  leave: ReturnType<typeof vi.fn<() => void>>;
   connect: () => void;
   incoming: () => void;
 };
 const test = vi.hoisted(() => ({
   rooms: [] as TestRoom[],
+  presences: [] as TestPresence[],
   endpoint: "ws://localhost:1531/rooms",
   persist: vi.fn(),
   creation: null as Promise<void> | null,
+  constructionError: "",
   native: false,
   nativeFailure: false,
   nativeInvoke: vi.fn(),
   nativeHandlers: new Map<string, (event: { payload: unknown }) => void>(),
+}));
+vi.mock("./call-presence", () => ({
+  CallPresence: class {
+    state = "online";
+    contacts = [{ identityId: "A".repeat(43), name: "Mai", lastAcceptedAt: 1 }];
+    incoming: Incoming | null = null;
+    constructor(readonly options: PresenceOptions) {
+      test.presences.push(this);
+    }
+    start = vi.fn(async () => this.options.onChange());
+    close = vi.fn();
+    setPresence = vi.fn();
+    decline = vi.fn((roomId: string) => {
+      if (this.incoming?.roomId === roomId) this.incoming = null;
+      this.options.onChange();
+    });
+    removeContact = vi.fn((identityId: string) => {
+      this.contacts = this.contacts.filter((contact) => contact.identityId !== identityId);
+      this.options.onChange();
+    });
+    takeIncoming(roomId: string) {
+      if (this.incoming?.roomId !== roomId || this.incoming.expiresAt < Date.now()) return null;
+      const call = this.incoming;
+      this.incoming = null;
+      this.options.onChange();
+      return call.invitation;
+    }
+    ring(incoming: Incoming) {
+      this.incoming = incoming;
+      this.options.onChange();
+      this.options.onIncoming();
+    }
+  },
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => test.native,
@@ -127,6 +182,7 @@ vi.mock("./room-call", () => ({
       motion: { sample: () => null };
     } | null = null;
     constructor(readonly options: Options) {
+      if (test.constructionError) throw new Error(test.constructionError);
       test.rooms.push(this);
     }
     create = vi.fn(async () => {
@@ -197,8 +253,10 @@ import { requestControlSurface } from "../control-surface";
 import { PeerCallControl } from "./peer-call-control";
 
 beforeEach(() => {
+  test.presences = [];
   test.endpoint = "ws://localhost:1531/rooms";
   test.creation = null;
+  test.constructionError = "";
   test.native = false;
   test.nativeFailure = false;
   test.nativeHandlers.clear();
@@ -213,8 +271,8 @@ function open() {
 }
 async function createRoom() {
   open();
-  fireEvent.click(screen.getByRole("button", { name: "部屋を作る" }));
-  await screen.findByText("部屋を作成しました");
+  fireEvent.click(screen.getByRole("button", { name: "新しい相手を招待" }));
+  await screen.findByText("招待の準備ができました");
   return test.rooms[0];
 }
 async function connectedRoom() {
@@ -224,12 +282,144 @@ async function connectedRoom() {
 }
 
 describe("native room call experience", () => {
+  it("opens the isolated session before constructing a room and cancels through its owner", async () => {
+    const start = vi.fn((_owner: string, _end: () => void) => {
+      expect(test.rooms).toHaveLength(0);
+    });
+    const changed = vi.fn();
+    render(<PeerCallControl onSessionStart={start} onRoomChange={changed} />);
+    open();
+    expect(start).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "新しい相手を招待" }));
+    await screen.findByText("招待の準備ができました");
+    const first = test.rooms[0];
+    const endFirst = start.mock.calls[0][1];
+    act(() => endFirst());
+    expect(first.leave).toHaveBeenCalledOnce();
+    expect(changed).toHaveBeenLastCalledWith(null);
+    start.mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "新しい相手を招待" }));
+    await screen.findByText("招待の準備ができました");
+    act(() => endFirst());
+    expect(test.rooms[1].leave).not.toHaveBeenCalled();
+    expect(changed).toHaveBeenLastCalledWith(test.rooms[1]);
+  });
+
+  it.each([
+    "session",
+    "constructor",
+    "connection",
+  ])("restores work after a %s setup failure", async (phase) => {
+    const start = vi.fn(() => {
+      if (phase === "session") throw new Error("Session setup failed");
+    });
+    const changed = vi.fn();
+    render(<PeerCallControl onSessionStart={start} onRoomChange={changed} />);
+    if (phase === "constructor") test.constructionError = "Room setup failed";
+    let fail: ((value: Error) => void) | undefined;
+    if (phase === "connection") {
+      test.creation = new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      });
+    }
+    open();
+    fireEvent.click(screen.getByRole("button", { name: "新しい相手を招待" }));
+    if (fail) await act(async () => fail?.(new Error("Connection failed")));
+    await screen.findByRole("alert");
+    expect(changed).toHaveBeenLastCalledWith(null);
+    expect(screen.getByRole("button", { name: "新しい相手を招待" })).toHaveProperty(
+      "disabled",
+      false,
+    );
+    expect(test.rooms.every((room) => room.closed)).toBe(true);
+  });
+
+  it("shows a direct-call failure immediately underneath the called person", async () => {
+    test.endpoint = "wss://call.example.test/v2/rooms";
+    render(<PeerCallControl />);
+    open();
+    fireEvent.click(screen.getByRole("button", { name: "Maiに通話" }));
+    await screen.findByText("Maiを呼び出しています…");
+    act(() => {
+      test.rooms[0].error = "不在のため、つながりませんでした。";
+      test.rooms[0].leave();
+    });
+    const error = screen.getByRole("alert");
+    expect(error.className).toBe("peer-call-contact-error");
+    expect(error.parentElement?.textContent).toContain("Mai");
+    expect(error.textContent).toBe("不在のため、つながりませんでした。");
+  });
+
+  it("calls a remembered identity without displaying an invitation and keeps presence across modes", async () => {
+    test.endpoint = "wss://call.example.test/v2/rooms";
+    const view = render(<PeerCallControl residentName="Yori" viewMode="theater" />);
+    open();
+    const presence = test.presences[0];
+    expect(test.rooms).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Maiに通話" }));
+    await screen.findByText("Maiを呼び出しています…");
+    expect(test.rooms[0].options.targetIdentityId).toBe("A".repeat(43));
+    expect(test.rooms[0].create).toHaveBeenCalledOnce();
+    expect(test.rooms[0].peer).toBeNull();
+    expect(screen.queryByLabelText("部屋の招待コード")).toBeNull();
+    expect(presence.setPresence).toHaveBeenLastCalledWith("Yori", true);
+    view.rerender(<PeerCallControl residentName="Yori" viewMode="companion" />);
+    expect(test.presences).toHaveLength(1);
+    expect(presence.close).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
+    expect(test.rooms[0].leave).toHaveBeenCalledOnce();
+    expect(presence.setPresence).toHaveBeenLastCalledWith("Yori", false);
+  });
+
+  it("receives a direct call without creating media and joins only after Answer", async () => {
+    test.endpoint = "wss://call.example.test/v2/rooms";
+    const start = vi.fn(() => expect(test.rooms).toHaveLength(0));
+    render(<PeerCallControl residentName="Yori" onSessionStart={start} />);
+    const incoming = {
+      roomId: "12345678-1234-4234-8234-123456789012",
+      identityId: "A".repeat(43),
+      name: "Mai",
+      expiresAt: Date.now() + 45_000,
+      invitation: "yri2_12345678-1234-4234-8234-123456789012_0123456789012345678901",
+    };
+    act(() => test.presences[0].ring(incoming));
+    expect(screen.getByText("Maiから着信です")).toBeTruthy();
+    expect(test.rooms).toHaveLength(0);
+    expect(start).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "通話に出る" }));
+    await waitFor(() => expect(test.rooms).toHaveLength(1));
+    expect(test.rooms[0].join).toHaveBeenCalledWith(incoming.invitation);
+    expect(start).toHaveBeenCalledOnce();
+    expect(test.presences[0].decline).not.toHaveBeenCalled();
+  });
+
+  it("declines a direct call without creating a room and removes a contact through presence", async () => {
+    test.endpoint = "wss://call.example.test/v2/rooms";
+    render(<PeerCallControl residentName="Yori" />);
+    const presence = test.presences[0];
+    act(() =>
+      presence.ring({
+        roomId: "12345678-1234-4234-8234-123456789012",
+        identityId: "A".repeat(43),
+        name: "Mai",
+        expiresAt: Date.now() + 45_000,
+        invitation: "private-invitation",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "拒否" }));
+    expect(presence.decline).toHaveBeenCalledOnce();
+    expect(test.rooms).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Maiを連絡先から削除" }));
+    expect(presence.removeContact).toHaveBeenCalledWith("A".repeat(43));
+    expect(screen.queryByRole("button", { name: "Maiに通話" })).toBeNull();
+  });
+
   it("opens a meaningful create/join entry without starting a connection or exposing the rejected test UI", () => {
     render(<PeerCallControl avatarUrl="/models/Yori.vrm" residentName="より" />);
     open();
     expect(screen.getByRole("dialog", { name: "通話" })).toBeTruthy();
     expect(test.rooms).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "部屋を作る" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "新しい相手を招待" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "参加する" })).toBeTruthy();
     expect(screen.getByText(/参加すると、名前・アバター・通話の音声/).textContent).toContain(
       "OpenAI",
@@ -289,7 +479,7 @@ describe("native room call experience", () => {
     expect(room.peer).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
     expect(room.leave).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: "部屋を作る" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "新しい相手を招待" })).toBeTruthy();
   });
 
   it("uses the chosen call name while retaining the resident's own voice and public description", async () => {
@@ -305,8 +495,8 @@ describe("native room call experience", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "通話での名前" }), {
       target: { value: "  GPT  " },
     });
-    fireEvent.click(screen.getByRole("button", { name: "部屋を作る" }));
-    await screen.findByText("部屋を作成しました");
+    fireEvent.click(screen.getByRole("button", { name: "新しい相手を招待" }));
+    await screen.findByText("招待の準備ができました");
     expect(test.rooms[0].options).toMatchObject({
       name: "GPT",
       publicDescription: "A curious resident",
@@ -500,16 +690,19 @@ describe("native room call experience", () => {
     });
     open();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("button", { name: "部屋を作る" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "新しい相手を招待" })).toBeTruthy();
   });
 
   it("requires an explicit configured service, keeps configuration outside everyday call controls, and reports failures", async () => {
     test.endpoint = "";
     render(<PeerCallControl />);
     open();
-    expect(screen.getByRole("button", { name: "部屋を作る" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "新しい相手を招待" })).toHaveProperty(
+      "disabled",
+      true,
+    );
     fireEvent.click(screen.getByRole("button", { name: "設定する" }));
-    expect(screen.queryByRole("button", { name: "部屋を作る" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "新しい相手を招待" })).toBeNull();
     fireEvent.change(screen.getByRole("textbox", { name: "通話サーバー" }), {
       target: { value: "bad-address" },
     });
@@ -520,7 +713,10 @@ describe("native room call experience", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "保存する" }));
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("button", { name: "部屋を作る" })).toHaveProperty("disabled", false);
+    expect(screen.getByRole("button", { name: "新しい相手を招待" })).toHaveProperty(
+      "disabled",
+      false,
+    );
     expect(test.rooms).toHaveLength(0);
   });
 
@@ -567,15 +763,15 @@ describe("native room call experience", () => {
     });
     render(<PeerCallControl />);
     open();
-    fireEvent.click(screen.getByRole("button", { name: "部屋を作る" }));
+    fireEvent.click(screen.getByRole("button", { name: "新しい相手を招待" }));
     const room = test.rooms[0];
     fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
     await act(async () => {
       resolve();
     });
     expect(room.leave).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: "部屋を作る" })).toBeTruthy();
-    expect(screen.queryByText("部屋を作成しました")).toBeNull();
+    expect(screen.getByRole("button", { name: "新しい相手を招待" })).toBeTruthy();
+    expect(screen.queryByText("招待の準備ができました")).toBeNull();
   });
 
   it.each([
@@ -667,7 +863,7 @@ describe("native room call experience", () => {
     open();
     await screen.findByRole("dialog");
     expect(screen.getByRole("alert").textContent).toContain("再起動");
-    expect(screen.getByRole("button", { name: "部屋を作る" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "新しい相手を招待" })).toBeTruthy();
     expect(
       test.nativeInvoke.mock.calls.some(([command]) => command === "auxiliary_window_open"),
     ).toBe(false);
@@ -677,8 +873,8 @@ describe("native room call experience", () => {
   it("supports English entry and call controls without presenting a fake successful call", async () => {
     render(<PeerCallControl language="en" residentName="Yori" />);
     fireEvent.click(screen.getByRole("button", { name: "Call" }));
-    fireEvent.click(screen.getByRole("button", { name: "Create a room" }));
-    await screen.findByText("Your room is open");
+    fireEvent.click(screen.getByRole("button", { name: "Invite someone new" }));
+    await screen.findByText("Your invitation is ready");
     expect(screen.queryByRole("button", { name: "Send topic" })).toBeNull();
     const room = test.rooms[0];
     act(() => {
@@ -687,6 +883,6 @@ describe("native room call experience", () => {
       room.options.onChange();
     });
     expect(screen.getByRole("alert").textContent).toBe("Connection unavailable");
-    expect(screen.getByRole("button", { name: "Create a room" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Invite someone new" })).toBeTruthy();
   });
 });

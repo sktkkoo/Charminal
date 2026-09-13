@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.7.7",
   "type": "module",
-  "description": "Yorishiro — a terminal your AI dwells in. A Tauri desktop app pairing Claude Code with a 3D VRM character that shares your workspace.",
+  "description": "Yorishiro \u2014 a terminal your AI dwells in. A Tauri desktop app pairing Claude Code with a 3D VRM character that shares your workspace.",
   "keywords": [
     "tauri",
     "react",
@@ -39,9 +39,7 @@
     "doc:rust": "cargo doc --manifest-path src-tauri/Cargo.toml --no-deps --document-private-items",
     "doc:open": "open docs/api/typescript/index.html",
     "doc:rust:open": "open src-tauri/target/doc/yorishiro_lib/index.html",
-    "prepare": "lefthook install",
-    "dev:room-signaling": "node server/room-signaling.mjs",
-    "test:room-signaling": "node --test server/room-signaling.integration.mjs"
+    "prepare": "lefthook install"
   },
   "dependencies": {
     "@pixiv/three-vrm": "^3.5.1",

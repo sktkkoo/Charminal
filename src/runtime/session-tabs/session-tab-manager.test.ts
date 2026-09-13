@@ -99,6 +99,76 @@ describe("SessionTabManager", () => {
 
   // ── restoreSessions ─────────────────────────────────────────
 
+  describe("ephemeral call sessions", () => {
+    it("has fresh identity and no borrowed cwd, runtime, PTY, or persisted session", () => {
+      const memory = makeMemoryCwdPersistence();
+      manager = new SessionTabManager(MAIN, { cwdPersistence: memory.persistence });
+      const work = manager.openShell("/work/private");
+      const persistedWork = memory.snapshots();
+      const call = manager.openCallSession();
+      expect(manager.getState().activeSessionId).toBe(call);
+      expect(manager.isCallSession(call)).toBe(true);
+      expect(manager.getSessionCwd(call)).toBeUndefined();
+      expect(manager.getSessionLaunchCwd(call)).toBeUndefined();
+      expect(manager.shouldAttachExistingSession(call)).toBe(false);
+      manager.updateSessionCwd(call, "/work/private");
+      expect(manager.getSessionCwd(call)).toBeUndefined();
+      expect(memory.snapshots()).toEqual(persistedWork);
+      manager.close(call);
+      expect(manager.getState().activeSessionId).toBe(work);
+      expect(manager.isCallSession(call)).toBe(false);
+      expect(sessionDestroy).not.toHaveBeenCalled();
+      expect(disposeTerminalRuntime).not.toHaveBeenCalled();
+      expect(manager.openCallSession()).not.toBe(call);
+    });
+
+    it("returns to the exact original tab even when it is not the neighboring tab", () => {
+      const original = manager.openShell("/work/original");
+      manager.openShell("/work/neighbor");
+      manager.switchTo(original);
+      const call = manager.openCallSession();
+      manager.closeCallSession(call);
+      expect(manager.getState().activeSessionId).toBe(original);
+      expect(manager.getSessionCwd(original)).toBe("/work/original");
+      expect(sessionDestroy).not.toHaveBeenCalled();
+    });
+
+    it("preserves a later manual focus choice and does not revive a removed original tab", () => {
+      const original = manager.openShell(null);
+      const call = manager.openCallSession();
+      manager.switchTo(MAIN);
+      manager.closeCallSession(call);
+      expect(manager.getState().activeSessionId).toBe(MAIN);
+      manager.switchTo(original);
+      const nextCall = manager.openCallSession();
+      manager.close(original);
+      vi.clearAllMocks();
+      manager.closeCallSession(nextCall);
+      expect(manager.getState().sessions).toEqual([MAIN]);
+      expect(manager.getState().activeSessionId).toBe(MAIN);
+      expect(sessionDestroy).not.toHaveBeenCalled();
+    });
+
+    it("refuses a second owner without stealing focus or closing any work session", () => {
+      const call = manager.openCallSession();
+      manager.switchTo(MAIN);
+      expect(() => manager.openCallSession()).toThrow("already open");
+      manager.closeCallSession(MAIN);
+      manager.closeCallSession("missing");
+      expect(manager.getState()).toMatchObject({ sessions: [MAIN, call], activeSessionId: MAIN });
+      expect(sessionDestroy).not.toHaveBeenCalled();
+    });
+
+    it("does not restore call tabs as terminal sessions after a reload", () => {
+      const call = manager.openCallSession();
+      manager.restoreSessions([descriptor({ id: MAIN })], call);
+      expect(manager.getState().sessions).toEqual([MAIN]);
+      expect(manager.isCallSession(call)).toBe(false);
+      expect(manager.getState().activeSessionId).toBe(MAIN);
+      expect(manager.openCallSession()).not.toBe(call);
+    });
+  });
+
   describe("restoreSessions", () => {
     it("Rust registry の session 一覧から tab state と cwd を復元する", () => {
       manager.restoreSessions(

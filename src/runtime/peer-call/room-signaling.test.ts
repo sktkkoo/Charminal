@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CallIdentity } from "./call-identity";
 import type { CallPeer } from "./call-peer";
 import { AudioProtocolVersionError } from "./peer-connection";
-import { RoomSignaling, readRoomIceServers, validateRoomSignalingEndpoint } from "./room-signaling";
+import {
+  RoomSignaling,
+  readManagedRoomIceServers,
+  readRoomIceServers,
+  validateRoomSignalingEndpoint,
+} from "./room-signaling";
 
 const ROOM_ID = "10000000-0000-4000-8000-000000000001";
 const HOST_ID = "10000000-0000-4000-8000-000000000002";
@@ -32,7 +38,10 @@ class Socket {
   }
 }
 
-function fixture(role: "host" | "guest" = "host") {
+const HOST_IDENTITY = "h".repeat(43);
+const GUEST_IDENTITY = "g".repeat(43);
+
+function fixture(role: "host" | "guest" = "host", managed = false, targetIdentityId?: string) {
   const socket = new Socket();
   const listeners = new Set<() => void>();
   let peerClosed = false;
@@ -48,7 +57,7 @@ function fixture(role: "host" | "guest" = "host") {
     onClose: vi.fn((listener: () => void) => listeners.add(listener)),
   };
   const factory = vi.fn(() => {
-    expect(room.roomId).toBe(ROOM_ID);
+    if (!managed) expect(room.roomId).toBe(ROOM_ID);
     expect(room.localEndpointId).toBe(role === "host" ? HOST_ID : GUEST_ID);
     expect(room.remoteEndpointId).toBe(role === "host" ? GUEST_ID : HOST_ID);
     expect(room.remoteName).toBe(role === "host" ? "Guest AI" : "Host AI");
@@ -57,11 +66,22 @@ function fixture(role: "host" | "guest" = "host") {
   const createSocket = vi.fn(() => socket as unknown as WebSocket);
   const changed = vi.fn();
   const room = new RoomSignaling({
-    endpoint: "ws://127.0.0.1:1531/rooms",
+    endpoint: managed ? "wss://calls.example.test/v2/rooms" : "ws://127.0.0.1:1531/rooms",
     name: role === "host" ? "Host AI" : "Guest AI",
     createPeer: factory,
     createWebSocket: createSocket,
     onChange: changed,
+    targetIdentityId,
+    getIdentity: async () =>
+      ({
+        identityId: role === "host" ? HOST_IDENTITY : GUEST_IDENTITY,
+        publicKey: "public",
+        authenticate: async () => ({
+          type: "authenticate",
+          publicKey: "public",
+          signature: "signature",
+        }),
+      }) as CallIdentity,
   });
   rooms.push(room);
   return { room, socket, peer, factory, createSocket, changed };
@@ -139,6 +159,228 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
   for (const room of rooms.splice(0)) room.close();
   vi.useRealTimers();
+});
+
+async function managedStart(targetIdentityId?: string) {
+  const f = fixture("host", true, targetIdentityId);
+  const creating = f.room.create();
+  await flush();
+  f.socket.open();
+  expect(f.socket.sent).toEqual([]);
+  f.socket.receive({ type: "challenge", challenge: "a".repeat(43) });
+  f.socket.receive({ type: "authenticated", identityId: HOST_IDENTITY });
+  await flush();
+  const invitation = `yri2_${f.room.roomId}_${"a".repeat(22)}`;
+  f.socket.receive({
+    type: "created",
+    roomId: f.room.roomId,
+    localEndpointId: HOST_ID,
+    invitation,
+    expiresAt: Date.now() + 45_000,
+  });
+  await creating;
+  return { ...f, invitation };
+}
+async function managedRequest(f: ReturnType<typeof fixture>, identityId = GUEST_IDENTITY) {
+  f.socket.receive({
+    type: "request",
+    requestId: REQUEST_ID,
+    name: "Guest AI",
+    endpointId: GUEST_ID,
+    identityId,
+  });
+  await flush();
+}
+function managedAdmission(
+  f: ReturnType<typeof fixture>,
+  identityId = GUEST_IDENTITY,
+  iceServers: unknown = [],
+) {
+  f.socket.receive({
+    type: "admitted",
+    role: "host",
+    roomId: f.room.roomId,
+    name: "Guest AI",
+    localEndpointId: HOST_ID,
+    remoteEndpointId: GUEST_ID,
+    identityId,
+    iceServers,
+  });
+}
+
+describe("managed authenticated rooms", () => {
+  it.each([
+    "disconnected",
+    "left",
+  ])("handles managed %s as a normal peer exit and releases media", async (reason) => {
+    const f = await managedStart(GUEST_IDENTITY);
+    await managedRequest(f);
+    managedAdmission(f);
+    await flush();
+    expect(f.factory).toHaveBeenCalledOnce();
+    f.socket.receive({ type: "closed", reason });
+    expect(f.room.closed).toBe(true);
+    expect(f.room.error).toBe("相手がルームを退出しました。");
+    expect(f.peer.close).toHaveBeenCalledOnce();
+  });
+
+  it("authenticates and creates a targeted room, autoaccepts only its verified counterpart, and waits for admission before media", async () => {
+    const f = await managedStart(GUEST_IDENTITY);
+    expect(f.createSocket).toHaveBeenCalledWith(
+      `wss://calls.example.test/v2/rooms/${f.room.roomId}`,
+      "yorishiro-call-v2",
+    );
+    expect(f.socket.sent).toEqual([
+      { type: "authenticate", publicKey: "public", signature: "signature" },
+      { type: "create", name: "Host AI", targetIdentityId: GUEST_IDENTITY },
+    ]);
+    expect(f.room.invitation).toBe("");
+    expect(f.factory).not.toHaveBeenCalled();
+    await managedRequest(f);
+    expect(f.socket.sent[f.socket.sent.length - 1]).toEqual({
+      type: "accept",
+      requestId: REQUEST_ID,
+    });
+    expect(f.factory).not.toHaveBeenCalled();
+    managedAdmission(f);
+    await flush();
+    expect(f.factory).toHaveBeenCalledOnce();
+    expect(f.room.remoteIdentityId).toBe(GUEST_IDENTITY);
+    expect(f.room.localIdentityId).toBe(HOST_IDENTITY);
+  });
+
+  it("requires manual acceptance for first invitations and refuses identity substitution at admission", async () => {
+    const f = await managedStart();
+    expect(f.room.invitation).toBe(f.invitation);
+    await managedRequest(f);
+    expect(f.room.state).toBe("pending");
+    expect(f.socket.sent.some((entry) => entry.type === "accept")).toBe(false);
+    await f.room.accept();
+    managedAdmission(f, "x".repeat(43));
+    await flush();
+    expect(f.room.closed).toBe(true);
+    expect(f.factory).not.toHaveBeenCalled();
+  });
+
+  it("rejects a same-name request from a different stable identity without autoaccept", async () => {
+    const f = await managedStart(GUEST_IDENTITY);
+    await managedRequest(f, "x".repeat(43));
+    expect(f.room.closed).toBe(true);
+    expect(f.socket.sent.some((entry) => entry.type === "accept")).toBe(false);
+    expect(f.factory).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthenticated room state and cross-protocol invitations", async () => {
+    const f = fixture("host", true);
+    const creating = f.room.create();
+    const rejected = expect(creating).rejects.toThrow();
+    await flush();
+    f.socket.open();
+    f.socket.receive({
+      type: "created",
+      roomId: f.room.roomId,
+      localEndpointId: HOST_ID,
+      invitation: `yri2_${f.room.roomId}_${"a".repeat(22)}`,
+      expiresAt: Date.now() + 45_000,
+    });
+    await rejected;
+    expect(f.factory).not.toHaveBeenCalled();
+    expect(f.socket.sent.some((entry) => entry.type === "create")).toBe(false);
+    const legacy = fixture("guest");
+    await expect(legacy.room.join(`yri2_${ROOM_ID}_${"a".repeat(22)}`)).rejects.toThrow();
+    expect(legacy.createSocket).not.toHaveBeenCalled();
+    const modern = fixture("guest", true);
+    await expect(modern.room.join(INVITE)).rejects.toThrow();
+    expect(modern.createSocket).not.toHaveBeenCalled();
+  });
+
+  it("joins the room in an accepted v2 invitation and binds admitted identity to the requested host", async () => {
+    const f = fixture("guest", true);
+    const invitation = `yri2_${ROOM_ID}_${"a".repeat(22)}`;
+    const joining = f.room.join(invitation);
+    await flush();
+    f.socket.open();
+    f.socket.receive({ type: "challenge", challenge: "a".repeat(43) });
+    f.socket.receive({ type: "authenticated", identityId: GUEST_IDENTITY });
+    await flush();
+    expect(f.socket.sent[f.socket.sent.length - 1]).toEqual({
+      type: "join",
+      name: "Guest AI",
+      invitation,
+    });
+    f.socket.receive({
+      type: "requested",
+      roomId: ROOM_ID,
+      localEndpointId: GUEST_ID,
+      remoteEndpointId: HOST_ID,
+      identityId: HOST_IDENTITY,
+      hostName: "Host AI",
+      expiresAt: Date.now() + 45_000,
+    });
+    await joining;
+    expect(f.factory).not.toHaveBeenCalled();
+    f.socket.receive({
+      type: "admitted",
+      role: "guest",
+      roomId: ROOM_ID,
+      localEndpointId: GUEST_ID,
+      remoteEndpointId: HOST_ID,
+      identityId: HOST_IDENTITY,
+      name: "Host AI",
+      iceServers: [],
+    });
+    await flush();
+    expect(f.factory).toHaveBeenCalledOnce();
+  });
+
+  it("separates managed provider validation from coturn credentials and rejects unapproved URLs", () => {
+    const provider = [
+      {
+        urls: [
+          "turn:turn.cloudflare.com:3478?transport=udp",
+          "turns:turn.cloudflare.com:5349?transport=tcp",
+        ],
+        username: "provider-user",
+        credential: "provider-secret",
+      },
+    ];
+    expect(readManagedRoomIceServers(provider)).toEqual(provider);
+    expect(readRoomIceServers(provider)).toBeNull();
+    expect(
+      readManagedRoomIceServers([{ ...provider[0], urls: ["turn:attacker.example:3478"] }]),
+    ).toBeNull();
+    expect(
+      readManagedRoomIceServers([{ ...provider[0], credential: "private\nsecret" }]),
+    ).toBeNull();
+    expect(readManagedRoomIceServers([{ urls: ["stun:stun.cloudflare.com:3478"] }])).not.toBeNull();
+  });
+
+  it("accepts the managed provider's full five-route TURN response without dropping TCP fallbacks", () => {
+    const iceServers = [
+      { urls: ["stun:stun.cloudflare.com:3478"] },
+      {
+        urls: [
+          "turn:turn.cloudflare.com:3478?transport=udp",
+          "turn:turn.cloudflare.com:3478?transport=tcp",
+          "turn:turn.cloudflare.com:80?transport=tcp",
+          "turns:turn.cloudflare.com:5349?transport=tcp",
+          "turns:turn.cloudflare.com:443?transport=tcp",
+        ],
+        username: "u".repeat(1024),
+        credential: "provider-secret",
+      },
+    ];
+    expect(readManagedRoomIceServers(iceServers)).toEqual(iceServers);
+    expect(
+      readManagedRoomIceServers([
+        ...iceServers,
+        ...iceServers,
+        ...iceServers,
+        ...iceServers,
+        ...iceServers,
+      ]),
+    ).toBeNull();
+  });
 });
 
 describe("room admission and automatic signaling", () => {

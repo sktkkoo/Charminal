@@ -19,6 +19,7 @@ export interface RoomCallOptions {
   endpoint: string;
   name: string;
   publicDescription: string;
+  targetIdentityId?: string;
   avatarUrl?: string | null;
   getVoice?(): Promise<string | undefined>;
   onChange(): void;
@@ -97,6 +98,7 @@ export class RoomCall {
     this.signaling = new RoomSignaling({
       endpoint: options.endpoint,
       name: this.identity.name,
+      targetIdentityId: options.targetIdentityId,
       createPeer: () => this.createPeer(),
       onChange: () => this.changed(),
     });

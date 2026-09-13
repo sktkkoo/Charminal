@@ -182,9 +182,12 @@ import {
 } from "./runtime/language/language";
 import { getModuleRegistry, KEYS } from "./runtime/module-registry";
 import { CallResidentPanel } from "./runtime/peer-call/call-resident-panel";
+import { CallSessionView } from "./runtime/peer-call/call-session-view";
 import { PeerCallControl } from "./runtime/peer-call/peer-call-control";
 import type { RoomCall } from "./runtime/peer-call/room-call";
+import { useCallSession } from "./runtime/peer-call/use-call-session";
 import { useCallSurfaces } from "./runtime/peer-call/use-call-surfaces";
+import { useQuickChatDrafts } from "./runtime/peer-call/use-quick-chat-drafts";
 import { PersonaReflexDispatcher } from "./runtime/persona-reflex";
 import type { PersonaEntry } from "./runtime/persona-registry";
 import {
@@ -248,6 +251,10 @@ import type {
   SessionTabState,
 } from "./runtime/session-tabs";
 import { installTabKeybindings, SessionTabManager } from "./runtime/session-tabs";
+import {
+  getWorkTerminalRuntime,
+  installCommandRunKeybindings,
+} from "./runtime/session-tabs/terminal-session";
 import {
   consumeMainSessionRespawnMode,
   DEFAULT_SESSION_ID,
@@ -1069,7 +1076,6 @@ function App() {
   );
   const [viewModeHudVisible, setViewModeHudVisible] = useState(false);
   const [quickChatOpen, setQuickChatOpen] = useState(false);
-  const [quickChatDraft, setQuickChatDraft] = useState("");
   const quickChatSpeechPendingRef = useRef<{
     readonly requestId: string;
     explicitSpeech: boolean;
@@ -2226,7 +2232,10 @@ function App() {
           }),
           "terminal.context.get": createTerminalContextGetHandler({
             getLatestRegionContext: () =>
-              getTerminalRuntime(tabManager.getState().activeSessionId).getLatestRegionContext(),
+              getWorkTerminalRuntime(
+                tabManager,
+                tabManager.getState().activeSessionId,
+              )?.getLatestRegionContext() ?? null,
             getTerminalReferences: () =>
               getAllTerminalRuntimes().flatMap((runtime) => runtime.getTerminalReferences()),
           }),
@@ -2236,7 +2245,7 @@ function App() {
             getTerminalReferences: () =>
               getAllTerminalRuntimes().flatMap((runtime) => runtime.getTerminalReferences()),
             getProblems: (sessionId, runId) =>
-              getTerminalRuntime(sessionId).getCommandRunProblems(runId),
+              getWorkTerminalRuntime(tabManager, sessionId)?.getCommandRunProblems(runId) ?? [],
             getTimeline: () =>
               mergeRunTimeline({
                 commandRuns: getAllTerminalRuntimes().flatMap((runtime) =>
@@ -2775,6 +2784,7 @@ function App() {
 
   const applyTerminalPresentationForSession = useCallback(
     (sessionId: SessionId, layout: UiLayout | null = activeUiLayoutRef.current) => {
+      if (tabManager.isCallSession(sessionId)) return;
       applyTerminalPresentation(
         sessionId,
         resolveTerminalPresentation(
@@ -2928,9 +2938,10 @@ function App() {
   }, [isUserLayerReady, tabManager]);
 
   useEffect(() => {
-    localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, tabState.activeSessionId);
+    if (!tabManager.isCallSession(tabState.activeSessionId))
+      localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, tabState.activeSessionId);
     applyTerminalPresentationForMountedSessions();
-  }, [tabState.activeSessionId, applyTerminalPresentationForMountedSessions]);
+  }, [tabManager, tabState.activeSessionId, applyTerminalPresentationForMountedSessions]);
 
   const canMountTerminals = isUiPackHostReady(
     isUserLayerReady,
@@ -2986,7 +2997,8 @@ function App() {
     const sub = scenePackRegistry.subscribeActive((scene) => {
       const theme = syncCurrentTerminalTheme(scene);
       for (const sessionId of tabManager.getState().sessions) {
-        const rt = getTerminalRuntime(sessionId);
+        const rt = getWorkTerminalRuntime(tabManager, sessionId);
+        if (!rt) continue;
         rt.setTheme(theme);
         rt.refit();
         void sessionRefreshTheme({ sessionId }).catch((err) => {
@@ -4023,19 +4035,41 @@ function App() {
   const [, refreshPeerCall] = useState(0);
   const [peerCallInputError, setPeerCallInputError] = useState<string>();
   const peerCallRef = useRef<RoomCall | null>(null);
+  const endCallRef = useRef<(() => void) | null>(null);
+  const callSession = useCallSession(tabManager, {
+    onCloseRequested: () => endCallRef.current?.(),
+  });
+  const callSessionActive = tabManager.isCallSession(tabState.activeSessionId);
+  const quickChatDraft = useQuickChatDrafts(
+    callSession.sessionId ?? (peerCall ? "peer-call" : null),
+  );
+  const callQuickChat = quickChatDraft.owner !== null;
+  const beginCallSession = useCallback(
+    (ownerKey: string, endCall: () => void) => {
+      callSession.begin(ownerKey);
+      endCallRef.current = endCall;
+      setQuickChatOpen(false);
+    },
+    [callSession.begin],
+  );
   const peerCallSubmitRef = useRef<RoomCall | null>(null);
   const [peerCallSubmitting, setPeerCallSubmitting] = useState(false);
-  const handlePeerCallChange = useCallback((room: RoomCall | null) => {
-    peerCallRef.current = room;
-    setPeerCall(room);
-    refreshPeerCall((value) => value + 1);
-    if (!room) {
-      setPeerCallInputError(undefined);
-      setQuickChatOpen(false);
-      peerCallSubmitRef.current = null;
-      setPeerCallSubmitting(false);
-    }
-  }, []);
+  const handlePeerCallChange = useCallback(
+    (room: RoomCall | null) => {
+      peerCallRef.current = room;
+      setPeerCall(room);
+      refreshPeerCall((value) => value + 1);
+      if (!room) {
+        endCallRef.current = null;
+        callSession.end();
+        setPeerCallInputError(undefined);
+        setQuickChatOpen(false);
+        peerCallSubmitRef.current = null;
+        setPeerCallSubmitting(false);
+      }
+    },
+    [callSession.end],
+  );
   const peerCallSurfaces = useCallSurfaces(
     peerCall,
     activePresentationViewModeIdValue,
@@ -4052,7 +4086,8 @@ function App() {
     }),
     [],
   );
-  const codexVoiceAvailable = terminalAgent === "codex" && !mainSessionReplacing && !peerCallActive;
+  const codexVoiceAvailable =
+    terminalAgent === "codex" && !mainSessionReplacing && !peerCallActive && !callQuickChat;
   const voiceEntryAvailable = isVoiceEntryAvailable();
   const greetedRef = useRef(false);
   const inTurnRef = useRef(false);
@@ -4785,8 +4820,9 @@ function App() {
 
   // terminal 依存の attention producer。active tab が変わるたびに再構築する。
   useEffect(() => {
+    const terminal = getWorkTerminalRuntime(tabManager, tabState.activeSessionId);
+    if (!terminal) return;
     const attention = getAttentionRuntime();
-    const terminal = getTerminalRuntime(tabState.activeSessionId);
 
     const disposables: Disposable[] = [];
     disposables.push(startTerminalAttentionProducer({ attention, terminal }));
@@ -4879,7 +4915,7 @@ function App() {
       }
       for (const d of disposables) d.dispose();
     };
-  }, [tabState.activeSessionId, runtime.bus.register]);
+  }, [tabManager, tabState.activeSessionId, runtime.bus.register]);
 
   // command-run attention producer は tab session 全体に張る。
   // 表示は active tab だけでも、背景 session の command metadata は workspace-attention
@@ -4888,13 +4924,14 @@ function App() {
     const workspaceAttention = getWorkspaceAttentionStore();
     const disposables: Disposable[] = [];
     for (const sessionId of tabState.sessions) {
-      const terminal = getTerminalRuntime(sessionId);
+      const terminal = getWorkTerminalRuntime(tabManager, sessionId);
+      if (!terminal) continue;
       disposables.push(startCommandRunAttentionProducer({ store: workspaceAttention, terminal }));
     }
     return () => {
       for (const d of disposables) d.dispose();
     };
-  }, [tabState.sessions]);
+  }, [tabManager, tabState.sessions]);
 
   // mcp attention producer を起動する。
   // @tauri-apps/api/event の listen を ListenFactory に adapt して inject する。
@@ -4967,6 +5004,10 @@ function App() {
   const sessionTabLabels = useMemo(() => {
     const labels = new Map<string, string>();
     for (const sessionId of tabState.sessions) {
+      if (tabManager.isCallSession(sessionId)) {
+        labels.set(sessionId, appLanguage.resolved.startsWith("ja") ? "通話" : "Call");
+        continue;
+      }
       if (sessionId === tabState.mainSessionId) {
         labels.set(sessionId, formatMainSessionTabLabel());
         continue;
@@ -4978,7 +5019,7 @@ function App() {
       );
     }
     return labels;
-  }, [cwd, homeDir, tabManager, tabState.mainSessionId, tabState.sessions]);
+  }, [appLanguage.resolved, cwd, homeDir, tabManager, tabState.mainSessionId, tabState.sessions]);
 
   const readCurrentMainConversationSelection = useCallback(async () => {
     if (!supportsConversationNavigation(terminalAgent)) return null;
@@ -5292,6 +5333,7 @@ function App() {
   ]);
 
   const handleNewMainConversation = useCallback(async () => {
+    if (tabManager.isCallSession(tabManager.getState().activeSessionId)) return;
     if (!canMountTerminals) return;
     const transitionLease = beginMainConversationTransition("new");
     if (transitionLease === null) return;
@@ -5429,6 +5471,7 @@ function App() {
 
   const handleMainConversationNavigation = useCallback(
     async (direction: ConversationNavigationDirection) => {
+      if (tabManager.isCallSession(tabManager.getState().activeSessionId)) return;
       if (!supportsConversationNavigation(terminalAgent)) return;
       const transitionLease = beginMainConversationTransition(direction);
       if (transitionLease === null) return;
@@ -5621,10 +5664,12 @@ function App() {
   }, [cwd, isUserLayerReady, tabManager]);
 
   const conversationPaletteMode =
-    peerCallActive || supportsQuickChatForViewMode(activePresentationViewModeIdValue);
+    callQuickChat ||
+    peerCallActive ||
+    supportsQuickChatForViewMode(activePresentationViewModeIdValue);
   const conversationShortcutEnabled =
     conversationPaletteMode &&
-    (peerCallActive || (canMountTerminals && !mainSessionReplacing)) &&
+    (callQuickChat || peerCallActive || (canMountTerminals && !mainSessionReplacing)) &&
     firstRunHealth === null &&
     restoreDialog === null &&
     voiceEntryDialog === null &&
@@ -5632,7 +5677,9 @@ function App() {
   const quickVoiceStatus = codexRealtimeState.status === "idle" ? null : codexRealtimeState.status;
   const quickChatEnabled =
     conversationShortcutEnabled &&
-    (peerCallActive || canUseQuickChat(conversationShortcutEnabled, codexRealtimeState.status));
+    (callQuickChat ||
+      peerCallActive ||
+      canUseQuickChat(conversationShortcutEnabled, codexRealtimeState.status));
 
   useEffect(() => {
     if (!conversationShortcutEnabled) {
@@ -5642,7 +5689,10 @@ function App() {
     return installQuickChatKeybinding({
       macos: isMac,
       onInvoke: () => {
-        if (peerCallRef.current?.connected) {
+        if (
+          peerCallRef.current ||
+          tabManager.getState().sessions.some((id) => tabManager.isCallSession(id))
+        ) {
           setQuickChatOpen((value) => !value);
           return;
         }
@@ -5664,10 +5714,13 @@ function App() {
       onHoldStart:
         codexRealtimeState.status === "idle" || codexRealtimeState.status === "error"
           ? () => {
-              if (!peerCallRef.current?.connected) {
-                const mainSessionId = tabManager.getState().mainSessionId;
-                tabManager.switchTo(mainSessionId);
-              }
+              if (
+                peerCallRef.current ||
+                tabManager.getState().sessions.some((id) => tabManager.isCallSession(id))
+              )
+                return;
+              const mainSessionId = tabManager.getState().mainSessionId;
+              tabManager.switchTo(mainSessionId);
               setQuickChatOpen(false);
               void handleToggleVoice();
             }
@@ -5685,9 +5738,14 @@ function App() {
   ]);
 
   const handleQuickChatSubmit = useCallback(() => {
-    const prompt = quickChatDraft.trim();
-    if (!quickChatEnabled || prompt.length === 0) return;
     const call = peerCallRef.current;
+    const currentCallOwner =
+      tabManager.getState().sessions.find((id) => tabManager.isCallSession(id)) ??
+      (call ? "peer-call" : null);
+    if (quickChatDraft.owner !== currentCallOwner) return;
+    const prompt = quickChatDraft.value.trim();
+    if (!quickChatEnabled || prompt.length === 0) return;
+    if (currentCallOwner !== null && !call?.connected) return;
     if (call?.connected) {
       if (peerCallSubmitRef.current === call) return;
       peerCallSubmitRef.current = call;
@@ -5697,7 +5755,7 @@ function App() {
         .submitTopic(prompt)
         .then(() => {
           if (peerCallRef.current === call) {
-            setQuickChatDraft("");
+            quickChatDraft.setValue("");
             setQuickChatOpen(false);
           }
         })
@@ -5714,8 +5772,9 @@ function App() {
       return;
     }
     const mainSessionId = tabManager.getState().mainSessionId;
+    if (tabManager.isCallSession(tabManager.getState().activeSessionId)) return;
     tabManager.switchTo(mainSessionId);
-    setQuickChatDraft("");
+    quickChatDraft.setValue("");
     setQuickChatOpen(false);
     void trackQuickChatPrompt(prompt)
       .catch(() => null)
@@ -5886,27 +5945,7 @@ function App() {
   // Cmd+Shift+F: 直近 failed run を reference 化。
   // Cmd+] / Cmd+[: 次 / 前の command block へ jump（block navigation）。
   // Cmd+Shift+]: 次の failed block へ jump。
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!event.ctrlKey && !event.metaKey) return;
-      if (event.code === "KeyF" && event.shiftKey) {
-        event.preventDefault();
-        getTerminalRuntime(tabState.activeSessionId).attachLastFailedRun();
-      } else if (event.code === "BracketRight") {
-        event.preventDefault();
-        getTerminalRuntime(tabState.activeSessionId).scrollToAdjacentCommandRun("next", {
-          failedOnly: event.shiftKey,
-        });
-      } else if (event.code === "BracketLeft") {
-        event.preventDefault();
-        getTerminalRuntime(tabState.activeSessionId).scrollToAdjacentCommandRun("previous");
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => {
-      window.removeEventListener("keydown", onKeyDown, { capture: true });
-    };
-  }, [tabState.activeSessionId]);
+  useEffect(() => installCommandRunKeybindings(tabManager), [tabManager]);
 
   // screen-shake は bundled-packs/effects/screen-shake を EffectPackRunner
   // 経由で動かす（runtime singleton で register 済み）。この useEffect は不要。
@@ -6031,6 +6070,7 @@ function App() {
             avatarUrl={vrmUrl}
             onActiveChange={handlePeerCallActiveChange}
             onRoomChange={handlePeerCallChange}
+            onSessionStart={beginCallSession}
             onTopicRequested={() => setQuickChatOpen(true)}
             onShowResident={
               peerCallSurfaces.show
@@ -6100,7 +6140,9 @@ function App() {
                   : strings.noBackConversation
             }
             backConversationDisabled={
-              mainSessionReplacing || !canNavigateConversation(mainConversationTrail, "back")
+              callSessionActive ||
+              mainSessionReplacing ||
+              !canNavigateConversation(mainConversationTrail, "back")
             }
             onBackConversation={
               supportsConversationNavigation(terminalAgent)
@@ -6115,7 +6157,9 @@ function App() {
                   : strings.noForwardConversation
             }
             forwardConversationDisabled={
-              mainSessionReplacing || !canNavigateConversation(mainConversationTrail, "forward")
+              callSessionActive ||
+              mainSessionReplacing ||
+              !canNavigateConversation(mainConversationTrail, "forward")
             }
             onForwardConversation={
               supportsConversationNavigation(terminalAgent)
@@ -6125,7 +6169,7 @@ function App() {
             newConversationLabel={
               mainSessionReplacing ? strings.switchingConversation : strings.newConversation
             }
-            newConversationDisabled={mainSessionReplacing}
+            newConversationDisabled={mainSessionReplacing || callSessionActive}
             onNewConversation={() => void handleNewMainConversation()}
             onAddSession={() => tabManager.openShell(cwd)}
             onCloseSession={(sessionId) => tabManager.close(sessionId)}
@@ -6184,7 +6228,7 @@ function App() {
         </div>
         {canMountTerminals && (
           <TerminalWorkspace
-            sessions={tabState.sessions}
+            sessions={tabState.sessions.filter((sessionId) => !tabManager.isCallSession(sessionId))}
             activeSessionId={tabState.activeSessionId}
             cwd={cwd}
             getSessionCwd={getSessionCwd}
@@ -6193,7 +6237,16 @@ function App() {
             perception={perception}
             shouldAttachExistingSession={shouldAttachExistingSession}
             onActivate={handleTerminalActivate}
-          />
+          >
+            {callSessionActive && (
+              <CallSessionView
+                room={peerCall}
+                language={appLanguage.resolved}
+                onChat={() => setQuickChatOpen(true)}
+                onEnd={() => endCallRef.current?.()}
+              />
+            )}
+          </TerminalWorkspace>
         )}
         {peerCall?.connected ? (
           <CallResidentPanel
@@ -6206,17 +6259,17 @@ function App() {
       </div>
       {quickChatOpen && quickChatEnabled ? (
         <QuickChatInput
-          busy={peerCallActive && peerCallSubmitting}
-          error={peerCallActive ? peerCallInputError : undefined}
-          maxLength={peerCallActive ? 2000 : undefined}
-          value={quickChatDraft}
+          busy={callQuickChat && (!peerCall?.connected || peerCallSubmitting)}
+          error={callQuickChat ? peerCallInputError : undefined}
+          maxLength={callQuickChat ? 2000 : undefined}
+          value={quickChatDraft.value}
           strings={{
-            placeholder: peerCallActive
+            placeholder: callQuickChat
               ? appLanguage.resolved.startsWith("ja")
                 ? "名前で呼んで、ふたりに話しかける"
                 : "Call a name and talk to both residents"
               : strings.quickChatPlaceholder,
-            inputLabel: peerCallActive
+            inputLabel: callQuickChat
               ? appLanguage.resolved.startsWith("ja")
                 ? "ふたりに話しかける"
                 : "Talk to both residents"
@@ -6224,7 +6277,7 @@ function App() {
             send: strings.quickChatSend,
             close: strings.quickChatClose,
           }}
-          onChange={setQuickChatDraft}
+          onChange={quickChatDraft.setValue}
           onSubmit={handleQuickChatSubmit}
           onClose={() => setQuickChatOpen(false)}
         />

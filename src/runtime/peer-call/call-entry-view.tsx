@@ -9,6 +9,7 @@ import {
   PhoneOff,
   Plus,
   Settings2,
+  Trash2,
   UserRound,
   X,
 } from "lucide-react";
@@ -45,6 +46,14 @@ export function CallEntryView({
   const panel = useRef<HTMLElement>(null);
   const inviteInput = useRef<HTMLInputElement>(null);
   const callError = error || state.error;
+  const contactFailure =
+    !active &&
+    !state.incoming &&
+    !settings &&
+    !error &&
+    callError &&
+    state.contacts?.some((contact) => contact.identityId === state.failedContactId);
+  const incoming = state.incoming;
   const signal = { state: state.signalState, invitation: state.invitation, role: state.role };
   useEffect(() => {
     if (!nameEdited.current) setCallName(state.name);
@@ -154,12 +163,37 @@ export function CallEntryView({
             </button>
           </div>
         </header>
-        {callError && (
+        {callError && !contactFailure && (
           <p className="peer-call-error" role="alert">
             {callError}
           </p>
         )}
-        {!active ? (
+        {incoming && !active ? (
+          <div className="peer-call-direct-incoming">
+            <PhoneIncoming size={32} aria-hidden="true" />
+            <h3>{t(`${incoming.name}から着信です`, `${incoming.name} is calling`)}</h3>
+            <p className="peer-call-disclosure">{disclosure}</p>
+            <div className="peer-call-actions">
+              <button
+                type="button"
+                className="peer-call-secondary"
+                disabled={requesting || !!busy}
+                onClick={() => void request({ type: "decline-contact", roomId: incoming.roomId })}
+              >
+                {t("拒否", "Decline")}
+              </button>
+              <button
+                type="button"
+                className="peer-call-primary"
+                disabled={requesting || !!busy}
+                onClick={() => void request({ type: "answer-contact", roomId: incoming.roomId })}
+              >
+                <Phone size={16} aria-hidden="true" />
+                {t("通話に出る", "Answer")}
+              </button>
+            </div>
+          </div>
+        ) : !active ? (
           <div className="peer-call-entry-scroll">
             {settings ? (
               <form
@@ -239,6 +273,91 @@ export function CallEntryView({
                   </label>
                   <MicOff size={16} aria-label={t("マイクはオフ", "Microphone off")} />
                 </div>
+                {state.presenceState && (
+                  <section
+                    className="peer-call-contacts"
+                    aria-label={t("通話した相手", "Contacts")}
+                  >
+                    <h4>{t("通話した相手", "Contacts")}</h4>
+                    {state.presenceState !== "online" && (
+                      <p role="status">
+                        {state.presenceState === "connecting"
+                          ? t("通話サービスに接続中…", "Connecting to the call service…")
+                          : t(
+                              "通話サービスに接続できません。再接続を待っています。",
+                              "Call service unavailable. Waiting to reconnect.",
+                            )}
+                      </p>
+                    )}
+                    {!state.contacts?.length && state.presenceState === "online" && (
+                      <p>
+                        {t(
+                          "初めての相手は招待コードでつながります。通話した相手はここから呼び出せます。",
+                          "Use an invitation code for your first call. Afterwards, call the same person from here.",
+                        )}
+                      </p>
+                    )}
+                    <ul>
+                      {state.contacts?.map((contact) => (
+                        <li key={contact.identityId}>
+                          <div className="peer-call-contact-copy">
+                            <span className="peer-call-contact-name" title={contact.name}>
+                              {contact.name}
+                            </span>
+                            {contactFailure && state.failedContactId === contact.identityId && (
+                              <small className="peer-call-contact-error" role="alert">
+                                {callError}
+                              </small>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            className="peer-call-secondary"
+                            aria-label={t(`${contact.name}に通話`, `Call ${contact.name}`)}
+                            disabled={
+                              requesting ||
+                              !!busy ||
+                              !callName.trim() ||
+                              state.presenceState !== "online"
+                            }
+                            onClick={() =>
+                              void request({
+                                type: "call-contact",
+                                name: callName.trim(),
+                                identityId: contact.identityId,
+                              })
+                            }
+                          >
+                            <Phone size={15} aria-hidden="true" />
+                            {t("通話", "Call")}
+                          </button>
+                          <button
+                            type="button"
+                            className="peer-call-secondary peer-call-remove-contact"
+                            aria-label={t(
+                              `${contact.name}を連絡先から削除`,
+                              `Remove ${contact.name} from contacts`,
+                            )}
+                            title={t(
+                              "削除すると、再び招待するまでこの相手からの着信を受けません。",
+                              "Removing this contact prevents direct calls until you accept a new invitation.",
+                            )}
+                            disabled={requesting || !!busy || state.presenceState !== "online"}
+                            onClick={() =>
+                              void request({
+                                type: "remove-contact",
+                                identityId: contact.identityId,
+                              })
+                            }
+                          >
+                            <Trash2 size={15} aria-hidden="true" />
+                            {t("削除", "Remove")}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
                 {!endpoint && (
                   <div className="peer-call-setup-notice">
                     <span>
@@ -260,8 +379,8 @@ export function CallEntryView({
                 >
                   <Plus size={17} aria-hidden="true" />
                   {busy === "create"
-                    ? t("部屋を開いています…", "Opening your room…")
-                    : t("部屋を作る", "Create a room")}
+                    ? t("招待を準備しています…", "Preparing an invitation…")
+                    : t("新しい相手を招待", "Invite someone new")}
                   <ArrowRight size={17} aria-hidden="true" />
                 </button>
                 <div className="peer-call-or">
@@ -289,7 +408,7 @@ export function CallEntryView({
                     placeholder={t("招待コードを貼り付ける", "Paste an invitation code")}
                     autoComplete="off"
                     spellCheck={false}
-                    maxLength={64}
+                    maxLength={80}
                   />
                   <button
                     type="submit"
@@ -331,6 +450,7 @@ export function CallEntryView({
                         {guest ? <PhoneIncoming size={32} /> : <UserRound size={40} />}
                         <strong>
                           {guest?.name ||
+                            state.directTarget ||
                             (signal?.role === "guest"
                               ? remoteName
                               : t("参加待ち", "Waiting for a participant"))}
@@ -350,9 +470,24 @@ export function CallEntryView({
                       <h3>{t(`${guest.name}から着信です`, `${guest.name} is calling`)}</h3>
                       {incomingActions}
                     </>
+                  ) : state.directTarget ? (
+                    <>
+                      <h3>
+                        {t(
+                          `${state.directTarget}を呼び出しています…`,
+                          `Calling ${state.directTarget}…`,
+                        )}
+                      </h3>
+                      <p>
+                        {t(
+                          "相手が通話に出るのを待っています。",
+                          "Waiting for the other person to answer.",
+                        )}
+                      </p>
+                    </>
                   ) : signal?.state === "hosting" ? (
                     <>
-                      <h3>{t("部屋を作成しました", "Your room is open")}</h3>
+                      <h3>{t("招待の準備ができました", "Your invitation is ready")}</h3>
                       <p>
                         {t(
                           "招待コードを相手に送ってください。",
