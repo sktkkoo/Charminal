@@ -23,6 +23,12 @@ export interface TheaterCallPeerSource {
   readonly onState?: (state: "loading" | "ready" | "error", message?: string) => void;
 }
 
+export interface TheaterCallPeerHandle {
+  /** Suspend placement and frame updates while preserving the already-loaded peer. */
+  setActive(active: boolean): void;
+  dispose(): void;
+}
+
 type TheaterRuntime = Pick<ThreeRuntime, "getScene" | "getCamera" | "getVrm" | "subscribeFrame">;
 
 interface LocalPlacement {
@@ -64,16 +70,17 @@ export function theaterCallSpacing(
  * A single remote resident inside the actual main scene. The local Body remains the same
  * object with the same root transform, bones and expressions. Placement is a temporary
  * parent so local stage coordinates cannot enter the transmitted motion snapshot.
- * Dispose when leaving theater, changing peer/avatar, or leaving the call.
+ * Suspend when leaving theater; dispose only when changing peer/avatar or leaving the call.
  */
 export function attachTheaterCallPeer(
   source: TheaterCallPeerSource,
   runtime: TheaterRuntime = getThreeRuntime(),
-): { dispose(): void } {
-  const scene = runtime.getScene();
+): TheaterCallPeerHandle {
   const remotePlacement = new THREE.Group();
   remotePlacement.name = "yorishiro-call-peer-placement";
   let disposed = false;
+  let active = true;
+  let unsubscribe: (() => void) | null = null;
   let remote: VRM | null = null;
   let restPose: ReturnType<VRM["humanoid"]["getNormalizedPose"]> | null = null;
   let local: LocalPlacement | null = null;
@@ -147,8 +154,8 @@ export function attachTheaterCallPeer(
     remotePlacement.position.copy(offset);
   };
 
-  const unsubscribe = runtime.subscribeFrame((delta) => {
-    if (disposed || !remote || !restPose) return;
+  const frame = (delta: number) => {
+    if (disposed || !active || !remote || !restPose) return;
     if (!isTransferredAvatarUrl(source.avatarUrl)) {
       dispose();
       return;
@@ -174,14 +181,38 @@ export function attachTheaterCallPeer(
       remote.expressionManager?.setValue(key, unit(value));
     }
     remote.update(Math.min(0.1, Math.max(0, delta)));
-  });
+  };
+
+  const detach = () => {
+    unsubscribe?.();
+    unsubscribe = null;
+    releaseLocal();
+    remotePlacement.removeFromParent();
+  };
+
+  const setActive = (next: boolean) => {
+    if (disposed) return;
+    active = next;
+    if (!active) {
+      detach();
+      return;
+    }
+    if (!remote || !restPose) return;
+    if (!isTransferredAvatarUrl(source.avatarUrl)) {
+      dispose();
+      return;
+    }
+    if (unsubscribe) return;
+    runtime.getScene().add(remotePlacement);
+    placeLocal();
+    spaceResidents();
+    unsubscribe = runtime.subscribeFrame(frame);
+  };
 
   const dispose = () => {
     if (disposed) return;
     disposed = true;
-    unsubscribe();
-    releaseLocal();
-    remotePlacement.removeFromParent();
+    detach();
     if (remote) {
       VRMUtils.deepDispose(remote.scene);
       remote = null;
@@ -230,10 +261,8 @@ export function attachTheaterCallPeer(
       vrm.update(0);
       restPose = vrm.humanoid.getNormalizedPose();
       remotePlacement.add(vrm.scene);
-      scene.add(remotePlacement);
       remote = vrm;
-      placeLocal();
-      spaceResidents();
+      setActive(active);
       source.onState?.("ready");
     } catch {
       if (parsed && !remote) VRMUtils.deepDispose(parsed);
@@ -244,5 +273,5 @@ export function attachTheaterCallPeer(
     }
   })();
 
-  return { dispose };
+  return { setActive, dispose };
 }

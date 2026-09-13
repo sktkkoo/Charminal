@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveWindowView } from "../auxiliary-windows";
-import { type RemoteCallWindowModel, startRemoteCallRelay } from "./remote-call-window";
+import {
+  type RemoteCallWindowFrame,
+  RemoteCallWindowHost,
+  type RemoteCallWindowModel,
+  startRemoteCallRelay,
+} from "./remote-call-window";
 
 vi.mock("./avatar-transfer", () => ({
   validateAvatarGlb: (bytes: ArrayBuffer) => bytes.byteLength === 24,
@@ -54,6 +59,7 @@ describe("remote native resident projection", () => {
         label: "Mafu",
         language: "ja",
         mode: "call",
+        visible: true,
         motion: null,
         mouth: [0.1, 0.2, 0.3, 0.4, 0.5],
         camera: source.sampleCamera(),
@@ -87,6 +93,17 @@ describe("remote native resident projection", () => {
     await vi.advanceTimersByTimeAsync(300);
     expect(getBytes).toHaveBeenCalledOnce();
     expect(upload).toHaveBeenCalledOnce();
+    source.visible = false;
+    await vi.advanceTimersByTimeAsync(300);
+    source.mode = "portrait";
+    source.visible = true;
+    await vi.advanceTimersByTimeAsync(300);
+    expect(getBytes).toHaveBeenCalledOnce();
+    expect(upload).toHaveBeenCalledOnce();
+    source.avatarUrl = "blob:replacement-avatar";
+    await vi.advanceTimersByTimeAsync(100);
+    expect(getBytes).toHaveBeenCalledTimes(2);
+    expect(upload).toHaveBeenCalledTimes(2);
     stop();
     let finish!: (bytes: ArrayBuffer) => void;
     const delayed = vi.fn(
@@ -109,6 +126,98 @@ describe("remote native resident projection", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(stoppedUpload).not.toHaveBeenCalled();
   });
+});
+
+it("retains one native lease and scene across view modes, pauses hidden sampling, and releases on disconnect", async () => {
+  vi.useFakeTimers();
+  const sampleScene = vi.fn(() => ({
+    source: null,
+    scene: null,
+    controls: {},
+    background: "#141619",
+    renderer: {
+      toneMapping: 0,
+      toneMappingExposure: 1,
+      outputColorSpace: "srgb",
+      shadowMapEnabled: false,
+      shadowMapType: 1,
+    },
+  }));
+  const sampleMotion = vi.fn(() => null);
+  const transport = {
+    begin: vi.fn(async () => "lease"),
+    open: vi.fn(async () => {}),
+    revoke: vi.fn(async () => {}),
+    publish: vi.fn(async (_frame: RemoteCallWindowFrame) => {}),
+    listen: vi.fn(async () => vi.fn()),
+    avatar: vi.fn(async () => {}),
+    scene: vi.fn(async () => 1),
+  };
+  let source: RemoteCallWindowModel = {
+    ...model(),
+    visible: false,
+    sampleScene,
+    sampleMotion,
+  };
+  const host = new RemoteCallWindowHost(source, vi.fn(), transport);
+  host.updateModel(source);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(transport.begin).not.toHaveBeenCalled();
+
+  source = { ...source, visible: true };
+  host.updateModel(source);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(transport.begin).toHaveBeenCalledOnce();
+  expect(transport.open).toHaveBeenCalledOnce();
+  expect(transport.scene).toHaveBeenCalledOnce();
+
+  source = { ...source, mode: "portrait" };
+  host.updateModel(source);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(transport.begin).toHaveBeenCalledOnce();
+  expect(transport.publish.mock.lastCall?.[0]).toMatchObject({
+    mode: "portrait",
+    visible: true,
+  });
+
+  source = { ...source, visible: false };
+  host.updateModel(source);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(transport.revoke).not.toHaveBeenCalled();
+  expect(transport.publish.mock.lastCall?.[0]).toMatchObject({
+    visible: false,
+    motion: null,
+    mouth: [0, 0, 0, 0, 0],
+  });
+  const hiddenCounts = [
+    transport.publish.mock.calls.length,
+    sampleMotion.mock.calls.length,
+    sampleScene.mock.calls.length,
+  ];
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect([
+    transport.publish.mock.calls.length,
+    sampleMotion.mock.calls.length,
+    sampleScene.mock.calls.length,
+  ]).toEqual(hiddenCounts);
+
+  source = { ...source, mode: "call", visible: true };
+  host.updateModel(source);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(transport.begin).toHaveBeenCalledOnce();
+  expect(transport.open).toHaveBeenCalledOnce();
+  expect(transport.scene).toHaveBeenCalledOnce();
+  expect(transport.publish.mock.lastCall?.[0]).toMatchObject({ visible: true, mode: "call" });
+  sampleScene.mockReturnValue({ ...sampleScene(), background: "#334455" });
+  await vi.advanceTimersByTimeAsync(100);
+  expect(transport.scene).toHaveBeenCalledTimes(2);
+
+  source = { ...source, ownerKey: null, visible: false };
+  host.updateModel(source);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(transport.revoke).toHaveBeenCalledExactlyOnceWith("lease");
+  host.dispose();
+  await vi.advanceTimersByTimeAsync(0);
 });
 
 it("coalesces scene settings separately from motion and sends the newest controls after a pending upload", async () => {

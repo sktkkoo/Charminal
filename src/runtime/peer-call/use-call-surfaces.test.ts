@@ -12,6 +12,7 @@ const bridge = vi.hoisted(() => ({
   runtime: vi.fn(),
   show: vi.fn(),
   disposed: vi.fn(),
+  theaterActive: vi.fn(),
 }));
 vi.mock("./remote-call-window", () => ({ useRemoteCallWindow: bridge.native }));
 vi.mock("./theater-call-peer", () => ({ attachTheaterCallPeer: bridge.theater }));
@@ -36,7 +37,7 @@ function projected(): RemoteCallWindowModel {
 beforeEach(() => {
   vi.clearAllMocks();
   bridge.native.mockReturnValue({ show: bridge.show, error: undefined });
-  bridge.theater.mockReturnValue({ dispose: bridge.disposed });
+  bridge.theater.mockReturnValue({ dispose: bridge.disposed, setActive: bridge.theaterActive });
   const camera = new PerspectiveCamera(42, 0.67, 0.1, 35);
   camera.position.set(0.2, 1.65, 0.9);
   camera.zoom = 1.25;
@@ -48,6 +49,33 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("existing Yorishiro view call surfaces", () => {
+  it("keeps the terminal peer inside the app and retains a hidden detached presentation on return", () => {
+    const owner = room();
+    const hook = renderHook(
+      ({ mode }: { mode: string | null }) => useCallSurfaces(owner, mode, "ja"),
+      {
+        initialProps: { mode: null as string | null },
+      },
+    );
+    expect(hook.result.current.inline).toBe(true);
+    expect(hook.result.current.show).toBeUndefined();
+    expect(projected()).toMatchObject({ ownerKey: "room:remote", visible: false });
+    hook.rerender({ mode: "companion" });
+    expect(hook.result.current.inline).toBe(false);
+    expect(hook.result.current.show).toBe(bridge.show);
+    expect(projected()).toMatchObject({ ownerKey: "room:remote", visible: true, mode: "portrait" });
+    hook.rerender({ mode: null });
+    expect(hook.result.current.inline).toBe(true);
+    expect(hook.result.current.show).toBeUndefined();
+    expect(projected()).toMatchObject({ ownerKey: "room:remote", visible: false });
+    Object.assign(owner, { connected: false });
+    hook.rerender({ mode: null });
+    expect(hook.result.current.inline).toBe(false);
+    expect(projected().ownerKey).toBeNull();
+    expect(owner.leave).not.toHaveBeenCalled();
+    expect(owner.pause).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["portrait", "call"],
     ["companion", "portrait"],
@@ -69,6 +97,7 @@ describe("existing Yorishiro view call surfaces", () => {
       near: 0.1,
       far: 35,
       anchorY: 1.63,
+      anchor: [0, 1.63, 0],
     });
     hook.unmount();
     expect(owner.leave).not.toHaveBeenCalled();
@@ -84,14 +113,22 @@ describe("existing Yorishiro view call surfaces", () => {
     expect(bridge.theater.mock.calls[0][0].avatarUrl).toBe("blob:received");
     expect(projected().visible).toBe(false);
     hook.rerender({ mode: "portrait" });
-    expect(bridge.disposed).toHaveBeenCalledOnce();
+    expect(bridge.disposed).not.toHaveBeenCalled();
+    expect(bridge.theaterActive).toHaveBeenLastCalledWith(false);
     expect(projected().visible).toBe(true);
     expect(projected().mode).toBe("call");
     hook.rerender({ mode: "theater" });
-    expect(bridge.theater).toHaveBeenCalledTimes(2);
+    expect(bridge.theater).toHaveBeenCalledOnce();
+    expect(bridge.theaterActive).toHaveBeenLastCalledWith(true);
     expect(projected().visible).toBe(false);
+    hook.rerender({ mode: "immersive" });
+    expect(bridge.theater).toHaveBeenCalledOnce();
+    expect(bridge.theaterActive).toHaveBeenLastCalledWith(true);
+    expect(hook.result.current.inline).toBe(false);
+    expect(projected().visible).toBe(false);
+    expect(bridge.disposed).not.toHaveBeenCalled();
     hook.unmount();
-    expect(bridge.disposed).toHaveBeenCalledTimes(2);
+    expect(bridge.disposed).toHaveBeenCalledOnce();
     expect(owner.leave).not.toHaveBeenCalled();
     expect(owner.pause).not.toHaveBeenCalled();
   });

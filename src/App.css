@@ -911,6 +911,14 @@ html[data-rounded-view] body {
   display: none;
 }
 
+.app-body > .call-resident-panel {
+  flex: 0 1 var(--sidebar-content-width);
+  width: var(--sidebar-content-width);
+  max-width: 30%;
+  min-width: 0;
+  border-left: 1px solid var(--yorishiro-border);
+}
+
 /* ── Sidebar（chrome 行のみ）──────────────────────────
  * 下 padding は持たない：旧構造では .sidebar の下 padding は
  * カラム最下部にあり .charactor-container の負 margin で相殺され

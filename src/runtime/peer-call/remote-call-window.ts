@@ -18,7 +18,9 @@ export interface RemoteCallCamera {
   zoom?: number;
   near: number;
   far: number;
-  /** The local head anchor; adapt only stature, preserving the existing view's camera settings. */
+  /** Main's current world-space head anchor; preserve its camera-to-resident framing. */
+  anchor?: [number, number, number];
+  /** Compatibility with frames that published only the local head height. */
   anchorY: number;
 }
 export interface RemoteCallWindowFrame {
@@ -26,6 +28,8 @@ export interface RemoteCallWindowFrame {
   label: string;
   language: "ja" | "en";
   mode: "call" | "portrait";
+  /** Hide and pause the presentation while retaining its current assets and native lease. */
+  visible?: boolean;
   motion: number[] | null;
   mouth: [number, number, number, number, number];
   camera: RemoteCallCamera;
@@ -34,7 +38,7 @@ export interface RemoteCallWindowFrame {
   sceneRevision?: number;
 }
 export interface RemoteCallWindowModel {
-  /** Stable for an admitted remote participant. Null closes only the presentation. */
+  /** Stable across view modes for an admitted remote participant. Null releases its presentation. */
   ownerKey: string | null;
   visible: boolean;
   label: string;
@@ -97,8 +101,9 @@ export function startRemoteCallRelay(
   let failedAvatar: string | null = null;
   let scenePending = false;
   let sceneKey: string | undefined;
+  let publishedVisibility: boolean | undefined;
   const sampleScene = () => {
-    if (stopped || scenePending || !uploadScene) return;
+    if (stopped || scenePending || !uploadScene || !model().visible) return;
     try {
       const appearance = model().sampleScene?.();
       if (!appearance) return;
@@ -122,8 +127,12 @@ export function startRemoteCallRelay(
   const sample = () => {
     if (stopped || pending) return;
     const source = model();
+    // One hidden frame pauses the existing native view. Keep the loaded asset keys, but
+    // sample neither motion nor asset/settings updates while that presentation is unused.
+    if (!source.visible && publishedVisibility === false) return;
     const avatarUrl = source.avatarUrl;
     if (
+      source.visible &&
       avatarUrl &&
       avatarUrl !== uploaded &&
       avatarUrl !== uploading &&
@@ -149,8 +158,8 @@ export function startRemoteCallRelay(
         });
     }
     try {
-      const pose = source.sampleMotion();
-      const mouth = source.sampleMouth();
+      const pose = source.visible ? source.sampleMotion() : null;
+      const mouth = source.visible ? source.sampleMouth() : 0;
       const unit = (value: number) =>
         Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
       const weights = MOUTH_KEYS.map((key) =>
@@ -161,6 +170,7 @@ export function startRemoteCallRelay(
         label: source.label.slice(0, 80),
         language: source.language.startsWith("ja") ? "ja" : "en",
         mode: source.mode,
+        visible: source.visible,
         motion: pose
           ? Array.from(
               new Uint8Array(
@@ -177,6 +187,9 @@ export function startRemoteCallRelay(
       };
       pending = true;
       void publish(frame)
+        .then(() => {
+          if (!stopped) publishedVisibility = frame.visible;
+        })
         .catch((error: unknown) => {
           if (!stopped) fail(error);
         })
@@ -198,16 +211,22 @@ export function startRemoteCallRelay(
   };
 }
 
-type HostModel = RemoteCallWindowModel & { initiallyDetached: true; onStop(): void };
+type HostModel = RemoteCallWindowModel & {
+  initiallyDetached: true;
+  /** PreviewHost visibility owns resource creation; this flag owns the retained window's display. */
+  presentationVisible: boolean;
+  onStop(): void;
+};
 const lifecycle = { pending: Promise.resolve() };
 export class RemoteCallWindowHost extends PreviewHost<HostModel, string, RemoteCallWindowFrame> {
+  private retainedOwner: string | null;
   constructor(
     model: RemoteCallWindowModel,
     changed: (status: PreviewStatus) => void,
     transport: Transport = nativeTransport,
   ) {
     super(
-      { ...model, initiallyDetached: true, onStop() {} },
+      { ...model, presentationVisible: model.visible, initiallyDetached: true, onStop() {} },
       changed,
       transport,
       {
@@ -215,7 +234,10 @@ export class RemoteCallWindowHost extends PreviewHost<HostModel, string, RemoteC
         ready: () => true,
         relay: (_source, latest, leaseId, publish, fail) =>
           startRemoteCallRelay(
-            latest,
+            () => {
+              const current = latest();
+              return { ...current, visible: current.presentationVisible };
+            },
             leaseId,
             publish,
             transport.avatar,
@@ -226,9 +248,20 @@ export class RemoteCallWindowHost extends PreviewHost<HostModel, string, RemoteC
       },
       lifecycle,
     );
+    this.retainedOwner = model.visible ? model.ownerKey : null;
   }
   updateModel(model: RemoteCallWindowModel): void {
-    this.update({ ...model, initiallyDetached: true, onStop() {} });
+    if (this.retainedOwner !== model.ownerKey) this.retainedOwner = null;
+    if (model.visible) this.retainedOwner = model.ownerKey;
+    this.update({
+      ...model,
+      // Lazily open only when first requested, then keep that same webview/lease until
+      // the participant changes or disconnects. Mode switches only hide/show its frames.
+      visible: !!model.ownerKey && this.retainedOwner === model.ownerKey,
+      presentationVisible: model.visible,
+      initiallyDetached: true,
+      onStop() {},
+    });
   }
 }
 

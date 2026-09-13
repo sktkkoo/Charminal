@@ -183,6 +183,96 @@ afterEach(() => {
 });
 
 describe("main theater peer resident", () => {
+  it("suspends placement and frame updates between modes without decoding the peer again", async () => {
+    const h = harness();
+    const children = [...h.scene.children];
+    const display = attachTheaterCallPeer(h.source, h.runtime);
+    await settle();
+    h.tick();
+    const samples = h.source.sampleMotion.mock.calls.length;
+    const remoteGroup = h.peer.vrm.scene.parent;
+
+    display.setActive(false);
+    display.setActive(false);
+    expect(h.scene.children).toEqual(children);
+    expect(h.frames.size).toBe(0);
+    expect(h.peer.vrm.scene.parent).toBe(remoteGroup);
+    expect(remoteGroup?.parent).toBeNull();
+    expect(h.peer.geometryDispose).not.toHaveBeenCalled();
+    expect(h.peer.materialDispose).not.toHaveBeenCalled();
+    h.tick();
+    expect(h.source.sampleMotion).toHaveBeenCalledTimes(samples);
+
+    display.setActive(true);
+    display.setActive(true);
+    expect(h.frames.size).toBe(1);
+    expect(h.peer.vrm.scene.parent).toBe(remoteGroup);
+    expect(remoteGroup?.parent).toBe(h.scene);
+    expect(h.resident.vrm.scene.parent?.position.x).toBeLessThan(0);
+    h.tick();
+    expect(h.source.sampleMotion).toHaveBeenCalledTimes(samples + 1);
+    expect(mock.getBytes).toHaveBeenCalledOnce();
+    expect(mock.parse).toHaveBeenCalledOnce();
+    expect(h.camera.position).toEqual(h.originalCamera);
+
+    display.setActive(false);
+    display.dispose();
+    display.setActive(true);
+    expect(h.frames.size).toBe(0);
+    expect(h.scene.children).toEqual(children);
+    expect(h.peer.geometryDispose).toHaveBeenCalledOnce();
+    expect(h.peer.materialDispose).toHaveBeenCalledOnce();
+  });
+
+  it("retains a late decode while inactive and attaches it only when theater is selected again", async () => {
+    const h = harness();
+    let resolve: ((value: typeof h.peer.gltf) => void) | undefined;
+    mock.parse.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    const children = [...h.scene.children];
+    const display = attachTheaterCallPeer(h.source, h.runtime);
+    await settle();
+    display.setActive(false);
+    resolve?.(h.peer.gltf);
+    await settle();
+    expect(h.source.onState).toHaveBeenLastCalledWith("ready");
+    expect(h.scene.children).toEqual(children);
+    expect(h.frames.size).toBe(0);
+    expect(h.peer.geometryDispose).not.toHaveBeenCalled();
+    display.setActive(true);
+    expect(mock.parse).toHaveBeenCalledOnce();
+    expect(h.frames.size).toBe(1);
+    expect(h.peer.vrm.scene.parent?.parent).toBe(h.scene);
+    display.dispose();
+  });
+
+  it("uses the current local avatar after a mode change and releases a revoked inactive peer", async () => {
+    const h = harness();
+    const display = attachTheaterCallPeer(h.source, h.runtime);
+    await settle();
+    display.setActive(false);
+    const next = model();
+    h.resident.vrm.scene.removeFromParent();
+    h.scene.add(next.vrm.scene);
+    h.setCurrent(next.vrm);
+    display.setActive(true);
+    expect(next.vrm.scene.parent?.position.x).toBeLessThan(0);
+    expect(h.resident.vrm.scene.parent).toBeNull();
+    expect(mock.parse).toHaveBeenCalledOnce();
+    display.setActive(false);
+    expect(next.vrm.scene.parent).toBe(h.scene);
+    revokeCallAvatarUrl(h.source.avatarUrl);
+    display.setActive(true);
+    expect(h.frames.size).toBe(0);
+    expect(next.vrm.scene.parent).toBe(h.scene);
+    expect(h.peer.geometryDispose).toHaveBeenCalledOnce();
+    expect(next.geometryDispose).not.toHaveBeenCalled();
+  });
+
   it("uses the real main scene and local Body model, drives only the peer, restores ownership on leave", async () => {
     const h = harness();
     const localTransform = h.resident.vrm.scene.position.clone();

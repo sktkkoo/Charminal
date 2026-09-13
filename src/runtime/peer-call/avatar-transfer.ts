@@ -1,6 +1,14 @@
 /** Bounded binary avatar exchange. No model URLs, pack code, or executable scripts cross the room. */
-export const MAX_AVATAR_BYTES = 32 * 1024 * 1024;
+export const MAX_AVATAR_BYTES = 50 * 1024 * 1024;
 export const MAX_AVATAR_PACKET_BYTES = 16 * 1024;
+export const AVATAR_TRANSFER_TIMEOUT_MS = 60_000;
+
+export class AvatarSizeLimitError extends Error {
+  constructor(readonly actualBytes: number) {
+    super(`Avatar size ${(actualBytes / 1024 / 1024).toFixed(2)} MiB exceeds the 50 MiB limit`);
+    this.name = "AvatarSizeLimitError";
+  }
+}
 const HEADER_BYTES = 32;
 const CHUNK_BYTES = MAX_AVATAR_PACKET_BYTES - HEADER_BYTES;
 const PACKET_MAGIC = 0x31525641;
@@ -226,7 +234,7 @@ export class AvatarTransfer {
   private wakeSender: (() => void) | null = null;
 
   constructor(private readonly options: AvatarTransferOptions) {
-    this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.timeoutMs = options.timeoutMs ?? AVATAR_TRANSFER_TIMEOUT_MS;
     if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0 || this.timeoutMs > 120_000)
       throw new Error("Invalid avatar transfer timeout");
   }
@@ -302,8 +310,10 @@ export class AvatarTransfer {
   async send(bytes: ArrayBuffer): Promise<void> {
     if (this.closed) throw new Error("Avatar transfer is closed");
     if (this.sending) throw new Error("An avatar transfer is already in progress");
+    if (bytes instanceof ArrayBuffer && bytes.byteLength > MAX_AVATAR_BYTES)
+      throw new AvatarSizeLimitError(bytes.byteLength);
     if (!validateAvatarGlb(bytes))
-      throw new Error("The avatar must be a self-contained VRM GLB under 32 MiB");
+      throw new Error("The avatar must be a self-contained VRM GLB within 50 MiB");
     if (this.nextOutgoingTransfer === 0xffffffff)
       throw new Error("Avatar transfer sequence exhausted");
     // The caller can replace its asset while queued packets still reference this fixed copy.

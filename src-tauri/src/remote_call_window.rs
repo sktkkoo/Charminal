@@ -15,7 +15,7 @@ const REMOTE: &str = "auxiliary-call-resident";
 const QUERY: &str = "auxiliary=call-resident";
 const EVENT: &str = "remote-call-window-state";
 const ACTION: &str = "remote-call-window-action";
-const MAX_AVATAR_BYTES: usize = 32 * 1024 * 1024;
+const MAX_AVATAR_BYTES: usize = 50 * 1024 * 1024;
 const MAX_SCENE_BYTES: usize = 512 * 1024;
 const MAX_SCENE_DEPTH: usize = 16;
 const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
@@ -382,9 +382,14 @@ pub struct ResidentCamera {
     near: f64,
     far: f64,
     anchor_y: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    anchor: Option<[f64; 3]>,
 }
 fn default_zoom() -> f64 {
     1.0
+}
+fn default_visible() -> bool {
+    true
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -394,6 +399,8 @@ pub struct ResidentFrame {
     label: String,
     language: String,
     mode: String,
+    #[serde(default = "default_visible")]
+    visible: bool,
     /// Existing fixed-size, validated motion format. Never code or arbitrary expression names.
     motion: Option<Vec<u8>>,
     mouth: [f64; 5],
@@ -438,6 +445,10 @@ impl ResidentFrame {
             || !(self.camera.near..=1000.0).contains(&self.camera.far)
             || !self.camera.anchor_y.is_finite()
             || self.camera.anchor_y.abs() > 10.0
+            || self
+                .camera
+                .anchor
+                .is_some_and(|anchor| anchor.iter().any(|v| !v.is_finite() || v.abs() > 100.0))
         {
             return Err("Invalid remote resident frame".into());
         }
@@ -634,6 +645,22 @@ impl ResidentState {
         self.mode_resize_until = Some(now + Duration::from_secs(1));
         self.projected_size = Some(size);
     }
+    fn finish_opening(
+        &mut self,
+        lease: &str,
+        built: bool,
+        main_size: Option<tauri::PhysicalSize<u32>>,
+        now: Instant,
+    ) -> (bool, Option<tauri::PhysicalSize<u32>>) {
+        self.opening = false;
+        let cancelled = self.require_lease(lease).is_err();
+        self.closing = cancelled && built;
+        let size = main_size.filter(|_| built && !cancelled);
+        if let Some(size) = size {
+            self.begin_mode_resize(size, now);
+        }
+        (cancelled, size)
+    }
     fn resized(
         &mut self,
         label: &str,
@@ -680,6 +707,52 @@ fn allowed_navigation(url: &tauri::Url, main: &tauri::Url) -> bool {
         && url.fragment().is_none()
 }
 
+/// Keep the resident on the left and the peer on the right, moving main only as far
+/// as needed to fit both inside the monitor's usable area. A still-resizing Terminal
+/// window may be too wide; defer placement until its compact format has settled.
+fn resident_pair_positions(
+    position: tauri::PhysicalPosition<i32>,
+    main_size: tauri::PhysicalSize<u32>,
+    remote_size: tauri::PhysicalSize<u32>,
+    area: tauri::PhysicalRect<i32, u32>,
+    gap: u32,
+) -> Option<(tauri::PhysicalPosition<i32>, tauri::PhysicalPosition<i32>)> {
+    let width = i64::from(main_size.width) + i64::from(gap) + i64::from(remote_size.width);
+    let height = main_size.height.max(remote_size.height);
+    if width > i64::from(area.size.width) || height > area.size.height {
+        return None;
+    }
+    let left = i64::from(area.position.x);
+    let top = i64::from(area.position.y);
+    let x = i64::from(position.x).clamp(left, left + i64::from(area.size.width) - width);
+    let y = i64::from(position.y).clamp(top, top + i64::from(area.size.height - height));
+    let peer_x = x + i64::from(main_size.width) + i64::from(gap);
+    Some((
+        tauri::PhysicalPosition::new(i32::try_from(x).ok()?, i32::try_from(y).ok()?),
+        tauri::PhysicalPosition::new(i32::try_from(peer_x).ok()?, i32::try_from(y).ok()?),
+    ))
+}
+
+fn arrange_resident_pair(window: &WebviewWindow, remote: &WebviewWindow) {
+    let (Ok(position), Ok(main_size), Ok(remote_size), Ok(Some(monitor))) = (
+        window.outer_position(),
+        window.outer_size(),
+        remote.outer_size(),
+        window.current_monitor(),
+    ) else {
+        return;
+    };
+    let gap = (12.0 * window.scale_factor().unwrap_or(1.0)).round() as u32;
+    if let Some((main_position, remote_position)) =
+        resident_pair_positions(position, main_size, remote_size, *monitor.work_area(), gap)
+    {
+        if main_position != position {
+            let _ = window.set_position(main_position);
+        }
+        let _ = remote.set_position(remote_position);
+    }
+}
+
 #[tauri::command]
 pub async fn remote_call_window_begin(
     window: WebviewWindow,
@@ -723,7 +796,7 @@ pub async fn remote_call_window_open(
         }
         state.opening = true;
     }
-    // Use the current native view's geometry. Do not modify the resident's main window.
+    // Match the current native format, then arrange the pair once both sizes are known.
     let scale = window.scale_factor().unwrap_or(1.0);
     let size = window
         .inner_size()
@@ -752,35 +825,31 @@ pub async fn remote_call_window_open(
     .on_navigation(move |url| allowed_navigation(url, &main_url))
     .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
     .build();
-    let cancelled = {
+    // A view pack can finish resizing main while this WebView is being built. Re-read
+    // its geometry, then follow the same brief transition as an existing view-mode switch.
+    let current_main_size = built.as_ref().ok().and_then(|_| window.inner_size().ok());
+    let (cancelled, resize, visible) = {
         let mut state = state.0.lock().map_err(|_| "Resident state unavailable")?;
-        state.opening = false;
-        let cancelled = state.require_lease(&lease_id).is_err();
-        state.closing = cancelled && built.is_ok();
-        cancelled
+        let (cancelled, resize) =
+            state.finish_opening(&lease_id, built.is_ok(), current_main_size, Instant::now());
+        let visible = state.frame.as_ref().is_none_or(|frame| frame.visible);
+        if !visible {
+            state.mode_resize_until = None;
+        }
+        (cancelled, resize, visible)
     };
     let built = built.map_err(|e| e.to_string())?;
     if cancelled {
         built.destroy().map_err(|e| e.to_string())?;
         return Err("Remote resident view was cancelled".into());
     }
-    if let (Ok(position), Ok(outer)) = (window.outer_position(), window.outer_size()) {
-        let gap = (12.0 * scale) as i32;
-        let mut x = position
-            .x
-            .saturating_add(outer.width as i32)
-            .saturating_add(gap);
-        if let Ok(Some(monitor)) = window.current_monitor() {
-            let right = i64::from(monitor.position().x) + i64::from(monitor.size().width);
-            if i64::from(x) + i64::from(outer.width) > right {
-                x = position
-                    .x
-                    .saturating_sub(outer.width as i32)
-                    .saturating_sub(gap)
-                    .max(monitor.position().x);
-            }
-        }
-        let _ = built.set_position(tauri::PhysicalPosition::new(x, position.y));
+    if let Some(size) = resize {
+        let _ = built.set_size(size);
+    }
+    if visible {
+        arrange_resident_pair(&window, &built);
+    } else {
+        let _ = built.hide();
     }
     Ok(())
 }
@@ -805,15 +874,7 @@ pub fn remote_call_window_show(
     resident.set_focus().map_err(|error| error.to_string())
 }
 
-/// Only the already-admitted main owner can supply inline VRM bytes. No filesystem paths or URLs.
-#[tauri::command]
-pub fn remote_call_window_avatar(
-    window: WebviewWindow,
-    state: State<'_, RemoteCallWindowState>,
-    lease_id: String,
-    encoded: String,
-) -> Result<(), String> {
-    require_label(window.label(), MAIN)?;
+fn decode_avatar(encoded: &str) -> Result<Vec<u8>, String> {
     if encoded.len() > MAX_AVATAR_BYTES.div_ceil(3) * 4 {
         return Err("Remote avatar is too large".into());
     }
@@ -828,6 +889,19 @@ pub fn remote_call_window_avatar(
     {
         return Err("Remote avatar must be a bounded GLB".into());
     }
+    Ok(bytes)
+}
+
+/// Only the already-admitted main owner can supply inline VRM bytes. No filesystem paths or URLs.
+#[tauri::command]
+pub fn remote_call_window_avatar(
+    window: WebviewWindow,
+    state: State<'_, RemoteCallWindowState>,
+    lease_id: String,
+    encoded: String,
+) -> Result<(), String> {
+    require_label(window.label(), MAIN)?;
+    let bytes = decode_avatar(&encoded)?;
     let mut state = state.0.lock().map_err(|_| "Resident state unavailable")?;
     state.require_lease(&lease_id)?;
     state.avatar = Some(bytes);
@@ -952,14 +1026,22 @@ pub fn remote_call_window_publish(
         .frame
         .as_ref()
         .is_some_and(|previous| previous.mode != frame.mode);
+    let visibility_changed = state
+        .frame
+        .as_ref()
+        .map_or(!frame.visible, |previous| previous.visible != frame.visible);
     state.stamp_frame(&mut frame);
     let lease = frame.lease_id.clone();
     let mode = frame.mode.clone();
+    let visible = frame.visible;
+    if !visible {
+        state.mode_resize_until = None;
+    }
     state.frame = Some(frame.clone());
     app.emit_to(REMOTE, EVENT, frame)
         .map_err(|e| e.to_string())?;
     drop(state);
-    if mode_changed {
+    if visible && (mode_changed || visibility_changed) {
         if let Some(remote) = app.get_webview_window(REMOTE) {
             // Call/Portrait are the same existing native formats after a view-mode switch.
             if let Ok(size) = window.inner_size() {
@@ -976,17 +1058,26 @@ pub fn remote_call_window_publish(
                 state.begin_mode_resize(size, Instant::now());
                 drop(state);
                 let _ = remote.set_size(size);
+                arrange_resident_pair(&window, &remote);
             }
             if let Ok(on_top) = window.is_always_on_top() {
                 let _ = remote.set_always_on_top(on_top);
             }
+            // Mode switches reveal the retained viewer without stealing focus from main.
+            if visibility_changed {
+                let _ = remote.show();
+            }
+        }
+    } else if !visible && visibility_changed {
+        if let Some(remote) = app.get_webview_window(REMOTE) {
+            let _ = remote.hide();
         }
     }
     Ok(())
 }
 
 /// Existing view packs resize the main window asynchronously. Follow only the short
-/// mode-change transition; ordinary later resizing of either window stays independent.
+/// opening/mode-change transition; ordinary later resizing of either window stays independent.
 pub fn window_resized(app: &AppHandle, label: &str, size: tauri::PhysicalSize<u32>) {
     if label != MAIN && label != REMOTE {
         return;
@@ -1001,6 +1092,9 @@ pub fn window_resized(app: &AppHandle, label: &str, size: tauri::PhysicalSize<u3
     if let Some(size) = target {
         if let Some(remote) = app.get_webview_window(REMOTE) {
             let _ = remote.set_size(size);
+            if let Some(main) = app.get_webview_window(MAIN) {
+                arrange_resident_pair(&main, &remote);
+            }
         }
     }
 }
@@ -1101,6 +1195,25 @@ pub fn close_owned_windows(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn avatar_decode_accepts_50_mib_and_rejects_larger_payloads() {
+        for size in [50 * 1024 * 1024, 50 * 1024 * 1024 + 1] {
+            let mut bytes = vec![0_u8; size];
+            bytes[..4].copy_from_slice(b"glTF");
+            bytes[4..8].copy_from_slice(&2_u32.to_le_bytes());
+            bytes[8..12].copy_from_slice(&(size as u32).to_le_bytes());
+            assert_eq!(
+                decode_avatar(&STANDARD.encode(bytes)).is_ok(),
+                size <= MAX_AVATAR_BYTES
+            );
+        }
+        let too_long = "A".repeat(MAX_AVATAR_BYTES.div_ceil(3) * 4 + 1);
+        assert_eq!(
+            decode_avatar(&too_long).unwrap_err(),
+            "Remote avatar is too large"
+        );
+    }
+
     fn scene_metadata() -> Value {
         serde_json::json!({
             "source": {"origin": "bundled", "id": "simple-room", "generation": 1},
@@ -1490,6 +1603,106 @@ mod tests {
         assert!(selected_scene_entry("room", &packs).is_err());
     }
     #[test]
+    fn resident_pair_uses_work_area_and_keeps_main_left_of_peer() {
+        let area = tauri::PhysicalRect {
+            position: tauri::PhysicalPosition::new(-2560, 50),
+            size: tauri::PhysicalSize::new(2560, 1450),
+        };
+        let size = tauri::PhysicalSize::new(560, 1120);
+        let pair = resident_pair_positions(
+            tauri::PhysicalPosition::new(-600, 900),
+            size,
+            size,
+            area,
+            24,
+        )
+        .unwrap();
+        assert_eq!(pair.0, tauri::PhysicalPosition::new(-1144, 380));
+        assert_eq!(pair.1, tauri::PhysicalPosition::new(-560, 380));
+        let pair = resident_pair_positions(
+            tauri::PhysicalPosition::new(-3000, -20),
+            size,
+            size,
+            area,
+            24,
+        )
+        .unwrap();
+        assert_eq!(pair.0, tauri::PhysicalPosition::new(-2560, 50));
+        assert_eq!(pair.1, tauri::PhysicalPosition::new(-1976, 50));
+        let pair = resident_pair_positions(
+            tauri::PhysicalPosition::new(-2200, 100),
+            size,
+            size,
+            area,
+            24,
+        )
+        .unwrap();
+        assert_eq!(pair.0, tauri::PhysicalPosition::new(-2200, 100));
+        assert_eq!(pair.1, tauri::PhysicalPosition::new(-1616, 100));
+        // Do not move main for the temporary Terminal geometry before compact sizing.
+        assert!(resident_pair_positions(
+            pair.0,
+            tauri::PhysicalSize::new(2400, 1200),
+            size,
+            area,
+            24,
+        )
+        .is_none());
+    }
+    #[test]
+    fn initial_open_follows_main_view_resize_and_preserves_manual_remote_size() {
+        let terminal_size = tauri::PhysicalSize::new(1800, 1200);
+        let call_size = tauri::PhysicalSize::new(400, 600);
+        let manual_size = tauri::PhysicalSize::new(480, 720);
+        let now = Instant::now();
+        let mut state = ResidentState {
+            lease: Some("lease".into()),
+            opening: true,
+            ..Default::default()
+        };
+        // The initial frame has no previous mode to trigger publish's mode-change path.
+        // Main may still have its Terminal dimensions when the new peer window opens.
+        state.frame = Some(frame());
+        assert_eq!(
+            state.finish_opening("lease", true, Some(terminal_size), now),
+            (false, Some(terminal_size))
+        );
+        assert!(!state.opening);
+        assert_eq!(state.resized(REMOTE, terminal_size, now), None);
+        assert_eq!(
+            state.resized(MAIN, call_size, now + Duration::from_millis(300)),
+            Some(call_size)
+        );
+        assert_eq!(
+            state.resized(REMOTE, call_size, now + Duration::from_millis(301)),
+            None
+        );
+        state.resized(REMOTE, manual_size, now + Duration::from_millis(400));
+        assert_eq!(
+            state.resized(MAIN, call_size, now + Duration::from_millis(500)),
+            None
+        );
+
+        // If main finished resizing during WebView construction, opening immediately
+        // projects that latest size instead of the builder's stale Terminal geometry.
+        state.opening = true;
+        assert_eq!(
+            state.finish_opening("lease", true, Some(call_size), now),
+            (false, Some(call_size))
+        );
+        assert_eq!(
+            state.resized(MAIN, terminal_size, now + Duration::from_secs(2)),
+            None
+        );
+        state.clear();
+        state.opening = true;
+        assert_eq!(
+            state.finish_opening("lease", true, Some(call_size), now),
+            (true, None)
+        );
+        assert_eq!(state.resized(MAIN, call_size, now), None);
+    }
+    #[test]
     fn mode_projection_follows_delayed_main_resize_but_respects_independent_user_resize() {
         let old_size = tauri::PhysicalSize::new(400, 600);
         let next_size = tauri::PhysicalSize::new(560, 1120);
@@ -1532,6 +1745,7 @@ mod tests {
             label: "Mafu".into(),
             language: "ja".into(),
             mode: "call".into(),
+            visible: true,
             motion: Some(vec![0; 505]),
             mouth: [0.0; 5],
             sequence: 0,
@@ -1545,12 +1759,36 @@ mod tests {
                 near: 0.1,
                 far: 20.0,
                 anchor_y: 1.5,
+                anchor: None,
             },
         }
     }
     #[test]
     fn public_projection_schema_bounds_motion_camera_and_names() {
         assert!(frame().validate().is_ok());
+        let legacy = serde_json::to_value(frame()).unwrap();
+        assert!(legacy["camera"].get("anchor").is_none());
+        let legacy: ResidentFrame = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.camera.anchor.is_none());
+        assert!(legacy.validate().is_ok());
+        let mut anchored = frame();
+        anchored.camera.anchor = Some([0.2, 1.5, -0.3]);
+        let anchored: ResidentFrame =
+            serde_json::from_value(serde_json::to_value(anchored).unwrap()).unwrap();
+        assert_eq!(anchored.camera.anchor, Some([0.2, 1.5, -0.3]));
+        assert!(anchored.validate().is_ok());
+        for axis in 0..3 {
+            for invalid in [f64::NAN, f64::INFINITY, -100.01, 100.01] {
+                let mut value = frame();
+                let mut anchor = [0.0, 1.5, 0.0];
+                anchor[axis] = invalid;
+                value.camera.anchor = Some(anchor);
+                assert!(value.validate().is_err());
+            }
+        }
+        let mut malformed = serde_json::to_value(frame()).unwrap();
+        malformed["camera"]["anchor"] = serde_json::json!([0.0, 1.5]);
+        assert!(serde_json::from_value::<ResidentFrame>(malformed).is_err());
         let mut value = frame();
         value.motion = Some(vec![0; 506]);
         assert!(value.validate().is_err());

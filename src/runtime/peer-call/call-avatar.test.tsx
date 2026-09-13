@@ -2,20 +2,38 @@
 
 import type { VRM } from "@pixiv/three-vrm";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { BoxGeometry, Group, Mesh, MeshBasicMaterial, type Scene } from "three";
+import {
+  BoxGeometry,
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  PerspectiveCamera,
+  type Scene,
+  Vector3,
+} from "three";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ScenePackManifest } from "../../sdk/scene-pack";
+import {
+  AVATAR_MOTION_BONES,
+  AVATAR_MOTION_EXPRESSIONS,
+  type AvatarMotionPose,
+} from "./avatar-motion";
 import { NativeCallAvatar, NativeCallStage } from "./call-avatar";
+import type { RemoteCallCamera } from "./remote-call-window";
 
 const mocks = vi.hoisted(() => ({
   getBytes: vi.fn(),
   parse: vi.fn(),
-  renderers: [] as Array<{ dispose: ReturnType<typeof vi.fn>; render: ReturnType<typeof vi.fn> }>,
+  renderers: [] as Array<{
+    dispose: ReturnType<typeof vi.fn>;
+    render: ReturnType<typeof vi.fn>;
+    setSize: ReturnType<typeof vi.fn>;
+  }>,
   hosts: [] as Array<{
     render: ReturnType<typeof vi.fn>;
     advance: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>;
-    deps: { scene: Scene };
+    deps: { scene: Scene; camera: PerspectiveCamera; canvas: HTMLCanvasElement };
   }>,
   canvases: [] as HTMLCanvasElement[],
   managers: [] as Array<{ resolveURL: (value: string) => string }>,
@@ -26,11 +44,17 @@ vi.mock("../three-runtime/r3f-host", () => ({
     render = vi.fn(() => true);
     advance = vi.fn(() => true);
     dispose = vi.fn();
-    constructor(public deps: { scene: Scene }) {
+    constructor(
+      public deps: { scene: Scene; camera: PerspectiveCamera; canvas: HTMLCanvasElement },
+    ) {
       mocks.hosts.push(this);
     }
-    initialize = async () => {};
-    setSize() {}
+    initialize = async () => {
+      Object.assign(this.deps.canvas.style, { width: "300px", height: "150px" });
+    };
+    setSize(width: number, height: number) {
+      Object.assign(this.deps.canvas.style, { width: `${width}px`, height: `${height}px` });
+    }
   },
 }));
 vi.mock("./call-scene-root", () => ({ CallSceneRoot: () => null }));
@@ -65,7 +89,7 @@ vi.mock("three", async (importOriginal) => {
         mocks.renderers.push(this);
       }
       setPixelRatio() {}
-      setSize() {}
+      setSize = vi.fn();
       forceContextLoss() {}
     },
   };
@@ -123,6 +147,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function tick() {
@@ -196,6 +221,130 @@ describe("native call VRM renderer ownership", () => {
     expect(rendered.position.toArray()).toEqual([0.1, 1.6, 1.2]);
     expect(mocks.parse).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    "0",
+    "1",
+  ] as const)("preserves main's framing for a posed, translated VRM %s without changing the model's proportions", async (metaVersion) => {
+    const loaded = model();
+    loaded.vrm.meta.metaVersion = metaVersion;
+    const hips = new Group();
+    const head = new Group();
+    head.position.set(0.12, 1.4, -0.08);
+    hips.add(head);
+    loaded.vrm.scene.add(hips);
+    // Keep a model-authored transform, including scale, rather than assuming identity roots.
+    loaded.vrm.scene.scale.set(0.9, 1.15, 1.05);
+    loaded.vrm.scene.rotation.set(0.03, 0.2, -0.02);
+    vi.mocked(loaded.vrm.humanoid.getNormalizedBoneNode).mockImplementation((name) =>
+      name === "head" ? head : name === "hips" ? hips : null,
+    );
+    vi.mocked(loaded.vrm.humanoid.setNormalizedPose).mockImplementation((pose) => {
+      hips.position.fromArray(pose.hips?.position ?? [0, 0, 0]);
+    });
+    mocks.parse.mockResolvedValue(loaded.gltf);
+    const motion: AvatarMotionPose = {
+      bones: AVATAR_MOTION_BONES.map(() => null),
+      hips: [0.17, -0.23, 0.11],
+      root: [0.4, 0.08, -0.2],
+      gaze: [0, 0],
+      expressions: AVATAR_MOTION_EXPRESSIONS.map(() => 0),
+    };
+    const main = new PerspectiveCamera(43, 1, 0.07, 55);
+    main.position.set(0.3, 1.7, 1.2);
+    main.lookAt(0.08, 1.65, 0.04);
+    main.zoom = 1.27;
+    main.updateProjectionMatrix();
+    const inherited: RemoteCallCamera = {
+      position: main.position.toArray(),
+      quaternion: main.quaternion.toArray(),
+      fov: main.fov,
+      zoom: main.zoom,
+      near: main.near,
+      far: main.far,
+      anchor: [0.08, 1.58, 0.04],
+      anchorY: 1.58,
+    };
+    render(
+      <NativeCallAvatar
+        avatarUrl="/avatar.vrm"
+        label="Remote"
+        sampleMotion={() => motion}
+        sampleCamera={() => inherited}
+      />,
+    );
+    await act(async () => {});
+    const scale = loaded.vrm.scene.scale.clone();
+    const rotation = loaded.vrm.scene.quaternion.clone();
+
+    const expectSameFraming = () => {
+      act(tick);
+      const calls = mocks.renderers[0].render.mock.calls;
+      const peerCamera = calls[calls.length - 1][1] as PerspectiveCamera;
+      peerCamera.updateMatrixWorld(true);
+      main.updateMatrixWorld(true);
+      const peerAnchor = head.getWorldPosition(new Vector3());
+      const mainAnchor = new Vector3().fromArray(inherited.anchor ?? []);
+      // A head and another same-distance point must project identically, covering framing,
+      // perspective depth, quaternion and zoom rather than just checking copied fields.
+      for (const offset of [new Vector3(), new Vector3(0.1, -0.2, 0.03)]) {
+        const peerNdc = peerAnchor.clone().add(offset).project(peerCamera);
+        const mainNdc = mainAnchor.clone().add(offset).project(main);
+        expect(peerNdc.distanceTo(mainNdc)).toBeLessThan(1e-10);
+      }
+      expect(peerCamera.quaternion.toArray()).toEqual(inherited.quaternion);
+      expect(loaded.vrm.scene.scale.toArray()).toEqual(scale.toArray());
+      expect(loaded.vrm.scene.quaternion.toArray()).toEqual(rotation.toArray());
+      expect(loaded.vrm.scene.position.toArray()).toEqual(motion.root);
+      expect(loaded.vrm.scene.parent?.position.toArray()).toEqual([0, 0, 0]);
+    };
+    expectSameFraming();
+
+    // Both sides move after the initial VRM load. A stored rest head or Y-only adjustment
+    // cannot keep the corresponding head projection through this frame.
+    motion.hips = [-0.12, 0.06, -0.14];
+    motion.root = [-0.2, -0.04, 0.15];
+    inherited.anchor = [-0.1, 1.62, -0.08];
+    inherited.anchorY = 1.62;
+    expectSameFraming();
+    expect(mocks.parse).toHaveBeenCalledOnce();
+  });
+
+  it("uses the live posed height for older camera frames that carry only anchorY", async () => {
+    const loaded = model();
+    const head = new Group();
+    head.position.set(0.2, 1.4, -0.1);
+    loaded.vrm.scene.add(head);
+    vi.mocked(loaded.vrm.humanoid.getNormalizedBoneNode).mockImplementation((name) =>
+      name === "head" ? head : null,
+    );
+    mocks.parse.mockResolvedValue(loaded.gltf);
+    const camera: RemoteCallCamera = {
+      position: [0.3, 1.65, 1.1],
+      quaternion: [0, 0, 0, 1],
+      fov: 35,
+      near: 0.1,
+      far: 20,
+      anchorY: 1.6,
+    };
+    render(
+      <NativeCallAvatar
+        avatarUrl="/avatar.vrm"
+        label="Remote"
+        sampleMotion={() => null}
+        sampleCamera={() => camera}
+      />,
+    );
+    await act(async () => {});
+    head.position.y = 1.2;
+    act(tick);
+    const calls = mocks.renderers[0].render.mock.calls;
+    const rendered = calls[calls.length - 1][1] as PerspectiveCamera;
+    expect(rendered.position.x).toBe(camera.position[0]);
+    expect(rendered.position.y).toBeCloseTo(1.25);
+    expect(rendered.position.z).toBe(camera.position[2]);
+  });
+
   it("uses one scene for theater but distinct mutable VRMs even when the local asset URL is identical", async () => {
     const a = model();
     const b = model();
@@ -445,4 +594,94 @@ it("keeps one VRM, renderer and canvas through cafe, loading gap and grassland s
   view.unmount();
   expect(mocks.hosts[0].dispose).toHaveBeenCalledOnce();
   expect(loaded.geometryDispose).toHaveBeenCalledOnce();
+});
+
+it("fills the resized terminal viewport even when R3F fixes its canvas to the old pixel size", async () => {
+  mocks.parse.mockResolvedValue(model().gltf);
+  let width = 1200;
+  const height = 670;
+  let resize = () => {};
+  const observe = vi.fn();
+  const disconnect = vi.fn();
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: () => void) {
+        resize = callback;
+      }
+      observe = observe;
+      disconnect = disconnect;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    // The sidebar's available viewport changes; canvas CSS can still reflect R3F's
+    // previous size or its intrinsic 300 x 150 startup fallback.
+    return this.classList.contains("call-resident-panel-avatar")
+      ? new DOMRect(0, 0, width, height)
+      : new DOMRect(0, 0, 300, 150);
+  });
+  const view = render(
+    <NativeCallAvatar
+      avatarUrl="/avatar.vrm"
+      label="Mai"
+      className="call-resident-panel-avatar"
+      sampleMotion={() => null}
+      appearance={null}
+    />,
+  );
+  await act(async () => {});
+  const viewport = view.container.firstElementChild as HTMLDivElement;
+  const canvas = mocks.canvases[0];
+  expect(viewport.style.width).toBe("100%");
+  expect(viewport.style.height).toBe("100%");
+  expect(observe).toHaveBeenCalledWith(viewport);
+  expect(observe).not.toHaveBeenCalledWith(canvas);
+
+  width = 280;
+  act(resize);
+  expect(mocks.renderers[0].setSize).toHaveBeenLastCalledWith(280, 670, false);
+  expect(mocks.hosts[0].deps.camera.aspect).toBeCloseTo(280 / 670);
+  expect(canvas.style.width).toBe("100%");
+  expect(canvas.style.height).toBe("100%");
+  expect(mocks.canvases).toEqual([canvas]);
+  expect(mocks.parse).toHaveBeenCalledOnce();
+  view.unmount();
+  expect(disconnect).toHaveBeenCalledOnce();
+});
+
+it("retains its loaded VRM and scene while hidden and stops its animation frames until resumed", async () => {
+  const loaded = model();
+  mocks.parse.mockResolvedValue(loaded.gltf);
+  const props = {
+    avatarUrl: "/avatar.vrm",
+    label: "Mai",
+    sampleMotion: () => null,
+    appearance: null,
+  };
+  const view = render(<NativeCallAvatar {...props} active />);
+  await act(async () => {});
+  act(tick);
+  const canvas = mocks.canvases[0];
+  expect(frames.size).toBe(1);
+  view.rerender(<NativeCallAvatar {...props} active={false} />);
+  expect(frames.size).toBe(0);
+  const rendered = mocks.hosts[0].advance.mock.calls.length;
+  act(tick);
+  expect(mocks.hosts[0].advance).toHaveBeenCalledTimes(rendered);
+  expect(mocks.hosts[0].dispose).not.toHaveBeenCalled();
+  expect(loaded.geometryDispose).not.toHaveBeenCalled();
+
+  view.rerender(<NativeCallAvatar {...props} active />);
+  expect(frames.size).toBe(1);
+  act(tick);
+  expect(mocks.hosts[0].advance).toHaveBeenCalledTimes(rendered + 1);
+  expect(mocks.parse).toHaveBeenCalledOnce();
+  expect(mocks.canvases).toEqual([canvas]);
+  expect(mocks.renderers).toHaveLength(1);
+  expect(mocks.hosts).toHaveLength(1);
+  view.unmount();
+  expect(frames.size).toBe(0);
+  expect(mocks.hosts[0].dispose).toHaveBeenCalledOnce();
 });

@@ -33,6 +33,8 @@ export interface NativeCallAvatarProps {
   /** Scene from this installation, resolved through the same pack loader as main. */
   sceneEntry?: ScenePackEntry | null;
   appearance?: CallSceneAppearance | null;
+  /** Retain the loaded view while hidden; resume without recreating its VRM or scene. */
+  active?: boolean;
   className?: string;
 }
 
@@ -77,19 +79,26 @@ function NativeCallCanvas({
   participants: NativeCallAvatarProps[];
   className?: string;
 }) {
+  const viewportRef = useRef<HTMLDivElement>(null);
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const activeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const resizeViewport = useRef<(() => void) | null>(null);
+  const setRendering = useRef<((active: boolean) => void) | null>(null);
   // SceneRouter may replace its character slot when the layer structure changes. Keep the
   // renderer/VRM above that lifecycle and move its existing canvas into the new slot, like main.
   const attachCanvas = useCallback((host: HTMLDivElement | null) => {
     canvasHostRef.current = host;
-    if (host && activeCanvasRef.current) host.appendChild(activeCanvasRef.current);
+    if (host && activeCanvasRef.current) {
+      host.appendChild(activeCanvasRef.current);
+      resizeViewport.current?.();
+    }
   }, []);
   const updateScene = useRef<
     ((entry?: ScenePackEntry | null, appearance?: CallSceneAppearance | null) => void) | null
   >(null);
   const sceneEntry = participants[0]?.sceneEntry;
   const appearance = participants[0]?.appearance;
+  const active = participants[0]?.active !== false;
   const samples = useRef(participants);
   samples.current = participants;
   const [loadState, setLoadState] = useState("姿を読み込んでいます…");
@@ -100,7 +109,8 @@ function NativeCallCanvas({
 
   useEffect(() => {
     const canvasHost = canvasHostRef.current;
-    if (!canvasHost) return;
+    const viewport = viewportRef.current;
+    if (!canvasHost || !viewport) return;
     setError(null);
     setSceneError(null);
     setLoadState("姿を読み込んでいます…");
@@ -207,16 +217,21 @@ function NativeCallCanvas({
     updateScene.current = syncScene;
 
     const resize = () => {
-      const rect = canvas.getBoundingClientRect();
+      // R3F may set canvas.style to fixed pixels while configuring its renderer.
+      // Measure the surrounding view instead so a sidebar resize cannot remain
+      // trapped at the canvas's initial/intrinsic 300 x 150 dimensions.
+      const rect = viewport.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) return;
       renderer.setSize(rect.width, rect.height, false);
       camera.aspect = rect.width / rect.height;
       camera.updateProjectionMatrix();
       frameCamera();
       sceneHost?.setSize(rect.width, rect.height);
+      Object.assign(canvas.style, { width: "100%", height: "100%" });
     };
+    resizeViewport.current = resize;
     const observer = new ResizeObserver(resize);
-    observer.observe(canvas);
+    observer.observe(viewport);
     resize();
     if (samples.current[0]?.appearance !== undefined) {
       sceneHost = new R3fHost({ canvas, renderer, scene, camera });
@@ -296,7 +311,8 @@ function NativeCallCanvas({
     });
 
     const render = (now: number) => {
-      if (disposed) return;
+      animation = 0;
+      if (disposed || samples.current[0]?.active === false) return;
       const delta = Math.min(0.1, Math.max(0, (now - previousTime) / 1000));
       previousTime = now;
       avatars.forEach((instance, index) => {
@@ -336,8 +352,21 @@ function NativeCallCanvas({
       const inheritedCamera = samples.current[0]?.sampleCamera?.();
       if (count === 1 && inheritedCamera) {
         camera.position.fromArray(inheritedCamera.position);
-        // Keep the same framing for residents of different heights.
-        camera.position.y += (headHeights[0] || inheritedCamera.anchorY) - inheritedCamera.anchorY;
+        const headBone = avatars[0]?.vrm.humanoid.getNormalizedBoneNode("head");
+        if (headBone) {
+          // Main's anchor includes its current pose and world transform. Compare the peer in
+          // that same coordinate space after applying this frame's motion, not its load-time
+          // rest height. This preserves the selected camera's offset, including X/Z, without
+          // moving/rescaling the avatar or adding a second view-mode camera preset.
+          headBone.getWorldPosition(head);
+          if (inheritedCamera.anchor) {
+            camera.position.x += head.x - inheritedCamera.anchor[0];
+            camera.position.y += head.y - inheritedCamera.anchor[1];
+            camera.position.z += head.z - inheritedCamera.anchor[2];
+          } else {
+            camera.position.y += head.y - inheritedCamera.anchorY;
+          }
+        }
         camera.quaternion.fromArray(inheritedCamera.quaternion);
         if (
           camera.fov !== inheritedCamera.fov ||
@@ -365,11 +394,25 @@ function NativeCallCanvas({
       if (!sceneHost?.advance(now)) renderer.render(scene, camera);
       animation = requestAnimationFrame(render);
     };
-    animation = requestAnimationFrame(render);
+    const toggleRendering = (active: boolean) => {
+      if (disposed) return;
+      if (!active) {
+        cancelAnimationFrame(animation);
+        animation = 0;
+      } else if (!animation) {
+        previousTime = performance.now();
+        resize();
+        animation = requestAnimationFrame(render);
+      }
+    };
+    setRendering.current = toggleRendering;
+    toggleRendering(samples.current[0]?.active !== false);
     return () => {
       disposed = true;
       cancelAnimationFrame(animation);
       observer.disconnect();
+      if (resizeViewport.current === resize) resizeViewport.current = null;
+      if (setRendering.current === toggleRendering) setRendering.current = null;
       if (updateScene.current === syncScene) updateScene.current = null;
       sceneHost?.dispose();
       avatars.forEach((instance, index) => {
@@ -387,6 +430,9 @@ function NativeCallCanvas({
       if (activeCanvasRef.current === canvas) activeCanvasRef.current = null;
     };
   }, [assetKey]);
+  useEffect(() => {
+    setRendering.current?.(active);
+  }, [active]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: Only a new scene identity can recover a failed component boundary.
   useEffect(() => {
     setSceneError(null);
@@ -398,7 +444,11 @@ function NativeCallCanvas({
   const renderedEntry =
     sceneEntry && appearance?.scene ? { ...sceneEntry, scene: appearance.scene } : sceneEntry;
   return (
-    <div className={className ?? "native-call-avatar"}>
+    <div
+      ref={viewportRef}
+      className={className ?? "native-call-avatar"}
+      style={{ width: "100%", height: "100%" }}
+    >
       <SceneRouter entry={renderedEntry ?? null}>
         <div ref={attachCanvas} style={{ width: "100%", height: "100%", display: "block" }} />
       </SceneRouter>

@@ -1,10 +1,34 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AVATAR_TRANSFER_TIMEOUT_MS,
+  AvatarSizeLimitError,
   AvatarTransfer,
   MAX_AVATAR_BYTES,
   MAX_AVATAR_PACKET_BYTES,
   validateAvatarGlb,
 } from "./avatar-transfer";
+
+function sizedGlb(size: number): ArrayBuffer {
+  const bytes = new ArrayBuffer(size);
+  const header = new DataView(bytes);
+  const json = new TextEncoder().encode(
+    JSON.stringify({
+      asset: { version: "2.0" },
+      extensions: { VRMC_vrm: {} },
+      buffers: [{ byteLength: size - 1024 }],
+    }),
+  );
+  header.setUint32(0, 0x46546c67, true);
+  header.setUint32(4, 2, true);
+  header.setUint32(8, size, true);
+  header.setUint32(12, 996, true);
+  header.setUint32(16, 0x4e4f534a, true);
+  new Uint8Array(bytes, 20, 996).fill(32);
+  new Uint8Array(bytes, 20, json.length).set(json);
+  header.setUint32(1016, size - 1024, true);
+  header.setUint32(1020, 0x004e4942, true);
+  return bytes;
+}
 
 function glb(overrides: Record<string, unknown> = {}, binary = new Uint8Array()): ArrayBuffer {
   const json = new TextEncoder().encode(
@@ -67,6 +91,11 @@ async function packets(bytes = glb({}, new Uint8Array(40_000))) {
 afterEach(() => vi.useRealTimers());
 
 describe("avatar GLB resource validation", () => {
+  it("accepts the 50 MiB boundary and rejects any bytes over it", () => {
+    expect(validateAvatarGlb(sizedGlb(50 * 1024 * 1024))).toBe(true);
+    expect(validateAvatarGlb(sizedGlb(50 * 1024 * 1024 + 4))).toBe(false);
+  });
+
   it("accepts self-contained VRM 0 and VRM 1 GLB containers", () => {
     expect(validateAvatarGlb(glb())).toBe(true);
     expect(validateAvatarGlb(glb({ extensions: { VRM: {} } }, new Uint8Array(100)))).toBe(true);
@@ -149,6 +178,47 @@ describe("avatar GLB resource validation", () => {
 });
 
 describe("AvatarTransfer", () => {
+  it("sends and reassembles a 46 MiB model using bounded packets", async () => {
+    const bytes = sizedGlb(46 * 1024 * 1024);
+    const received = vi.fn();
+    const receiver = new AvatarTransfer({ onSend: () => true });
+    receiver.subscribe(received);
+    const sender = new AvatarTransfer({
+      onSend: (packet) => {
+        expect(packet.byteLength).toBeLessThanOrEqual(MAX_AVATAR_PACKET_BYTES);
+        return receiver.accept(packet);
+      },
+    });
+    await sender.send(bytes);
+    expect(received).toHaveBeenCalledOnce();
+    expect(received.mock.calls[0][0].byteLength).toBe(bytes.byteLength);
+    expect(validateAvatarGlb(received.mock.calls[0][0])).toBe(true);
+    sender.close();
+    receiver.close();
+  });
+
+  it("reports an oversize model before sending any packet", async () => {
+    const onSend = vi.fn(() => true);
+    const sender = new AvatarTransfer({ onSend });
+    await expect(sender.send(new ArrayBuffer(MAX_AVATAR_BYTES + 1))).rejects.toBeInstanceOf(
+      AvatarSizeLimitError,
+    );
+    expect(onSend).not.toHaveBeenCalled();
+    sender.close();
+  });
+
+  it("keeps the extended default deadline bounded to 60 seconds", async () => {
+    vi.useFakeTimers();
+    const sender = new AvatarTransfer({ onSend: () => false });
+    const failure = expect(sender.send(glb())).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(AVATAR_TRANSFER_TIMEOUT_MS - 30_000);
+    await failure;
+    expect(vi.getTimerCount()).toBe(0);
+    sender.close();
+  });
+
   it("reassembles only complete bounded packets and supports a newer avatar", async () => {
     const p = await packets();
     const listener = vi.fn();

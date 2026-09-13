@@ -181,6 +181,7 @@ import {
   resolveLanguage,
 } from "./runtime/language/language";
 import { getModuleRegistry, KEYS } from "./runtime/module-registry";
+import { CallResidentPanel } from "./runtime/peer-call/call-resident-panel";
 import { PeerCallControl } from "./runtime/peer-call/peer-call-control";
 import type { RoomCall } from "./runtime/peer-call/room-call";
 import { useCallSurfaces } from "./runtime/peer-call/use-call-surfaces";
@@ -6031,7 +6032,11 @@ function App() {
             onActiveChange={handlePeerCallActiveChange}
             onRoomChange={handlePeerCallChange}
             onTopicRequested={() => setQuickChatOpen(true)}
-            onShowResident={() => void peerCallSurfaces.show()?.catch(() => {})}
+            onShowResident={
+              peerCallSurfaces.show
+                ? () => void peerCallSurfaces.show?.()?.catch(() => {})
+                : undefined
+            }
             language={appLanguage.resolved}
             viewMode={activePresentationViewModeIdValue}
           />
@@ -6190,6 +6195,14 @@ function App() {
             onActivate={handleTerminalActivate}
           />
         )}
+        {peerCall?.connected ? (
+          <CallResidentPanel
+            room={peerCall}
+            sceneEntry={renderedSceneEntry}
+            language={appLanguage.resolved}
+            active={peerCallSurfaces.inline}
+          />
+        ) : null}
       </div>
       {quickChatOpen && quickChatEnabled ? (
         <QuickChatInput

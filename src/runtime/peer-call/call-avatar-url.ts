@@ -1,3 +1,5 @@
+import { MAX_AVATAR_BYTES } from "./avatar-transfer";
+
 /** URLs minted by this webview from its own received avatar bytes, never supplied by a peer. */
 const issuedAvatarUrls = new Set<string>();
 
@@ -10,7 +12,7 @@ export function createCallAvatarUrl(bytes: ArrayBuffer): string {
   if (
     !(bytes instanceof ArrayBuffer) ||
     bytes.byteLength === 0 ||
-    bytes.byteLength > 32 * 1024 * 1024
+    bytes.byteLength > MAX_AVATAR_BYTES
   )
     throw new Error("Invalid call avatar bytes");
   const url = URL.createObjectURL(new Blob([bytes], { type: "model/gltf-binary" }));

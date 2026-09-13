@@ -147,6 +147,37 @@ it("loads the main scene once and applies layer/light control changes without re
   expect(bridge.loadScene).toHaveBeenCalledOnce();
   expect(bridge.avatar).toHaveBeenCalledOnce();
 });
+it("keeps loaded avatar and scene through Call/Portrait and hidden transitions, pausing the existing view", async () => {
+  const scene = { id: "room", layers: [] };
+  const entry = { id: "room", origin: "bundled", manifest: {}, scene, component: () => null };
+  bridge.loadScene.mockResolvedValue(entry);
+  bridge.scene.mockResolvedValue({
+    source: { origin: "bundled", id: "room" },
+    scene,
+    controls: {},
+    background: "#112233",
+    renderer: {},
+  });
+  bridge.read.mockResolvedValue({ ...frame(1), sceneRevision: 1, visible: true });
+  render(<AuxiliaryCallResident />);
+  await act(async () => {});
+  const resident = screen.getByTestId("resident");
+  await act(async () =>
+    receive({ ...frame(2), sceneRevision: 1, mode: "portrait", visible: true }),
+  );
+  expect(bridge.avatarRender.mock.lastCall?.[0].active).toBe(true);
+  await act(async () =>
+    receive({ ...frame(3), sceneRevision: 1, mode: "portrait", visible: false }),
+  );
+  expect(bridge.avatarRender.mock.lastCall?.[0].active).toBe(false);
+  await act(async () => receive({ ...frame(4), sceneRevision: 1, visible: true }));
+  expect(bridge.avatarRender.mock.lastCall?.[0].active).toBe(true);
+  expect(screen.getByTestId("resident")).toBe(resident);
+  expect(bridge.avatar).toHaveBeenCalledOnce();
+  expect(bridge.scene).toHaveBeenCalledOnce();
+  expect(bridge.loadScene).toHaveBeenCalledOnce();
+  expect(bridge.revoke).not.toHaveBeenCalled();
+});
 it("does not display a late scene snapshot after a newer revision", async () => {
   let finish!: (value: unknown) => void;
   bridge.scene.mockReturnValueOnce(

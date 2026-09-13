@@ -1,0 +1,71 @@
+.call-resident-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  color: var(--yorishiro-fg, #f7f8fa);
+}
+
+.call-resident-panel[hidden] {
+  display: none;
+}
+
+.call-resident-panel-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--yorishiro-sidebar-bg, #0e0f11);
+  border-bottom: 1px solid var(--yorishiro-border, #292c32);
+}
+
+.call-resident-panel-dot {
+  flex-shrink: 0;
+  color: #87d9b1;
+  font-size: 8px;
+}
+
+.call-resident-panel-identity {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.call-resident-panel-identity strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.call-resident-panel-identity small {
+  font-size: 10px;
+  line-height: 1.4;
+  opacity: 0.7;
+}
+
+.call-resident-panel-content {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.call-resident-panel-avatar {
+  position: absolute;
+  inset: 0;
+}
+
+.call-resident-panel-avatar > p,
+.call-resident-panel-waiting {
+  position: absolute;
+  inset: 12px 12px auto;
+  margin: 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--yorishiro-sidebar-bg, #0e0f11);
+  font-size: 12px;
+  line-height: 1.5;
+}

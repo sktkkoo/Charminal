@@ -19,6 +19,7 @@ import {
   readRemoteCallWindow,
 } from "./runtime/peer-call/remote-call-window";
 import type { ScenePackEntry } from "./runtime/scene-pack-registry";
+import { shouldStartViewModeWindowDrag } from "./runtime/view-mode-window-interaction";
 import "./auxiliary-call-resident.css";
 
 /** A second native resident view only. No App, room, audio output, microphone, or provider session. */
@@ -59,6 +60,7 @@ export default function AuxiliaryCallResident() {
         current.sceneRevision === next.sceneRevision &&
         current.label === next.label &&
         current.mode === next.mode &&
+        current.visible === next.visible &&
         current.language === next.language
           ? current
           : next,
@@ -181,6 +183,13 @@ export default function AuxiliaryCallResident() {
     <main
       className={`remote-call-resident remote-call-resident-${frame?.mode ?? "portrait"}`}
       style={{ background: appearance?.background ?? "#141619" }}
+      onPointerDown={(event) => {
+        if (!shouldStartViewModeWindowDrag(true, event.button, event.target)) return;
+        event.preventDefault();
+        void getCurrentWindow()
+          .startDragging()
+          .catch(() => undefined);
+      }}
     >
       {avatarUrl ? (
         <NativeCallAvatar
@@ -188,6 +197,7 @@ export default function AuxiliaryCallResident() {
           avatarBytes={avatarBytes ?? undefined}
           label={frame?.label ?? ""}
           className="remote-call-resident-avatar"
+          active={frame?.visible !== false}
           sampleMotion={() => motion.current.sample(performance.now())}
           sampleMouth={() => {
             const weights = latest.current?.mouth;
@@ -220,7 +230,11 @@ export default function AuxiliaryCallResident() {
               : `${frame?.label ?? "Yorishiro"}, call participant — Move window`
           }
           onPointerDown={(event) => {
-            if (event.button === 0) void getCurrentWindow().startDragging();
+            if (event.button !== 0) return;
+            event.preventDefault();
+            void getCurrentWindow()
+              .startDragging()
+              .catch(() => undefined);
           }}
         >
           <span className="remote-call-resident-dot" aria-hidden="true">
