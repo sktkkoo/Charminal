@@ -185,6 +185,7 @@ import { CallResidentPanel } from "./runtime/peer-call/call-resident-panel";
 import { CallSessionView } from "./runtime/peer-call/call-session-view";
 import { PeerCallControl } from "./runtime/peer-call/peer-call-control";
 import type { RoomCall } from "./runtime/peer-call/room-call";
+import { useCallDebugPanel } from "./runtime/peer-call/use-call-debug-panel";
 import { useCallSession } from "./runtime/peer-call/use-call-session";
 import { useCallSurfaces } from "./runtime/peer-call/use-call-surfaces";
 import { useQuickChatDrafts } from "./runtime/peer-call/use-quick-chat-drafts";
@@ -5894,9 +5895,14 @@ function App() {
   // ── Cmd+R / Ctrl+R で全体 reload、Cmd+, で settings toggle ──
 
   const [levaHidden, setLevaHidden] = useState(true);
+  const callDebugPanel = useCallDebugPanel({
+    callActive: peerCallActive || callQuickChat,
+    hidden: levaHidden,
+    setHidden: setLevaHidden,
+  });
 
   useEffect(() => {
-    if (!levaHidden) {
+    if (!callDebugPanel.hidden) {
       const raw = getComputedStyle(document.documentElement)
         .getPropertyValue("--leva-panel-width")
         .trim();
@@ -5904,7 +5910,7 @@ function App() {
         document.documentElement.style.setProperty("--leva-panel-width", "280px");
       }
     }
-  }, [levaHidden]);
+  }, [callDebugPanel.hidden]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -5930,7 +5936,7 @@ function App() {
       }
       if (event.code === "F2") {
         event.preventDefault();
-        setLevaHidden((prev) => !prev);
+        callDebugPanel.toggle();
       }
       const viewModeShortcut = viewModeShortcuts.find((shortcut) =>
         matchesViewModeShortcut(shortcut, event, isMac),
@@ -5949,6 +5955,7 @@ function App() {
       window.removeEventListener("keydown", onKeyDown, { capture: true });
     };
   }, [
+    callDebugPanel.toggle,
     handleOpenSettings,
     handleSelectViewMode,
     isMac,
@@ -6201,7 +6208,7 @@ function App() {
         {runtimeLevaStore ? (
           <LevaPanel
             store={runtimeLevaStore}
-            hidden={levaHidden}
+            hidden={callDebugPanel.hidden}
             collapsed={false}
             flat
             titleBar={{
@@ -6216,13 +6223,20 @@ function App() {
           <LevaPanel
             key={activeSceneLevaStore.storeId}
             store={activeSceneLevaStore}
-            hidden={levaHidden}
+            hidden={callDebugPanel.hidden}
             collapsed={false}
             flat
             titleBar={{ title: "Scene", drag: true, filter: true, position: { x: -300, y: 0 } }}
           />
         ) : null}
       </DebugControlsBoundary>
+      {callDebugPanel.showNotice && (
+        <div className="call-debug-panel-notice" role="status">
+          {appLanguage.resolved.startsWith("ja")
+            ? "通話中はデバッグパネルを表示できません。通話終了後にF2で開けます。"
+            : "The debug panel is unavailable during a call. Press F2 after the call ends."}
+        </div>
+      )}
       <div className="app-body">
         <div
           className="shell-column"
