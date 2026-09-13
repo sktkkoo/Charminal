@@ -29,6 +29,8 @@ interface Props {
   onTopicRequested?: () => void;
   onShowResident?: () => void;
   onSessionStart?: (ownerKey: string, endCall: () => void) => void;
+  controlsHost?: HTMLElement | null;
+  onComposerHostChange?: (host: HTMLDivElement | null) => void;
 }
 
 type Layout = "theater" | "call" | "portrait";
@@ -109,6 +111,8 @@ export function PeerCallControl({
   onTopicRequested,
   onShowResident,
   onSessionStart,
+  controlsHost,
+  onComposerHostChange,
 }: Props) {
   const ja = language.startsWith("ja");
   const t = (jp: string, en: string) => (ja ? jp : en);
@@ -547,95 +551,102 @@ export function PeerCallControl({
         )}
       {connected &&
         createPortal(
-          <aside
-            className="peer-call-session-strip"
-            aria-label={t("通話中", "In call")}
+          <div
+            className="peer-call-session-dock"
+            data-placement={controlsHost ? "sidebar" : "floating"}
             data-no-window-drag
           >
-            <span className="peer-call-session-status" role="status">
-              <strong title={localName}>{localName}</strong>
-              <small
-                className="peer-call-session-partner"
-                title={t(`${remoteName}と通話中`, `In call with ${remoteName}`)}
-              >
-                {!ja && <span>In call with</span>}
-                <span className="peer-call-session-partner-name">{remoteName}</span>
-                {ja && <span>と通話中</span>}
-              </small>
-              <small>{status}</small>
-            </span>
-            {onShowResident && layout !== "theater" && (
+            <div className="peer-call-composer-host" ref={onComposerHostChange} />
+            <aside
+              className="peer-call-session-strip"
+              aria-label={t("通話中", "In call")}
+              data-no-window-drag
+            >
+              <span className="peer-call-session-status" role="status">
+                <strong title={localName}>{localName}</strong>
+                <small
+                  className="peer-call-session-partner"
+                  title={t(`${remoteName}と通話中`, `In call with ${remoteName}`)}
+                >
+                  {!ja && <span>In call with</span>}
+                  <span className="peer-call-session-partner-name">{remoteName}</span>
+                  {ja && <span>と通話中</span>}
+                </small>
+                <small>{status}</small>
+              </span>
+              {onShowResident && layout !== "theater" && (
+                <button
+                  type="button"
+                  onClick={onShowResident}
+                  title={t("相手のウィンドウを表示", "Show resident window")}
+                  aria-label={t("相手のウィンドウを表示", "Show resident window")}
+                >
+                  <UserRound size={16} aria-hidden="true" />
+                </button>
+              )}
               <button
                 type="button"
-                onClick={onShowResident}
-                title={t("相手のウィンドウを表示", "Show resident window")}
-                aria-label={t("相手のウィンドウを表示", "Show resident window")}
+                onClick={onTopicRequested}
+                aria-label={t("チャットを開く", "Open chat")}
+                title={t("チャットを開く", "Open chat")}
               >
-                <UserRound size={16} aria-hidden="true" />
+                <MessageSquare size={16} aria-hidden="true" />
               </button>
-            )}
-            <button
-              type="button"
-              onClick={onTopicRequested}
-              aria-label={t("チャットを開く", "Open chat")}
-              title={t("チャットを開く", "Open chat")}
-            >
-              <MessageSquare size={16} aria-hidden="true" />
-            </button>
-            {room.paused ? (
+              {room.paused ? (
+                <button
+                  type="button"
+                  disabled={!!busy}
+                  onClick={() => void run("retry", () => room.resume())}
+                >
+                  {room.error
+                    ? t("AIの接続をやり直す", "Retry AI connection")
+                    : t("AIの会話を再開", "Resume AI conversation")}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    ++action.current;
+                    operationBusy.current = false;
+                    setBusy(null);
+                    room.pause();
+                  }}
+                  aria-label={t("AIの会話を止める", "Stop AI conversation")}
+                  title={t("AIの会話を止める", "Stop AI conversation")}
+                >
+                  <Pause size={16} aria-hidden="true" />
+                </button>
+              )}
               <button
                 type="button"
-                disabled={!!busy}
-                onClick={() => void run("retry", () => room.resume())}
+                className="peer-call-hangup"
+                onClick={leave}
+                aria-label={t("通話を終了", "End call")}
+                title={t("通話を終了", "End call")}
               >
-                {room.error
-                  ? t("AIの接続をやり直す", "Retry AI connection")
-                  : t("AIの会話を再開", "Resume AI conversation")}
+                <PhoneOff size={16} aria-hidden="true" />
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  ++action.current;
-                  operationBusy.current = false;
-                  setBusy(null);
-                  room.pause();
-                }}
-                aria-label={t("AIの会話を止める", "Stop AI conversation")}
-                title={t("AIの会話を止める", "Stop AI conversation")}
+              <div
+                className="peer-call-sr-only"
+                role="log"
+                aria-label={t("通話の字幕", "Call captions")}
+                aria-live="off"
               >
-                <Pause size={16} aria-hidden="true" />
-              </button>
-            )}
-            <button
-              type="button"
-              className="peer-call-hangup"
-              onClick={leave}
-              aria-label={t("通話を終了", "End call")}
-              title={t("通話を終了", "End call")}
-            >
-              <PhoneOff size={16} aria-hidden="true" />
-            </button>
-            <div
-              className="peer-call-sr-only"
-              role="log"
-              aria-label={t("通話の字幕", "Call captions")}
-              aria-live="off"
-            >
-              {room.transcripts.slice(-8).map((item) => (
-                <p key={item.id}>
-                  {item.speaker}: {item.text}
-                </p>
-              ))}
-            </div>
-            {callError && (
-              <details className="peer-call-session-error">
-                <summary>{t("接続エラーの詳細", "Connection error details")}</summary>
-                <p role="alert">{callError}</p>
-              </details>
-            )}
-          </aside>,
-          document.body,
+                {room.transcripts.slice(-8).map((item) => (
+                  <p key={item.id}>
+                    {item.speaker}: {item.text}
+                  </p>
+                ))}
+              </div>
+              {callError && (
+                <details className="peer-call-session-error">
+                  <summary>{t("接続エラーの詳細", "Connection error details")}</summary>
+                  <p role="alert">{callError}</p>
+                </details>
+              )}
+            </aside>
+          </div>,
+          controlsHost ?? document.body,
         )}
       {active &&
         !connected &&

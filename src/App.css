@@ -117,6 +117,26 @@ html[data-rounded-view] body {
     inset 0 1px 0 rgba(255, 255, 255, 0.09);
 }
 
+/* A call composer shares the controls' flow in compact presentations. */
+.quick-chat-layer.is-docked {
+  position: relative;
+  inset: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(340px, calc(100vw - 24px));
+  max-width: 100%;
+}
+
+.quick-chat-layer.is-docked .quick-chat-palette {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  width: 100%;
+  transform: none;
+  animation: none;
+}
+
 .quick-voice-palette {
   position: absolute;
   left: 50%;

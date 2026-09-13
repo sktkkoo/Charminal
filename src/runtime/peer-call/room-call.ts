@@ -29,6 +29,8 @@ export interface RoomCallTranscript {
   id: string;
   speaker: string;
   text: string;
+  origin: "local" | "remote";
+  role: "assistant" | "user";
 }
 
 export function configuredRoomEndpoint(): string {
@@ -139,7 +141,7 @@ export class RoomCall {
     const target = intent.addressedResidentId || this.hostId();
     if (!this.send("topic", { text, target })) throw new Error("お題を届けられませんでした。");
     this.topic = text;
-    this.append("あなた", text);
+    this.append("あなた", text, "local", "user");
     if (target === this.signaling.localEndpointId) await this.seed(text);
     this.options.onChange();
   }
@@ -316,7 +318,7 @@ export class RoomCall {
             if (item.role === "assistant") {
               const text = item.text.slice(0, 2_000);
               if (!boundedText(text)) return;
-              this.append(this.identity.name, text);
+              this.append(this.identity.name, text, "local", "assistant");
               this.send("transcript", { text });
             } else if (classifyHumanRoomInput(item.text, this.residents()).kind === "pause") {
               // Mixed ASR cannot identify the human. Every participant may stop the room;
@@ -412,10 +414,15 @@ export class RoomCall {
     }
   }
 
-  private append(speaker: string, text: string): void {
+  private append(
+    speaker: string,
+    text: string,
+    origin: RoomCallTranscript["origin"],
+    role: RoomCallTranscript["role"],
+  ): void {
     this.transcripts = [
       ...this.transcripts.slice(-119),
-      { id: crypto.randomUUID(), speaker, text },
+      { id: crypto.randomUUID(), speaker, text, origin, role },
     ];
     this.options.onChange();
   }
@@ -484,7 +491,7 @@ export class RoomCall {
     ) {
       this.remoteActivity = value.activity as AgentActivity;
     } else if (value.type === "transcript" && boundedText(value.text) && !this.paused) {
-      this.append(this.signaling.remoteName, value.text);
+      this.append(this.signaling.remoteName, value.text, "remote", "assistant");
     } else if (
       value.type === "topic" &&
       boundedText(value.text) &&
@@ -493,7 +500,7 @@ export class RoomCall {
         value.target === this.signaling.remoteEndpointId)
     ) {
       this.topic = value.text;
-      this.append("相手のユーザー", value.text);
+      this.append("相手のユーザー", value.text, "remote", "user");
       if (value.target === this.signaling.localEndpointId) void this.seed(value.text);
     } else return;
     this.received = value.sequence as number;

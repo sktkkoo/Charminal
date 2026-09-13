@@ -16,10 +16,19 @@ export function CallSessionView({
   onEnd(): void;
 }) {
   const surfaceRef = useRef<HTMLElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const followsLatest = useRef(true);
+  const lastTranscript = room?.transcripts[room.transcripts.length - 1];
   useEffect(() => {
     // A hidden xterm may still have had focus when the call tab was opened.
     surfaceRef.current?.focus({ preventScroll: true });
   }, []);
+  useEffect(() => {
+    const messages = messagesRef.current;
+    if (lastTranscript && messages && followsLatest.current) {
+      messages.scrollTop = messages.scrollHeight;
+    }
+  }, [lastTranscript]);
   const ja = language.startsWith("ja");
   const t = (jp: string, en: string) => (ja ? jp : en);
   return (
@@ -46,16 +55,36 @@ export function CallSessionView({
         </button>
       </header>
       <div
+        ref={messagesRef}
         className="call-session-messages"
+        onScroll={(event) => {
+          const messages = event.currentTarget;
+          followsLatest.current =
+            messages.scrollHeight - messages.clientHeight - messages.scrollTop < 32;
+        }}
         role="log"
         aria-live="off"
         aria-label={t("通話の会話", "Call conversation")}
       >
         {room?.transcripts.map((item) => (
-          <p key={item.id}>
-            <strong>{item.speaker}</strong>
-            <span>{item.text}</span>
-          </p>
+          <div
+            key={item.id}
+            className="call-session-message"
+            data-origin={item.origin}
+            data-speaker-role={item.role}
+          >
+            <div className="call-session-message-speaker">
+              <strong>
+                {item.role === "user"
+                  ? item.origin === "local"
+                    ? t("あなた", "You")
+                    : t("相手のユーザー", "Remote user")
+                  : item.speaker}
+              </strong>
+              <span>{item.role === "user" ? t("人間", "Human") : "AI"}</span>
+            </div>
+            <p className="call-session-message-bubble">{item.text}</p>
+          </div>
         ))}
         {!room?.transcripts.length && (
           <p className="call-session-empty">

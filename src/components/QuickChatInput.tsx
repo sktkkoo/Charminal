@@ -10,6 +10,7 @@ export interface QuickChatInputStrings {
 }
 
 export interface QuickChatInputProps {
+  readonly portalTarget?: HTMLElement | null;
   readonly busy?: boolean;
   readonly error?: string;
   readonly maxLength?: number;
@@ -37,6 +38,7 @@ export interface QuickVoiceIndicatorProps {
 }
 
 export function QuickChatInput({
+  portalTarget,
   busy = false,
   error,
   maxLength,
@@ -49,8 +51,8 @@ export function QuickChatInput({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    if (!portalTarget || portalTarget.isConnected) inputRef.current?.focus();
+  }, [portalTarget]);
 
   if (typeof document === "undefined") return null;
   const canSubmit = !busy && value.trim().length > 0;
@@ -59,7 +61,7 @@ export function QuickChatInput({
   };
 
   return createPortal(
-    <div className="quick-chat-layer" data-no-window-drag>
+    <div className={`quick-chat-layer${portalTarget ? " is-docked" : ""}`} data-no-window-drag>
       <form
         aria-label={strings.inputLabel}
         className="quick-chat-palette"
@@ -114,7 +116,7 @@ export function QuickChatInput({
         </p>
       )}
     </div>,
-    document.body,
+    portalTarget ?? document.body,
   );
 }
 

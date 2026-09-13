@@ -4032,6 +4032,9 @@ function App() {
   // voice intent を保ったまま新 thread へ自動再接続する。
   const [peerCallActive, setPeerCallActive] = useState(false);
   const [peerCall, setPeerCall] = useState<RoomCall | null>(null);
+  const [peerCallSidebarHost, setPeerCallSidebarHost] = useState<HTMLDivElement | null>(null);
+  const [peerCallComposerHost, setPeerCallComposerHost] = useState<HTMLDivElement | null>(null);
+  const peerCallControlsHost = !viewModeOwnsChrome && sidebarOpen ? peerCallSidebarHost : null;
   const [, refreshPeerCall] = useState(0);
   const [peerCallInputError, setPeerCallInputError] = useState<string>();
   const peerCallRef = useRef<RoomCall | null>(null);
@@ -6071,6 +6074,8 @@ function App() {
             onActiveChange={handlePeerCallActiveChange}
             onRoomChange={handlePeerCallChange}
             onSessionStart={beginCallSession}
+            controlsHost={peerCallControlsHost}
+            onComposerHostChange={setPeerCallComposerHost}
             onTopicRequested={() => setQuickChatOpen(true)}
             onShowResident={
               peerCallSurfaces.show
@@ -6225,6 +6230,7 @@ function App() {
             bodyDevLog={bodyDevLog}
             scene={renderedSceneEntry}
           />
+          <div className="peer-call-sidebar-controls" ref={setPeerCallSidebarHost} />
         </div>
         {canMountTerminals && (
           <TerminalWorkspace
@@ -6259,6 +6265,7 @@ function App() {
       </div>
       {quickChatOpen && quickChatEnabled ? (
         <QuickChatInput
+          portalTarget={callQuickChat && !peerCallControlsHost ? peerCallComposerHost : null}
           busy={callQuickChat && (!peerCall?.connected || peerCallSubmitting)}
           error={callQuickChat ? peerCallInputError : undefined}
           maxLength={callQuickChat ? 2000 : undefined}

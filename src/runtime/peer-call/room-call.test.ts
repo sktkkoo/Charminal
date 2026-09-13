@@ -505,6 +505,8 @@ describe("real participant input routing", () => {
     expect(f.guestAgent.requestTurn.mock.calls[0][0]).toContain("Do not perform both sides");
     expect(f.host.call.transcripts.map((item) => item.speaker)).toEqual(["あなた"]);
     expect(f.guest.call.transcripts.map((item) => item.speaker)).toEqual(["相手のユーザー"]);
+    expect(f.host.call.transcripts[0]).toMatchObject({ origin: "local", role: "user" });
+    expect(f.guest.call.transcripts[0]).toMatchObject({ origin: "remote", role: "user" });
     f.guestAgent.callbacks.transcript({
       id: "actual",
       agentId: "guest-ai",
@@ -515,10 +517,14 @@ describe("real participant input routing", () => {
     expect(f.host.call.transcripts[1]).toMatchObject({
       speaker: "GPT",
       text: "Actual provider transcript",
+      origin: "remote",
+      role: "assistant",
     });
     expect(f.guest.call.transcripts[1]).toMatchObject({
       speaker: "GPT",
       text: "Actual provider transcript",
+      origin: "local",
+      role: "assistant",
     });
     expect(f.hostAgent.requestTurn).not.toHaveBeenCalled();
   });

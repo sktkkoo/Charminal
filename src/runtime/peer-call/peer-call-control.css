@@ -1028,20 +1028,51 @@
   font-size: 12px;
 }
 
-/* Connected calls stay in the main presentation. This strip only supplies persistent call actions. */
-.peer-call-session-strip {
-  box-sizing: border-box;
+/* Keep call controls under the local resident, or stack them with the composer. */
+.peer-call-sidebar-controls {
+  flex: 0 0 auto;
+  max-height: 45%;
+  overflow-y: auto;
+}
+.peer-call-session-dock {
   position: fixed;
   bottom: 12px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 900;
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 56px);
+  overflow-y: auto;
+}
+.peer-call-session-dock[data-placement="sidebar"] {
+  position: relative;
+  bottom: auto;
+  left: auto;
+  transform: none;
+  width: calc(100% - 20px);
+  max-width: none;
+  max-height: none;
+  margin: 10px;
+}
+.peer-call-composer-host {
+  max-width: 100%;
+}
+.peer-call-composer-host:empty {
+  display: none;
+}
+.peer-call-session-strip {
+  box-sizing: border-box;
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  width: max-content;
-  max-width: calc(100vw - 20px);
+  width: 100%;
+  max-width: 100%;
   padding: 8px 10px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 14px;
@@ -1274,21 +1305,67 @@ html[data-window-view="call-controls"] #root {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 18px 0;
+  padding: 20px 2px;
+  scrollbar-gutter: stable;
 }
-.call-session-messages p {
-  display: grid;
-  gap: 7px;
-  line-height: 1.7;
+.call-session-message {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: fit-content;
+  max-width: 82%;
+  margin: 0 0 18px;
+  gap: 6px;
+}
+.call-session-message[data-origin="remote"] {
+  align-items: flex-end;
+  margin-left: auto;
+}
+.call-session-message-speaker {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+  color: #b8d5c9;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.call-session-message-speaker strong {
+  min-width: 0;
+  font-weight: 600;
+}
+.call-session-message-speaker > span {
+  color: #a7b0be;
+  font-size: 10px;
+}
+.call-session-message-bubble {
+  max-width: 100%;
+  padding: 11px 14px;
+  border: 1px solid #a8e8ce20;
+  border-radius: 4px 16px 16px;
+  background: #253a34;
+  color: #ecf3ef;
+  font-size: 13px;
+  line-height: 1.75;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.call-session-messages strong {
-  color: #a8e8ce;
-  font-size: 12px;
+.call-session-message[data-origin="remote"] .call-session-message-bubble {
+  border-color: #b7c9f122;
+  border-radius: 16px 4px 16px 16px;
+  background: #2b3345;
+}
+.call-session-message[data-origin="remote"] .call-session-message-speaker {
+  color: #c6d1ef;
+}
+.call-session-message[data-speaker-role="user"] .call-session-message-bubble {
+  background: #222a34;
 }
 .call-session-empty {
   color: #abb4c5;
+  font-size: 13px;
+  line-height: 1.7;
 }
 .call-session-workspace footer [role="alert"] {
   color: #ff8c8c;
